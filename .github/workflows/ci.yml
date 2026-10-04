@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  quality:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Format with Ruff
+        run: uv run ruff format .
+
+      - name: Apply Ruff fixes
+        run: uv run ruff check --fix .
+
+      - name: Verify lint
+        run: uv run ruff check .
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Commit Ruff changes
+        if: github.event_name == 'push'
+        run: |
+          if git diff --quiet; then
+            echo "No Ruff changes required."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .
+          git commit -m "style: apply Ruff automatic fixes"
+          git push
