@@ -8,11 +8,13 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "mcp[cli]>=2.3.0",
     "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
 emuru-index = "emuru.cli:main"
+emuru-vault-mcp = "emuru.mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
