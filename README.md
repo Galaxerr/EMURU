@@ -4,18 +4,27 @@ EMURU is a self-hosted personal AI agent and second-brain platform.
 
 ## Current status
 
-v0.1 implements the Obsidian vault indexing layer.
+### v0.2 — Vault MCP
 
-Currently implemented:
+Implemented:
 
+- Obsidian Markdown indexing
 - YAML frontmatter parsing
-- Obsidian wikilink extraction
-- knowledge graph generation
-- SQLite FTS5 indexing
-- generated Obsidian vault index
-- allowlisted vault access
-- private-directory exclusion
-- symlink protections
+- wikilink knowledge graph
+- SQLite FTS5 search
+- generated Obsidian index
+- MCP server using the official Python MCP SDK
+- `vault_map`
+- `vault_search`
+- `vault_open`
+- `vault_neighbors`
+- `vault_write`
+- allowlisted read access
+- Inbox-only writes
+- overwrite protection
+- path traversal protection
+- symlink escape protection
+- automatic reindexing after agent writes
 
 ## Repository architecture
 
@@ -29,7 +38,6 @@ The real vault is never included in this repository.
 
 ## Planned
 
-- MCP vault interface
 - Hermes integration
 - LiteLLM / Gemini / Ollama routing
 - Paperclip integration
