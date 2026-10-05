@@ -55,7 +55,7 @@ jobs:
           git add .
           git commit -m "style: apply Ruff automatic fixes"
           git push
-          
+
   hermes-baseline:
     name: Hermes baseline contract
     runs-on: ubuntu-latest
@@ -66,7 +66,7 @@ jobs:
       - name: Validate launch script
         run: bash -n scripts/hermes-emuru.sh
       - name: Validate configuration contract
-        run: python3 scripts/hermes_baseline.py
+        run: python3 scripts/hermes-baseline.py
       - name: Validate recorded runtime identity
         shell: bash
         run: |
