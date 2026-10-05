@@ -1,0 +1,8 @@
+{
+  "source_repository": "https://github.com/NousResearch/hermes-agent.git",
+  "commit": "7157422022ff06f3e632d1dd394ee1253b17ad37",
+  "version_output": "Hermes Agent v0.21.5+7249.g7157422 (2026.9.24) \u00b7 upstream 71574220\nInstall directory: /home/galaxer/.hermes/hermes-agent\nInstall method: git\nPython: 3.14.7\nOpenAI SDK: 2.24.0\nUp to date",
+  "installer_sha256": "1c7cd821b079c22a20259e0d6dd3d1c93beb7b07d4fe541fd4a22554b024a241",
+  "provider": "gemini",
+  "model": "gemini-3.8-flash"
+}

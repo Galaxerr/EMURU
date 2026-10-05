@@ -1,0 +1,25 @@
+{
+  "model.provider": "gemini",
+  "model.default": "gemini-3.8-flash",
+  "model.base_url": "",
+  "agent.max_turns": 12,
+  "agent.api_max_retries": 0,
+  "agent.auto_recovery_cycles": 0,
+  "agent.disabled_toolsets": [
+    "terminal", "file", "code_execution", "browser", "web", "search",
+    "delegation", "skills", "cronjob", "memory", "session_search",
+    "vision", "image_gen", "tts", "todo", "clarify", "messaging",
+    "spotify", "discord", "discord_admin", "debugging"
+  ],
+  "platform_toolsets.cli": [],
+  "platform_toolsets.telegram": [],
+  "fallback_providers": [],
+  "mcp_servers": {},
+  "memory.memory_enabled": false,
+  "memory.user_profile_enabled": false,
+  "auxiliary.background_review.enabled": false,
+  "auxiliary.title_generation.enabled": false,
+  "providers.gemini.request_timeout_seconds": 60,
+  "providers.gemini.stale_timeout_seconds": 60,
+  "security.redact_secrets": true
+}

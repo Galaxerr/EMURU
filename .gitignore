@@ -29,3 +29,7 @@ vault/
 
 # Generated vault indexes
 _index/
+
+# Hermes
+.hermes/
+.runtime/

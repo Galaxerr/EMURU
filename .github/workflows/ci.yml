@@ -55,3 +55,34 @@ jobs:
           git add .
           git commit -m "style: apply Ruff automatic fixes"
           git push
+          
+  hermes-baseline:
+    name: Hermes baseline contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate launch script
+        run: bash -n scripts/hermes-emuru.sh
+      - name: Validate configuration contract
+        run: python3 scripts/hermes_baseline.py
+      - name: Validate recorded runtime identity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          record = json.loads(Path("infra/hermes/runtime-lock.json").read_text())
+          if not re.fullmatch(r"[0-9a-f]{40}", record.get("commit", "")):
+              raise SystemExit("Invalid Hermes commit")
+          if not re.fullmatch(r"[0-9a-f]{64}", record.get("installer_sha256", "")):
+              raise SystemExit("Invalid installer checksum")
+          if record.get("provider") != "gemini":
+              raise SystemExit("Unexpected provider")
+          if record.get("model") != "gemini-3.8-flash":
+              raise SystemExit("Unexpected model")
+          print("Runtime identity: PASS")
+          PY
