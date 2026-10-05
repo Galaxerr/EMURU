@@ -1,0 +1,14 @@
+{
+  "server_args": ["emuru-vault-mcp"],
+  "indexer_args": ["emuru-index", "--vault", "@VAULT_ROOT@"],
+  "env": {
+    "EMURU_VAULT_PATH": "@VAULT_ROOT@"
+  },
+  "tool_args": {
+    "vault_map": {},
+    "vault_search": {"query": "@QUERY@"},
+    "vault_open": {"path": "@PATH@"},
+    "vault_neighbors": {"path": "@PATH@"},
+    "vault_write": {"path": "@PATH@", "content": "@CONTENT@"}
+  }
+}

@@ -63,10 +63,20 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Sync dependencies
+        run: uv sync --locked
       - name: Validate launch script
         run: bash -n scripts/hermes-emuru.sh
       - name: Validate configuration contract
         run: python3 scripts/hermes-baseline.py
+      - name: Test vault integration over stdio
+        run: uv run --frozen pytest -q tests/test_hermes_vault_integration.py tests/test_hermes_vault_profile.py tests/test_openai.py tests/test_gemini.py tests/test_ollama.py tests/test_ollama_profile.py tests/test_ollama_local.py tests/test_ollama_selection.py tests/test_ollama_integration.py
+      - name: Validate selected model route
+        run: uv run --frozen python scripts/hermes-vault-profile.py --offline
       - name: Validate recorded runtime identity
         shell: bash
         run: |

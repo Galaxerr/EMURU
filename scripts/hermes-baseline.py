@@ -71,6 +71,19 @@ def main() -> None:
 
     launcher = str(root / "scripts/hermes-emuru.sh")
     if args.apply:
+        registered = subprocess.run(
+            [launcher, "config", "get", "mcp_servers", "--json"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if json.loads(registered.stdout):
+            raise SystemExit(
+                "Phase 1 reset refused: an MCP server is configured. "
+                "Use scripts/hermes-vault-profile.py for Phase 2."
+            )
+
         for key, value in settings.items():
             serialized = value if isinstance(value, str) else json.dumps(value)
             command = [launcher, "config", "set"]
