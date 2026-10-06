@@ -6,33 +6,17 @@ and can save meaningful owner facts as new Inbox notes.
 
 ## Current status — v0.3.0
 
-The original v0.3.0 release outcome remains pending Phase 4. The historical
-completion report describes the delivered Phase 2 branch scope, not release
-acceptance. The [active progress record](docs/releases/v0.3.0-progress.md) tracks
-Phase 3 verification and the remaining acceptance gates. Delivered capabilities include:
+v0.3.0 delivers the first usable conversational EMURU: owner-only Telegram text
+connects pinned Hermes to the privately bound vault MCP. It retrieves facts
+with note-path citations, navigates wikilinks and creates searchable Inbox
+notes. Conversation history persists; fresh-session, offline, duplicate-update
+and interrupted-turn behavior have been accepted on the recorded deployment.
 
-- Obsidian Markdown/frontmatter indexing, wikilink graph, SQLite FTS5 search,
-  and a generated Obsidian index from the existing v0.2 implementation;
-- five vault MCP tools: `vault_map`, `vault_search`, `vault_open`,
-  `vault_neighbors`, and `vault_write`;
-- allowlisted reads, exclusion of `99_Private`, new Inbox-only writes,
-  overwrite/traversal/symlink protection, and automatic reindexing;
-- Hermes CLI launch/profile configuration with only the vault toolset,
-  bounded turns, disabled retries/recovery/fallback, and secret redaction;
-- a conversational policy for evidence, path citations, relationship queries,
-  duplicate checks, proactive memory, and treating retrieved instructions as data;
-- explicit Gemini, OpenAI, or Ollama selection, including downloaded Ollama
-  models and cloud aliases discovered from the daemon catalog;
-- synthetic vault integration, provider/profile tests, opt-in live tests,
-  and CI contract validation.
-
-The default agent binding uses the synthetic vault, not your private notes.
-The guarded native Telegram launcher is described below; queue and recovery
-details are in the [architecture](docs/ARCHITECTURE.md). Telegram tests live in
-`tests/telegram/`.
-See the [architecture](docs/ARCHITECTURE.md) and
-[historical Phase 2 branch report](docs/releases/v0.3.0-report.md) for implementation,
-validation evidence, and deferred scope. Package metadata still reports `0.1.0`.
+Use the [operating runbook](docs/RUNBOOK.md). The
+[release report](docs/releases/v0.3.0-report.md) records actual validation,
+owner acceptance and remaining limitations. Writes are create-only. General vault
+cleanup, automatic synchronization, physical remote wake and gateway fallback
+remain outside this release. Package metadata still reports `0.1.0`.
 
 ## Repository layout
 
@@ -305,16 +289,76 @@ Stop with Ctrl-C, inspect `--status`, and restart to check recovery without
 replaying started work. Only the guarded launcher is an accepted Phase 3
 deployment; plain `hermes gateway` or `hermes-emuru.sh gateway run` bypasses it.
 
+### Manually started user service
+
+The user service wraps the guarded launcher, preserving its process lock,
+neutral workspace, native checks and READY gate. Install and validate it:
+
+```sh
+chmod +x scripts/hermes-telegram.sh scripts/hermes-emuru.sh
+chmod +x scripts/emuru-wake.sh scripts/emuru-sleep.sh scripts/emuru-status.sh
+bash -n scripts/emuru-wake.sh
+bash -n scripts/emuru-sleep.sh
+bash -n scripts/emuru-status.sh
+mkdir -p "$HOME/.config/systemd/user"
+install -m 600 infra/systemd/emuru-telegram.service "$HOME/.config/systemd/user/emuru-telegram.service"
+systemd-analyze --user verify "$HOME/.config/systemd/user/emuru-telegram.service"
+systemctl --user daemon-reload
+systemctl --user cat emuru-telegram.service
+```
+
+There is intentionally no `[Install]` section: do not enable it at login.
+Do not use sudo, `systemctl --user enable`, or enable user lingering for this
+release. `%h` is systemd's home-directory specifier, not a literal real-vault
+path. If the project or Hermes checkout lives elsewhere, change the installed
+local copy to those actual locations. Installation uses the existing Hermes
+environment; it does not upgrade Hermes or Python.
+
+Stop any other Hermes Telegram gateway polling with the same bot token before
+waking this service. The process lock protects this profile on this PC, not a
+second computer running the same token. The selected provider's existing
+daemon, if needed, must already be available; this unit does not install,
+authenticate or change Ollama.
+
+```sh
+./scripts/emuru-wake.sh
+journalctl --user -u emuru-telegram.service -f
+```
+
+Wait for `EMURU Telegram checkpoint: required guards and five MCP tools READY`
+in the journal, then Ctrl-C to exit the viewer; that does not stop the service.
+`Type=exec` becoming active means the process started, not that Telegram/MCP
+are ready. Confirm `/status` and a simple synthetic owner question receive
+replies. While the service is running, start a second guarded launcher:
+
+```sh
+./scripts/hermes-telegram.sh
+```
+
+Expect a clean nonzero exit with `already running`; the original service must
+continue. Do not launch the CLI against the same writable vault during these
+single-writer acceptance tests. Use `./scripts/emuru-status.sh` for service and
+queue health, `./scripts/emuru-sleep.sh` to stop, and `./scripts/emuru-wake.sh`
+to start. These scripts operate the user service on an already-awake PC; they
+do not change its power state.
+
+`Restart=on-abnormal` recovers abnormal process death/signals and supervisor
+timeouts, with a limit of three starts in 120 seconds. Ordinary nonzero exits,
+invalid configuration and an intentional stop remain stopped until you act.
+Failed model/MCP requests remain failed receipts and are not replayed. A
+supervisor restart does not authorize retrying an uncertain write.
+`KillMode=mixed` gives the main gateway its graceful stop signal first, then
+lets systemd terminate remaining children if it fails to stop in time. Forced
+interruption can have uncertain effects; queue recovery must report it without
+replay. `NoNewPrivileges` and `LimitCORE` are modest operating controls, not a
+filesystem sandbox. Model filesystem scope still comes from disabled generic
+tools plus the tested MCP boundary.
+
 
 ## Planned
 
-- on-demand startup/shutdown and interruption recovery
-- real-vault deployment acceptance
+- physical remote wake and broader lifecycle automation
 - LiteLLM gateway routing and automatic fallback
 - Paperclip integration
 - general vault cleanup under a separate constrained policy
-
-The guarded Telegram transport now supports owner admission, durable queued
-input, deduplication, and failure reporting. The implementation and its CI changes
-remain uncommitted by owner instruction; passing working-tree checks does not
-close Phase 3. The original release acceptance target remains pending Phase 4.
+- automatic synchronization

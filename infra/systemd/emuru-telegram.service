@@ -1,0 +1,23 @@
+[Unit]
+Description=EMURU owner-only Telegram knowledge assistant
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=exec
+WorkingDirectory=%h/Desktop/EmuruProject/EMURU
+Environment=EMURU_HERMES_PROFILE_HOME=%h/.hermes/profiles/emuru
+Environment=EMURU_HERMES_ROOT=%h/.hermes/hermes-agent
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+ExecStartPre=%h/Desktop/EmuruProject/EMURU/.venv/bin/python %h/Desktop/EmuruProject/EMURU/scripts/hermes-vault.py target --require-real
+ExecStart=%h/Desktop/EmuruProject/EMURU/scripts/hermes-telegram.sh
+Restart=on-abnormal
+RestartSec=5
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=120
+NoNewPrivileges=true
+LimitCORE=0
+StandardOutput=journal
+StandardError=journal

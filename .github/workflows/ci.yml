@@ -55,6 +55,11 @@ jobs:
         run: bash -n scripts/hermes-emuru.sh
       - name: Validate Telegram launcher
         run: bash -n scripts/hermes-telegram.sh
+      - name: Validate on-demand operation scripts
+        run: |
+          bash -n scripts/emuru-wake.sh
+          bash -n scripts/emuru-sleep.sh
+          bash -n scripts/emuru-status.sh
       - name: Validate Telegram contract offline
         run: uv run --frozen python scripts/hermes-telegram.py --offline
       - name: Test Telegram admission and restart reliability

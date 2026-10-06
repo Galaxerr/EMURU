@@ -35,7 +35,7 @@ agents/emuru/SOUL.md ───────────────┘   (install
                          or separately bound private EMURU-vault
 ```
 
-The shipped Hermes binding uses synthetic notes. The private vault is not
+Without a private target selector, the Hermes binding uses synthetic notes. The private vault is not
 bundled with this repository or automatically selected by the launcher.
 
 ## Components
@@ -122,15 +122,26 @@ and prompts. It starts the backend through `uv run --frozen --no-sync`.
 
 `scripts/hermes-vault.py` invokes `emuru-index --vault PATH` and
 `emuru-vault-mcp` directly, passing the vault root through `EMURU_VAULT_PATH`.
-Its stdio checks pass explicit tool arguments. It provides four modes:
+Its stdio checks pass explicit tool arguments. It provides five modes:
 
 - `prepare`: copy the fixtures to `.runtime/vault` if absent and index them;
   an existing runtime vault is preserved and reindexed.
-- `serve`: start the MCP server against the prepared runtime vault.
+- `serve`: resolve the private live selector, index the selected vault and start
+  its MCP server. An absent selector uses the prepared synthetic runtime vault.
+- `target`: validate the selected mode without printing the vault root;
+  `--require-real` rejects synthetic mode and also applies to `serve`.
 - `inspect`: list the five tool schemas against a temporary fixture copy.
 - `check`: verify retrieval, search, relationships, Inbox writes, immediate
   reindexing, rejection of a non-Inbox write, and unchanged protected notes
   against a temporary fixture copy.
+
+The owner-controlled `vault-target.json` lives in the private `emuru` profile,
+not Git. It must be an owner-owned regular file with mode `0600`. Synthetic mode
+has only `{"mode":"synthetic"}`; real mode has exactly `mode: "real"` and an
+absolute `vault_path` for the separate Git vault with an existing Inbox. Invalid
+explicit records, symlinks, repository/profile overlaps and unsafe derived
+outputs fail closed. `prepare`, `inspect` and `check` never read this selector
+and remain synthetic even when the live service uses the real vault.
 
 The backend receives a small environment allowlist (`PATH`, `HOME`, locale,
 and temporary-directory settings), the configured vault variables, and
@@ -235,10 +246,32 @@ install Hermes or prove the installed runtime matches the recorded commit.
 
 Telegram owner authentication, offline queues, durable update deduplication,
 and interrupted-claim reporting are implemented by the guarded native runtime.
-On-demand power lifecycle, LiteLLM gateway routing, Paperclip integration,
-and general vault cleanup remain future work. See the
-[historical Phase 2 branch report](releases/v0.3.0-report.md) for the delivered scope and
-recorded validation.
+The owner manually starts and stops a systemd user service on an awake PC.
+Physical remote wake, gateway/provider fallback, general vault cleanup, automatic
+synchronization, Paperclip integration and broader automation remain future work.
+Phase 4 is complete by owner acceptance. See the
+[release report](releases/v0.3.0-report.md) for dated validation, owner acceptance
+and nonblocking warnings.
+
+## Manual service lifecycle
+
+`infra/systemd/emuru-telegram.service` wraps the guarded launcher. Its pre-start
+check requires a valid real target without exposing the root. Owner commands
+`scripts/emuru-wake.sh`, `scripts/emuru-sleep.sh` and `scripts/emuru-status.sh`
+start, stop and inspect it; these are not model tools. The installed unit and
+private target file remain local and are not committed.
+
+The unit has no `[Install]` section or login enablement. `Type=exec` means the
+process started; the guarded READY message establishes runtime readiness.
+`Restart=on-abnormal` with a five-second delay and three-start/120-second limit
+permits bounded abnormal-process recovery. Ordinary nonzero exits and intentional
+stops remain stopped until manual action. `SIGINT`, `KillMode=mixed` and a
+120-second stop timeout allow graceful queue closure before forced termination.
+An ambiguous started turn is still reported without replay after recovery.
+
+Follow the [operating runbook](RUNBOOK.md). Hosted CI checks script syntax and
+synthetic contracts; installed-unit validation, stop/start and Telegram/real-vault
+acceptance require local/manual evidence.
 
 ## Telegram durable boundary
 
@@ -294,6 +327,7 @@ This is durable admission and at-most-once dispatch, not a claim of exactly-once
 external effects or guaranteed delivery. Never delete or reset a live queue to
 resolve an uncertain write; inspect the vault and native transcript first.
 
-The [active v0.3.0 progress record](releases/v0.3.0-progress.md) separates
-working-tree checks, owner-reported Telegram acceptance, committed CI evidence,
-and the remaining Phase 4 release target. The historical report remains intact.
+The [v0.3.0 release report](releases/v0.3.0-report.md) separates dated
+working-tree checks, owner acceptance and committed implementation CI evidence.
+Phase 4 is complete; remaining auxiliary/Nous/Docker warnings are nonblocking.
+Earlier working-tree results remain distinct from clean-commit CI results.

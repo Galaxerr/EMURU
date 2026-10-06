@@ -33,7 +33,9 @@
   "platform_toolsets.cli": [
     "mcp-vault"
   ],
-  "platform_toolsets.telegram": ["mcp-vault"],
+  "platform_toolsets.telegram": [
+    "mcp-vault"
+  ],
   "tools.tool_search.enabled": "off",
   "platforms.telegram.extra.drop_pending_on_cold_boot": false,
   "platforms.telegram.extra.max_concurrent_updates": 1,
@@ -43,5 +45,14 @@
   "memory.user_profile_enabled": false,
   "auxiliary.background_review.enabled": false,
   "auxiliary.title_generation.enabled": false,
-  "security.redact_secrets": true
+  "security.redact_secrets": true,
+  "display.show_reasoning": false,
+  "display.show_commentary": false,
+  "display.platforms.telegram.show_reasoning": false,
+  "display.platforms.telegram.interim_assistant_messages": false,
+  "display.platforms.telegram.thinking_progress": false,
+  "display.platforms.telegram.tool_progress": false,
+  "display.platforms.telegram.streaming": false,
+  "display.platforms.telegram.long_running_notifications": false,
+  "display.platforms.telegram.suppress_warning_notifications": true
 }
