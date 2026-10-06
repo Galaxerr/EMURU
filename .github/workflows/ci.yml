@@ -71,6 +71,8 @@ jobs:
         run: uv run --frozen pytest -q tests/test_hermes_vault_integration.py tests/test_hermes_vault_profile.py tests/test_openai.py tests/test_gemini.py tests/test_ollama.py tests/test_ollama_profile.py tests/test_ollama_local.py tests/test_ollama_selection.py tests/test_ollama_integration.py
       - name: Validate selected model route
         run: uv run --frozen python scripts/hermes-vault-profile.py --offline
+      - name: Test private vault target and synthetic isolation
+        run: uv run --frozen pytest -q tests/test_vault_target.py
       - name: Validate recorded runtime identity
         shell: bash
         run: |

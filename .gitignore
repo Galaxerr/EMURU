@@ -33,6 +33,10 @@ _index/
 # Hermes
 .hermes/
 .runtime/
+
 # Private Telegram runtime state (normally outside the repository)
 emuru-telegram/
 queue.sqlite*
+
+# Owner-only live vault binding; normally outside this repository
+vault-target.json

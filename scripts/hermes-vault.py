@@ -1,4 +1,4 @@
-"""Connect the tested v0.2.0 commands to a synthetic vault; no model calls."""
+"""Serve the owner's selected vault; keep prepare/inspect/check synthetic."""
 
 import argparse
 import asyncio
@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+from emuru.vault_target import TargetError, load_target, profile_home
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/hermes-vault"
@@ -39,6 +41,8 @@ def backend(vault: Path, *arguments: str):
 
 
 def prepare(vault: Path):
+    if vault.resolve() != vault.absolute():
+        raise SystemExit("Synthetic vault path must not contain symlinks")
     if not vault.exists():
         shutil.copytree(FIXTURE, vault)
     command, env = backend(vault, "emuru-index", "--vault", str(vault.resolve()))
@@ -159,15 +163,29 @@ async def inspect_or_check(vault: Path, inspect: bool):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("prepare", "serve", "inspect", "check"))
+    parser.add_argument(
+        "mode", choices=("prepare", "serve", "inspect", "check", "target")
+    )
+    parser.add_argument("--require-real", action="store_true")
     args = parser.parse_args()
+    if args.require_real and args.mode not in {"serve", "target"}:
+        parser.error("--require-real applies only to serve or target")
     if args.mode == "prepare":
         prepare(RUNTIME)
         print("Synthetic runtime vault prepared")
-    elif args.mode == "serve":
-        if not RUNTIME.is_dir():
-            raise SystemExit("Run hermes-vault.py prepare before connecting Hermes")
-        command, env = backend(RUNTIME, "emuru-vault-mcp")
+    elif args.mode in {"serve", "target"}:
+        try:
+            kind, vault = load_target(ROOT, profile_home())
+        except TargetError as error:
+            raise SystemExit(f"EMURU vault target: {error}") from None
+        if args.require_real and kind != "real":
+            raise SystemExit("EMURU vault target: real_vault_not_selected")
+        if args.mode == "target":
+            print(json.dumps({"mode": kind}))
+            return
+        if not vault.is_dir():
+            raise SystemExit("Prepare the synthetic vault or repair the private target")
+        command, env = backend(vault, "emuru-vault-mcp")
         os.chdir(ROOT)
         os.execvpe(command[0], command, env)
     else:
