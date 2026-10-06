@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-emuru-index = "emuru.cli:main"
-emuru-vault-mcp = "emuru.mcp_server:main"
+emuru-index = "emuru.vault.cli:main"
+emuru-vault-mcp = "emuru.vault.server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]

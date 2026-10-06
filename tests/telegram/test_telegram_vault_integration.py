@@ -9,8 +9,8 @@ from pathlib import Path
 from telegram_helpers import DeterministicTelegram
 from telegram_helpers import update as raw
 
-from emuru.telegram_queue import TelegramQueue
-from emuru.telegram_worker import TelegramWorker, TurnResult
+from emuru.telegram.queue import TelegramQueue
+from emuru.telegram.worker import TelegramWorker, TurnResult
 
 
 def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
@@ -29,7 +29,10 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
     }
     env["EMURU_VAULT_PATH"] = str(vault)
     params = StdioServerParameters(
-        command=sys.executable, args=["-m", "emuru.mcp_server"], env=env, cwd=str(root)
+        command=sys.executable,
+        args=["-m", "emuru.vault.server"],
+        env=env,
+        cwd=str(root),
     )
     queue_path = tmp_path / "queue/queue.sqlite3"
     protected = {p: p.read_bytes() for p in vault.rglob("*.md")}

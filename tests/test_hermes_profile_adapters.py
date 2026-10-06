@@ -10,20 +10,20 @@ from unittest.mock import patch
 
 import pytest
 
-from emuru import hermes_profile as profile
-from emuru.vault_target import TargetError, profile_home
+from emuru.hermes import profile
+from emuru.vault.target import TargetError, profile_home
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
 def cli():
-    return runpy.run_path(str(ROOT / "scripts/hermes-vault-profile.py"))
+    return runpy.run_path(str(ROOT / "scripts/hermes/vault-profile.py"))
 
 
 def test_cli_transport_preserves_raw_strings_structured_values_and_force(cli, tmp_path):
     config = cli["CLIConfig"](tmp_path)
-    command = [str(tmp_path / "scripts/hermes-emuru.sh"), "config"]
+    command = [str(tmp_path / "scripts/hermes/emuru.sh"), "config"]
     with patch(
         "subprocess.run", return_value=NS(stdout='{"provider":"gemini"}')
     ) as transport:
@@ -142,7 +142,7 @@ def test_profile_core_runs_without_site_packages_or_cli_entry_points(tmp_path):
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from emuru.hermes_profile import expected_settings, expected_server
+from emuru.hermes.profile import expected_settings, expected_server
 root = Path(sys.argv[2])
 assert not (root / 'scripts').exists()
 assert expected_settings(root)['platform_toolsets.cli'] == ['mcp-vault']

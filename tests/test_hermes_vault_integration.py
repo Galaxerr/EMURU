@@ -9,7 +9,7 @@ from pathlib import Path
 def test_backend_keeps_environment_isolated(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location(
-        "vault_adapter", root / "scripts/hermes-vault.py"
+        "vault_adapter", root / "scripts/hermes/vault.py"
     )
     adapter = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(adapter)
@@ -42,7 +42,7 @@ def test_backend_keeps_environment_isolated(tmp_path, monkeypatch):
 def test_hermes_real_stdio_contract():
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        [sys.executable, str(root / "scripts/hermes-vault.py"), "check"],
+        [sys.executable, str(root / "scripts/hermes/vault.py"), "check"],
         cwd=root,
         capture_output=True,
         text=True,

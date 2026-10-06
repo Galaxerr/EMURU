@@ -3,11 +3,17 @@
 import json
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 from vault_helpers import create_vault, write_note
 
-from emuru.vault_indexer import collect_notes, extract_wikilinks, index_vault
+from emuru.vault.indexer import (
+    collect_notes,
+    extract_wikilinks,
+    index_vault,
+    vault_search,
+)
 
 
 def test_extract_wikilinks():
@@ -152,11 +158,10 @@ Semantic retrieval and full-text search are useful for EMURU.
     )
     write_note(vault, "30_Resources/networking.md", "TCP and UDP networking notes.")
     index_vault(vault)
-    with closing(sqlite3.connect(vault / "_index/notes.sqlite")) as db:
-        rows = db.execute(
-            "SELECT path,title FROM note_fts WHERE note_fts MATCH ?", ("retrieval",)
-        ).fetchall()
-    assert rows == [("30_Resources/retrieval.md", "Retrieval Systems")]
+    results = vault_search(vault, "retrieval", 8)
+    assert results["count"] == 1
+    assert results["results"][0]["path"] == "30_Resources/retrieval.md"
+    assert results["results"][0]["title"] == "Retrieval Systems"
 
 
 def test_generated_human_index_contains_notes(tmp_path):
@@ -202,3 +207,42 @@ def test_symlinks_are_not_indexed(tmp_path, directory):
 def test_missing_vault_raises_error(tmp_path):
     with pytest.raises(ValueError, match="vault does not exist"):
         index_vault(tmp_path / "does-not-exist")
+
+
+@pytest.mark.parametrize("error", [OSError, KeyboardInterrupt])
+def test_interrupted_write_preserves_previous_index(tmp_path, monkeypatch, error):
+    import emuru.vault.indexer as index
+
+    vault = create_vault(tmp_path)
+    write_note(vault, "10_Projects/original.md", "Original")
+    index_vault(vault)
+    paths = [
+        vault / name
+        for name in ("_index/graph.json", "_index/notes.sqlite", "99_System/INDEX.md")
+    ]
+    before = [path.read_bytes() for path in paths]
+    replace = index.os.replace
+    failed = False
+
+    def interrupt(source, destination):
+        nonlocal failed
+        if Path(destination) == paths[1] and not failed:
+            failed = True
+            raise error("publication interrupted")
+        return replace(source, destination)
+
+    monkeypatch.setattr(index.os, "replace", interrupt)
+    with pytest.raises(error, match="publication interrupted"):
+        index.vault_write(vault, "00_Inbox/new.md", "New")
+    assert not (vault / "00_Inbox/new.md").exists()
+    assert [path.read_bytes() for path in paths] == before
+
+
+def test_allowlisted_root_symlink_does_not_expose_private_notes(tmp_path):
+    vault = create_vault(tmp_path)
+    write_note(vault, "99_Private/secret.md", "PRIVATE_ROOT_SYMLINK_CANARY")
+    root = vault / "30_Resources"
+    root.rmdir()
+    root.symlink_to(vault / "99_Private", target_is_directory=True)
+    index_vault(vault)
+    assert vault_search(vault, "PRIVATE_ROOT_SYMLINK_CANARY", 8)["count"] == 0

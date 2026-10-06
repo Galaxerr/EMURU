@@ -5,11 +5,12 @@ import os
 import stat
 from pathlib import Path
 
-from emuru.hermes_profile import ProfileError as TargetError
-from emuru.hermes_profile import (
+from emuru.hermes.profile import ProfileError as TargetError
+from emuru.hermes.profile import (
     no_symlinks,
     profile_home,  # noqa: F401 -- shared public import
 )
+from emuru.vault.indexer import derived_paths
 
 
 def _read_record(path: Path):
@@ -68,21 +69,11 @@ def load_target(repo: Path, home: Path) -> tuple[str, Path]:
         inbox = root / "00_Inbox"
         if inbox.is_symlink() or not inbox.is_dir():
             raise TargetError("target_inbox_unavailable")
-        for name in ("_index", "99_System"):
-            folder = root / name
+        directories, outputs = derived_paths(root)
+        for folder in directories:
             if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
                 raise TargetError("target_derived_directory_invalid")
-        for name in (
-            "_index/graph.json",
-            "_index/graph.json.tmp",
-            "_index/notes.sqlite",
-            "_index/notes.sqlite.tmp",
-            "_index/notes.sqlite.tmp-journal",
-            "_index/notes.sqlite.tmp-wal",
-            "_index/notes.sqlite.tmp-shm",
-            "99_System/INDEX.md",
-        ):
-            output = root / name
+        for output in outputs:
             if output.is_symlink() or (output.exists() and not output.is_file()):
                 raise TargetError("target_derived_file_invalid")
         return "real", root

@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from emuru.vault_indexer import index_vault
+from emuru.vault.indexer import index_vault
 
 
 def main() -> None:

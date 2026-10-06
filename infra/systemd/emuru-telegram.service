@@ -10,8 +10,8 @@ Environment=EMURU_HERMES_PROFILE_HOME=%h/.hermes/profiles/emuru
 Environment=EMURU_HERMES_ROOT=%h/.hermes/hermes-agent
 Environment=PYTHONUNBUFFERED=1
 UMask=0077
-ExecStartPre=%h/Desktop/EmuruProject/EMURU/.venv/bin/python %h/Desktop/EmuruProject/EMURU/scripts/hermes-vault.py target --require-real
-ExecStart=%h/Desktop/EmuruProject/EMURU/scripts/hermes-telegram.sh
+ExecStartPre=%h/Desktop/EmuruProject/EMURU/.venv/bin/python %h/Desktop/EmuruProject/EMURU/scripts/hermes/vault.py target --require-real
+ExecStart=%h/Desktop/EmuruProject/EMURU/scripts/hermes/telegram.sh
 Restart=on-abnormal
 RestartSec=5
 KillSignal=SIGINT

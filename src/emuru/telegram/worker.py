@@ -4,8 +4,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from emuru import telegram_queue as queue_module
-from emuru.hermes_profile import HealthError
+from emuru.hermes.profile import HealthError
+from emuru.telegram import queue as queue_module
 
 logger = logging.getLogger(__name__)
 

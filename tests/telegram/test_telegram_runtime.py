@@ -10,8 +10,8 @@ import pytest
 from telegram_helpers import DeterministicTelegram
 from telegram_helpers import update as raw
 
-from emuru.telegram_queue import TelegramQueue
-from emuru.telegram_worker import TelegramWorker, TurnResult
+from emuru.telegram.queue import TelegramQueue
+from emuru.telegram.worker import TelegramWorker, TurnResult
 
 
 @pytest.fixture

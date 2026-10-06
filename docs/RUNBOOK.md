@@ -10,8 +10,8 @@ Use one guarded Telegram poller and one vault writer at a time.
 
 ## Start, stop and status
 
-From the EMURU checkout, run `./scripts/emuru-wake.sh` to start,
-`./scripts/emuru-sleep.sh` to stop, and `./scripts/emuru-status.sh` for service
+From the EMURU checkout, run `./scripts/service/wake.sh` to start,
+`./scripts/service/sleep.sh` to stop, and `./scripts/service/status.sh` for service
 state and content-free queue/health counts. Inspect readiness privately with
 `journalctl --user -u emuru-telegram.service -f`.
 
@@ -30,7 +30,7 @@ root of the separate vault Git repository. Synthetic mode has only
 target is rejected. The installed real service requires real mode before start.
 
 Stop and drain work before changing targets or deploying different code. Do not
-send messages during that switch. `hermes-vault.py target --require-real` checks
+send messages during that switch. `scripts/hermes/vault.py target --require-real` checks
 the real selection without printing the root. `prepare`, `inspect` and `check`
 remain synthetic regardless of the production binding.
 

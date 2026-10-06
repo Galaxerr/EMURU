@@ -9,11 +9,11 @@ from unittest.mock import patch
 
 import pytest
 
-from emuru.ollama import OllamaClient
-from emuru.providers import check_provider, provider_settings
+from emuru.models.ollama import OllamaClient
+from emuru.models.providers import check_provider, provider_settings
 
 spec = importlib.util.spec_from_file_location(
-    "ollama_cli", Path(__file__).resolve().parents[1] / "scripts/hermes-ollama.py"
+    "ollama_cli", Path(__file__).resolve().parents[1] / "scripts/hermes/ollama.py"
 )
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
@@ -26,7 +26,7 @@ CATALOG = [
 
 def test_catalog_returns_all_models_including_custom_and_non_chat_models():
     with patch(
-        "emuru.ollama.urlopen",
+        "emuru.models.ollama.urlopen",
         return_value=io.BytesIO(json.dumps({"models": CATALOG}).encode()),
     ) as http:
         assert OllamaClient().list_models() == CATALOG
@@ -39,7 +39,7 @@ def test_catalog_returns_all_models_including_custom_and_non_chat_models():
 def test_invalid_catalog_is_actionable(catalog):
     with (
         patch(
-            "emuru.ollama.urlopen",
+            "emuru.models.ollama.urlopen",
             return_value=io.BytesIO(json.dumps(catalog).encode()),
         ),
         pytest.raises(RuntimeError, match="model catalog"),
@@ -112,7 +112,7 @@ def test_custom_cloud_alias_preflight_updates_context_and_timeouts():
     settings = provider_settings({"provider": "ollama", "model": "a-cloud-alias"})
     replies = [{"models": CATALOG}, {"capabilities": ["tools"]}]
     with patch(
-        "emuru.ollama.urlopen",
+        "emuru.models.ollama.urlopen",
         side_effect=[io.BytesIO(json.dumps(reply).encode()) for reply in replies],
     ):
         check_provider(settings)

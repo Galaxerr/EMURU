@@ -4,7 +4,7 @@ import pytest
 from mcp import Client
 from vault_helpers import create_vault, write_note
 
-from emuru.vault_mcp import create_mcp
+from emuru.vault.mcp import create_mcp
 
 pytestmark = pytest.mark.anyio
 
@@ -151,3 +151,58 @@ async def test_vault_neighbors(tmp_path):
     data = result.structured_content
     assert data is not None and len(data["incoming"]) == 1
     assert data["incoming"][0]["source"] == "10_Projects/emuru.md"
+
+
+async def test_failed_refresh_reports_error_without_committing_note(
+    tmp_path, monkeypatch
+):
+    import emuru.vault.indexer as adapter
+
+    vault = create_vault(tmp_path)
+    server = create_mcp(vault)
+
+    def interrupted(*args):
+        raise OSError("refresh interrupted")
+
+    monkeypatch.setattr(adapter, "index_vault", interrupted)
+    async with Client(server, raise_exceptions=True) as client:
+        result = await client.call_tool(
+            "vault_write", {"path": "00_Inbox/interrupted.md", "content": "New note"}
+        )
+    assert result.is_error
+    assert not (vault / "00_Inbox/interrupted.md").exists()
+
+
+async def test_refresh_failure_reports_note_if_rollback_is_blocked(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    import emuru.vault.indexer as adapter
+
+    vault = create_vault(tmp_path)
+    server = create_mcp(vault)
+    target = vault / "00_Inbox/committed.md"
+
+    def interrupted(*args):
+        raise OSError("refresh interrupted")
+
+    unlink = Path.unlink
+
+    def blocked(path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("rollback blocked")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(adapter, "index_vault", interrupted)
+    monkeypatch.setattr(Path, "unlink", blocked)
+    async with Client(server, raise_exceptions=True) as client:
+        result = await client.call_tool(
+            "vault_write",
+            {"path": "00_Inbox/committed.md", "content": "Committed note"},
+        )
+    assert result.is_error and target.is_file()
+    assert (
+        "Note committed at 00_Inbox/committed.md; index refresh failed"
+        in result.content[0].text
+    )

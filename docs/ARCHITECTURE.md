@@ -13,11 +13,11 @@ infra/hermes/runtime-settings.json ─┐                       ▲
                                    ├─► emuru Hermes profile │
 agents/emuru/SOUL.md ───────────────┘   (installed separately)│
                                                 │          │
-                                      scripts/hermes-emuru.sh
+                                      scripts/hermes/emuru.sh
                                                 │
                                       five vault MCP tools
                                                 │ stdio
-                                      scripts/hermes-vault.py
+                                      scripts/hermes/vault.py
                                                 │
                                          emuru-vault-mcp
                                                 │
@@ -46,7 +46,7 @@ bundled with this repository or automatically selected by the launcher.
 Obsidian knowledge base. Source Markdown is authoritative; indexes are derived
 outputs that can be regenerated.
 
-`src/emuru/vault_indexer.py`, exposed as `emuru-index --vault PATH`, reads
+`src/emuru/vault/indexer.py`, exposed as `emuru-index --vault PATH`, reads
 Markdown under these roots:
 
 - `00_Inbox`
@@ -63,8 +63,8 @@ graph, and creates SQLite FTS5 search data. It writes `_index/graph.json`,
 
 ### Vault MCP
 
-`src/emuru/vault_mcp.py` implements the server through the official Python MCP
-SDK. `src/emuru/mcp_server.py` exposes `emuru-vault-mcp`, with the vault root
+`src/emuru/vault/mcp.py` implements the server through the official Python MCP
+SDK. `src/emuru/vault/server.py` exposes `emuru-vault-mcp`, with the vault root
 supplied through `EMURU_VAULT_PATH`.
 
 | Tool | Behavior |
@@ -87,7 +87,7 @@ Hermes is installed independently; it is not an EMURU Python dependency.
 output, installer checksum, and original Gemini baseline. It is an identity
 record, not an installer or enforcement of the local Hermes checkout.
 
-`scripts/hermes-emuru.sh` invokes `hermes -p emuru`, defaults to `chat`, sets
+`scripts/hermes/emuru.sh` invokes `hermes -p emuru`, defaults to `chat`, sets
 `umask 077`, adds `~/.local/bin` to `PATH`, and launches from
 `${XDG_STATE_HOME:-$HOME/.local/state}/emuru/workspace`. This neutral working
 directory keeps the chat outside the application checkout and vault. Hermes
@@ -98,22 +98,22 @@ There are two configuration stages:
 
 | Source / script | Purpose |
 | --- | --- |
-| `infra/hermes/settings.json` + `hermes-baseline.py` | Original Gemini baseline with no tools or MCP servers; validate, apply, or audit |
+| `infra/hermes/settings.json` + `scripts/hermes/baseline.py` | Original Gemini baseline with no tools or MCP servers; validate, apply, or audit |
 | `infra/hermes/runtime-settings.json` | Shared CLI vault policy, independent of the selected provider |
 | `infra/hermes/model-selection.json` | Explicit provider, model, and optional Ollama endpoint |
-| `scripts/hermes-vault-profile.py` | Compose settings, preflight the route, apply or audit the Hermes vault profile |
+| `scripts/hermes/vault-profile.py` | Compose settings, preflight the route, apply or audit the Hermes vault profile |
 
 The baseline serializes string values directly and structured values as JSON,
 and audits both value and type. Its `--apply` refuses a profile that already
 has an MCP server so it cannot silently reset the vault integration.
 
-`src/emuru/hermes_profile.py` owns profile policy, provider composition, MCP
+`src/emuru/hermes/profile.py` owns profile policy, provider composition, MCP
 registration, apply/audit ordering, runtime source verification, and profile-home
 validation. It and its imported EMURU modules use only the Python standard
 library, so the installed Hermes interpreter can import them without the
 project's MCP SDK. Deleting an owner CLI entry point does not delete this policy.
 
-`scripts/hermes-vault-profile.py` supplies the CLI config transport. The Telegram
+`scripts/hermes/vault-profile.py` supplies the CLI config transport. The Telegram
 launcher imports the shared module directly; the native runtime supplies its
 already-read nested config mapping. Both audits use the same value/type and MCP
 registration verification. Native audits never make provider requests or config
@@ -133,7 +133,7 @@ and prompts. It starts the backend through `uv run --frozen --no-sync`.
 
 ### Synthetic vault adapter
 
-`scripts/hermes-vault.py` invokes `emuru-index --vault PATH` and
+`scripts/hermes/vault.py` invokes `emuru-index --vault PATH` and
 `emuru-vault-mcp` directly, passing the vault root through `EMURU_VAULT_PATH`.
 Its stdio checks pass explicit tool arguments. It provides five modes:
 
@@ -151,7 +151,7 @@ Its stdio checks pass explicit tool arguments. It provides five modes:
 The shared profile-home resolver preserves owner-variable precedence, rejects
 relative/traversal paths and symlinks in every path segment, and requires the
 `profiles/emuru` location. Telegram launch and private vault selection both use
-this resolver; target-specific file and root checks remain in `vault_target.py`.
+this resolver; target-specific file and root checks remain in `vault/target.py`.
 
 The owner-controlled `vault-target.json` lives in the private `emuru` profile,
 not Git. It must be an owner-owned regular file with mode `0600`. Synthetic mode
@@ -169,7 +169,7 @@ and generated `_index/` files are ignored by Git.
 
 ### Provider routing
 
-`src/emuru/providers.py` validates the selection and dispatches to separate
+`src/emuru/models/providers.py` validates the selection and dispatches to separate
 provider modules. Selection accepts only `provider`, `model`, and an optional
 Ollama `base_url`; credentials and arbitrary overrides are rejected.
 
@@ -183,7 +183,7 @@ Gemini and OpenAI use Hermes-managed credentials and medium reasoning effort.
 Their configuration clears the Ollama context override. Their profile checks
 validate routing configuration rather than making live inference calls.
 
-`src/emuru/ollama.py` implements catalog discovery (`/api/tags`), local model
+`src/emuru/models/ollama.py` implements catalog discovery (`/api/tags`), local model
 inspection (`/api/show`), endpoint validation, connection preflight, and a
 synthetic chat/tool round trip. Only loopback HTTP URLs and the official HTTPS
 cloud endpoint are accepted. Direct cloud requests require `OLLAMA_API_KEY`;
@@ -196,7 +196,7 @@ context override and use 60-second timeouts. Ollama reasoning effort is
 disabled. Direct cloud catalog discovery does not advertise tool capability,
 so the smoke test verifies it through an actual round trip.
 
-`scripts/hermes-ollama.py` lists every daemon catalog entry and persists an
+`scripts/hermes/ollama.py` lists every daemon catalog entry and persists an
 explicit numbered/name selection. It has no fixed model menu, automatic pull,
 or automatic provider fallback. Selection may include a non-tool model;
 preflight or smoke rejects it for vault chat. A temporary `--model` override
@@ -275,7 +275,7 @@ and nonblocking warnings.
 
 `infra/systemd/emuru-telegram.service` wraps the guarded launcher. Its pre-start
 check requires a valid real target without exposing the root. Owner commands
-`scripts/emuru-wake.sh`, `scripts/emuru-sleep.sh` and `scripts/emuru-status.sh`
+`scripts/service/wake.sh`, `scripts/service/sleep.sh` and `scripts/service/status.sh`
 start, stop and inspect it; these are not model tools. The installed unit and
 private target file remain local and are not committed.
 
@@ -308,7 +308,7 @@ lock files are mode `0600`, under umask `077`. It uses schema version 1,
 without discarding existing queue data. Recovery acquires the lifetime lock
 before changing any rows.
 
-`src/emuru/telegram_queue.py` owns queue schema/version, state names, private
+`src/emuru/telegram/queue.py` owns queue schema/version, state names, private
 file modes, receipt error redaction, and read-only diagnostics. Its independent
 `diagnostics` function opens existing SQLite storage with `mode=ro`; it never
 constructs a live queue, initializes schema, repairs permissions, recovers,
@@ -331,13 +331,13 @@ The original UTC message date may be at most one day old or 300 seconds ahead;
 exactly one day is allowed. Text and pending-capacity limits never truncate input
 or evict queued work.
 
-`src/emuru/telegram_worker.py` owns durable admission, FIFO claims, completion,
+`src/emuru/telegram/worker.py` owns durable admission, FIFO claims, completion,
 interruption, and worker lifecycle. Its execution seam accepts only primitive
 identity/routing data, normalized input, notices, and frozen `TurnResult` values.
 The worker never reads native applications, sessions, tasks, recovery flags, or
 turn state. Process health reporting is an injected callback.
 
-`src/emuru/telegram_native.py` implements the pinned Hermes/PTB adapter. It owns
+`src/emuru/telegram/native.py` implements the pinned Hermes/PTB adapter. It owns
 polling, session routing, startup recovery waits, detached task completion, class
 guards, lifecycle binding, and egress. Mutable turn state stays inside scoped
 adapter contexts; closing a scope also closes inherited detached-task contexts.
@@ -379,3 +379,22 @@ The [v0.3.0 release report](releases/v0.3.0-report.md) separates dated
 working-tree checks, owner acceptance and committed implementation CI evidence.
 Phase 4 is complete; remaining auxiliary/Nous/Docker warnings are nonblocking.
 Earlier working-tree results remain distinct from clean-commit CI results.
+
+
+### Package layout and vault refresh
+
+`src/emuru/` groups vault indexing and MCP under `vault/`, native and durable
+Telegram execution under `telegram/`, shared Hermes policy under `hermes/`,
+and provider routing under `models/`. Owner scripts live in `scripts/hermes/`;
+service controls live in `scripts/service/`. Console command names stay unchanged.
+After migration, reapply the vault profile and reinstall the user service from
+`infra/systemd/emuru-telegram.service` so persisted launch paths follow the moves.
+
+`vault/indexer.py` owns derived paths, FTS schema and queries, graph queries,
+read/write restrictions, and refresh publication. MCP only exposes tools,
+limits requests, and translates errors. Refresh builds all outputs before
+publication and restores replaced outputs on exceptions, including cancellation.
+Inbox writes use exclusive creation and remove the new note if refresh fails.
+If removal itself fails, the tool reports the committed path and requires index
+repair rather than repeating the write. This is exception rollback, not a
+filesystem transaction against power loss or SIGKILL; startup rebuilds the index.

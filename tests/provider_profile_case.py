@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuru import hermes_profile as profile
+from emuru.hermes import profile
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -99,4 +99,4 @@ class ProfileCase(unittest.TestCase):
             * sum(key == "model.provider" for key, _, _ in self.writes),
         )
         self.assertNotIn("mcp_servers", [key for key, _, _ in self.writes])
-        self.assertIn(str(self.root / "scripts/hermes-vault.py"), server["args"])
+        self.assertIn(str(self.root / "scripts/hermes/vault.py"), server["args"])

@@ -5,16 +5,16 @@ import json
 import subprocess
 from pathlib import Path
 
-from emuru import hermes_profile as profile
+from emuru.hermes import profile
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class CLIConfig:
     """Native Hermes config commands; policy stays in the profile module."""
 
     def __init__(self, root):
-        self.launcher = str(root / "scripts/hermes-emuru.sh")
+        self.launcher = str(root / "scripts/hermes/emuru.sh")
 
     def get(self, key):
         try:

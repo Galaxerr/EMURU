@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuru.vault_target import TargetError, load_target, profile_home
+from emuru.vault.target import TargetError, load_target, profile_home
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -155,7 +155,7 @@ class TargetTests(unittest.TestCase):
 class AdapterTests(unittest.TestCase):
     def setUp(self):
         spec = importlib.util.spec_from_file_location(
-            "target_adapter", REPO / "scripts/hermes-vault.py"
+            "target_adapter", REPO / "scripts/hermes/vault.py"
         )
         self.adapter = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.adapter)

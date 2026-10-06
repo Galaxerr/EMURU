@@ -1,5 +1,5 @@
 {
   "provider": "ollama",
-  "model": "gpt-oss:20b-cloud",
+  "model": "gemma4:31b-cloud",
   "base_url": "http://127.0.0.1:11434/v1"
 }

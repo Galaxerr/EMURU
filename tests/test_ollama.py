@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from emuru.ollama import DEFAULT_BASE_URL, OllamaConnection, ollama_base_url
+from emuru.models.ollama import DEFAULT_BASE_URL, OllamaConnection, ollama_base_url
 
 
 def response(value):
@@ -39,7 +39,7 @@ def test_chat_tool_round_trip_uses_local_endpoint_without_credentials(thinking):
         {"choices": [{"message": {"content": "EMURU_OLLAMA_OK"}}]},
     ]
     with patch(
-        "emuru.ollama.urlopen", side_effect=[response(x) for x in replies]
+        "emuru.models.ollama.urlopen", side_effect=[response(x) for x in replies]
     ) as http:
         assert connection.smoke() == "EMURU_OLLAMA_OK"
     requests = [call.args[0] for call in http.call_args_list]
@@ -103,7 +103,7 @@ def test_cloud_proxy_uses_remote_manifest_without_downloading_weights():
         {"capabilities": ["completion", "tools", "thinking"]},
     ]
     with patch(
-        "emuru.ollama.urlopen", side_effect=[response(x) for x in replies]
+        "emuru.models.ollama.urlopen", side_effect=[response(x) for x in replies]
     ) as http:
         assert "tools" in connection.check()["capabilities"]
     assert [call.args[0].full_url for call in http.call_args_list] == [
@@ -120,7 +120,7 @@ def test_preflight_accepts_exact_name_and_latest_alias(catalog_name):
         {"capabilities": ["tools"]},
     ]
     with patch(
-        "emuru.ollama.urlopen", side_effect=[response(x) for x in replies]
+        "emuru.models.ollama.urlopen", side_effect=[response(x) for x in replies]
     ) as http:
         connection = OllamaConnection("custom")
         connection.check()
@@ -130,7 +130,9 @@ def test_preflight_accepts_exact_name_and_latest_alias(catalog_name):
 
 def test_model_suffix_does_not_override_actual_downloaded_route():
     replies = [{"models": [{"name": "custom-cloud"}]}, {"capabilities": ["tools"]}]
-    with patch("emuru.ollama.urlopen", side_effect=[response(x) for x in replies]):
+    with patch(
+        "emuru.models.ollama.urlopen", side_effect=[response(x) for x in replies]
+    ):
         connection = OllamaConnection("custom-cloud")
         connection.check()
         assert not connection.cloud
@@ -140,7 +142,7 @@ def test_direct_cloud_authorization_and_no_local_key_leak():
     with (
         patch.dict(os.environ, {"OLLAMA_API_KEY": "SYNTHETIC_TEST_KEY"}),
         patch(
-            "emuru.ollama.urlopen",
+            "emuru.models.ollama.urlopen",
             side_effect=[response({"models": [{"name": "gpt-oss:20b"}]}), response({})],
         ) as http,
     ):
@@ -156,7 +158,7 @@ def test_direct_cloud_authorization_and_no_local_key_leak():
 def test_direct_cloud_missing_key_does_not_send_request():
     with (
         patch.dict(os.environ, {}, clear=True),
-        patch("emuru.ollama.urlopen") as http,
+        patch("emuru.models.ollama.urlopen") as http,
         pytest.raises(RuntimeError, match="OLLAMA_API_KEY"),
     ):
         OllamaConnection("gpt-oss:20b", "https://ollama.com/v1").check()
@@ -169,7 +171,7 @@ def test_direct_cloud_missing_key_does_not_send_request():
 def test_cloud_auth_and_quota_failures(status, message):
     with (
         patch(
-            "emuru.ollama.urlopen",
+            "emuru.models.ollama.urlopen",
             side_effect=HTTPError("url", status, "error", {}, None),
         ),
         pytest.raises(RuntimeError, match=message),
@@ -189,7 +191,9 @@ def test_cloud_auth_and_quota_failures(status, message):
 )
 def test_model_preflight_errors(replies, message):
     with (
-        patch("emuru.ollama.urlopen", side_effect=[response(x) for x in replies]),
+        patch(
+            "emuru.models.ollama.urlopen", side_effect=[response(x) for x in replies]
+        ),
         pytest.raises(RuntimeError, match=message),
     ):
         OllamaConnection("qwen3:4b").check()
@@ -201,7 +205,7 @@ def test_model_preflight_errors(replies, message):
 )
 def test_connection_errors_are_actionable(error):
     with (
-        patch("emuru.ollama.urlopen", side_effect=error),
+        patch("emuru.models.ollama.urlopen", side_effect=error),
         pytest.raises(RuntimeError, match="Ollama"),
     ):
         OllamaConnection("qwen3:4b").check()
@@ -209,9 +213,9 @@ def test_connection_errors_are_actionable(error):
 
 def test_plain_chat_instead_of_tool_call_fails_smoke():
     with (
-        patch("emuru.ollama.OllamaConnection.check"),
+        patch("emuru.models.ollama.OllamaConnection.check"),
         patch(
-            "emuru.ollama.urlopen",
+            "emuru.models.ollama.urlopen",
             return_value=response({"choices": [{"message": {"content": "hello"}}]}),
         ),
         pytest.raises(RuntimeError, match="round trip failed"),

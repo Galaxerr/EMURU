@@ -121,7 +121,7 @@ class NativeProfileTests(ProfileCase):
         with (
             patch.object(profile.shutil, "which", return_value="/mock/bin/uv"),
             patch.object(profile, "check_provider") as preflight,
-            patch("emuru.ollama.urlopen") as http,
+            patch("emuru.models.ollama.urlopen") as http,
             patch.object(profile.subprocess, "run") as transport,
         ):
             server = profile.audit_native_profile(self.root, actual)

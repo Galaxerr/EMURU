@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from emuru import hermes_profile as profile
+from emuru.hermes import profile
 
 
 @pytest.mark.skipif(
@@ -34,7 +34,7 @@ def test_live_hermes_ollama_vault_retrieval(tmp_path):
     env = {**os.environ, "HERMES_HOME": str(home)}
     result = subprocess.run(
         [
-            str(root / "scripts/hermes-emuru.sh"),
+            str(root / "scripts/hermes/emuru.sh"),
             "chat",
             "--oneshot",
             "-Q",

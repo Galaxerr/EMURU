@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pytest
 from provider_profile_case import ProfileCase
 
-from emuru.ollama import OllamaConnection
-from emuru.providers import provider_settings
+from emuru.models.ollama import OllamaConnection
+from emuru.models.providers import provider_settings
 
 
 @pytest.mark.parametrize("model", ["gemma4:e4b", "qwen3:4b"])
@@ -27,7 +27,7 @@ def test_custom_named_cloud_alias_is_detected_from_metadata():
         {"capabilities": ["tools"]},
     ]
     with patch(
-        "emuru.ollama.urlopen",
+        "emuru.models.ollama.urlopen",
         side_effect=[io.BytesIO(json.dumps(reply).encode()) for reply in replies],
     ):
         connection = OllamaConnection("gemma4:e4b")

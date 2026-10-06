@@ -14,10 +14,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 # Only stdlib EMURU modules enter Hermes's independently installed environment.
 sys.path.insert(0, str(ROOT / "src"))
-from emuru import hermes_profile as profile
-from emuru import telegram_native as native
-from emuru import telegram_queue as queue_module
-from emuru.hermes_profile import HealthError
+from emuru.hermes import profile
+from emuru.hermes.profile import HealthError
+from emuru.telegram import native
+from emuru.telegram import queue as queue_module
 
 
 def runtime_identity():
@@ -241,7 +241,7 @@ def main():
 
                 await case.check(run, adapter, worker, directory)
                 if len(sent) != 5 or sent[3].replace("\\.", ".") != (
-                    "New session started! Previous conversation preserved."
+                    "New session started. Previous conversation preserved."
                 ):
                     raise RuntimeError(
                         "Native session reset/onboarding contract changed"
@@ -293,7 +293,7 @@ def main():
 
     fd = int(os.environ.get("EMURU_TELEGRAM_LOCK_FD", "-1"))
     if fd < 0:
-        raise RuntimeError("Start Telegram through scripts/hermes-telegram.sh")
+        raise RuntimeError("Start Telegram through scripts/hermes/telegram.sh")
     expected_lock = (
         Path(os.environ["HERMES_HOME"]) / "emuru-telegram/instance.lock"
     ).stat()

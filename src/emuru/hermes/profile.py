@@ -11,8 +11,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from emuru.providers import check_provider, provider_settings
-from emuru.telegram_queue import load_telegram_settings
+from emuru.models.providers import check_provider, provider_settings
+from emuru.telegram.queue import load_telegram_settings
 
 
 class ProfileError(ValueError):
@@ -152,7 +152,7 @@ def expected_server(root: Path):
             "--frozen",
             "--no-sync",
             "python",
-            str(root / "scripts/hermes-vault.py"),
+            str(root / "scripts/hermes/vault.py"),
             "serve",
         ],
         "cwd": str(root),

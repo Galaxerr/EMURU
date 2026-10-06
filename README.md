@@ -22,9 +22,9 @@ remain outside this release. Package metadata still reports `0.1.0`.
 
 | Path | Purpose |
 | --- | --- |
-| `src/emuru/` | Indexer, MCP server, and separate provider modules |
+| `src/emuru/` | `vault/`, `telegram/`, `hermes/`, and `models/` modules |
 | `infra/hermes/` | Baseline/runtime policy, runtime identity, and model selection |
-| `scripts/` | Hermes launcher, configuration audits, synthetic vault adapter, and Ollama chooser/checker |
+| `scripts/` | `hermes/` launchers and audits; `service/` controls |
 | `agents/emuru/SOUL.md` | Conversational policy to install in the Hermes profile |
 | `tests/fixtures/hermes-vault/` | Synthetic project/resource notes and an untrusted reference |
 | `.runtime/vault/` | Ignored runtime copy of the synthetic vault |
@@ -48,8 +48,8 @@ not copy this policy automatically.
 
 ```bash
 uv sync --locked
-uv run python scripts/hermes-vault.py prepare
-uv run python scripts/hermes-vault-profile.py --offline
+uv run python scripts/hermes/vault.py prepare
+uv run python scripts/hermes/vault-profile.py --offline
 ```
 
 Preparation copies fixtures only when `.runtime/vault` is absent, then indexes
@@ -63,8 +63,8 @@ temporary synthetic vault. Dependencies must already be installed because
 backend execution is offline, frozen, and does not sync packages.
 
 The original tools-disabled Gemini contract remains available through
-`hermes-baseline.py`, `--apply`, and `--live`. Its `--apply` refuses a profile
-with an MCP server; use `hermes-vault-profile.py` for the integrated profile.
+`scripts/hermes/baseline.py`, `--apply`, and `--live`. Its `--apply` refuses a profile
+with an MCP server; use `scripts/hermes/vault-profile.py` for the integrated profile.
 
 ## Agent chat with Ollama cloud or downloaded models
 
@@ -77,12 +77,12 @@ Keep your Ollama service running, then use:
 
 ```bash
 uv sync --locked
-uv run python scripts/hermes-ollama.py --list
-uv run python scripts/hermes-ollama.py --select
-uv run python scripts/hermes-vault.py prepare
-uv run python scripts/hermes-ollama.py --smoke
-uv run python scripts/hermes-vault-profile.py --apply
-scripts/hermes-emuru.sh
+uv run python scripts/hermes/ollama.py --list
+uv run python scripts/hermes/ollama.py --select
+uv run python scripts/hermes/vault.py prepare
+uv run python scripts/hermes/ollama.py --smoke
+uv run python scripts/hermes/vault-profile.py --apply
+scripts/hermes/emuru.sh
 ```
 
 `--select` shows a numbered list; enter a number or an exact model name. To select
@@ -134,29 +134,34 @@ provider account. Omit `base_url` for both providers, configure credentials in
 the private Hermes profile environment, and run:
 
 ```bash
-uv run python scripts/hermes-vault-profile.py --offline
-uv run python scripts/hermes-vault-profile.py --apply
-scripts/hermes-emuru.sh
+uv run python scripts/hermes/vault-profile.py --offline
+uv run python scripts/hermes/vault-profile.py --apply
+scripts/hermes/emuru.sh
 ```
 
 The OpenAI route uses `codex_responses`; Gemini uses `chat_completions`.
 Switching restores the selected provider settings and clears the Ollama context
 override. No automatic fallback or retry is enabled.
 
-Provider settings live in separate `src/emuru/openai.py`,
+Provider settings live in separate `src/emuru/models/openai.py`,
 `gemini.py`, and `ollama.py` modules; `providers.py` dispatches selection and
 preflight checks. Provider tests are separated into `test_openai.py`,
 `test_gemini.py`, and the `test_ollama*.py` files. Shared vault policy and MCP
 checks stay in the vault test files.
 
+After updating from the flat layout, run `uv sync --locked`, reapply the vault
+profile with `uv run python scripts/hermes/vault-profile.py --apply`, and reinstall
+the user service using the commands below. Persisted MCP and service launch paths
+must point to `scripts/hermes/`.
+
 ## Validation
 
 ```bash
-uv run python scripts/hermes-baseline.py
-bash -n scripts/hermes-emuru.sh
-uv run python scripts/hermes-vault.py check
-uv run python scripts/hermes-vault-profile.py --offline
-uv run python scripts/hermes-vault-profile.py
+uv run python scripts/hermes/baseline.py
+bash -n scripts/hermes/emuru.sh
+uv run python scripts/hermes/vault.py check
+uv run python scripts/hermes/vault-profile.py --offline
+uv run python scripts/hermes/vault-profile.py
 uv run pytest -q
 EMURU_TEST_OLLAMA=1 uv run pytest -q tests/test_ollama.py -k live
 EMURU_TEST_HERMES_OLLAMA=1 uv run pytest -q tests/test_ollama_integration.py -k live
@@ -195,14 +200,14 @@ installed policy and model behavior; filesystem permissions are enforced by MCP.
 
 The launcher defaults to chat in a neutral state-directory workspace. Generic
 shell, filesystem, browser, execution, and delegation tools are disabled.
-`hermes-vault-profile.py` without flags preflights the selected provider and
+`scripts/hermes/vault-profile.py` without flags preflights the selected provider and
 audits live settings; `--apply` writes and audits them. Unexpected MCP servers
 and inline model credential overrides cause a refusal. Keep secrets in the
 private profile/environment rather than repository configuration.
 
 ## Telegram setup and operation
 
-Run `scripts/hermes-telegram.sh` to start the guarded native Hermes gateway.
+Run `scripts/hermes/telegram.sh` to start the guarded native Hermes gateway.
 The launcher uses a private umask, a neutral workspace, and a lifetime lock.
 It checks the installed commit against `infra/hermes/runtime-lock.json` and
 refuses modified tracked Hermes source. It never installs EMURU or its MCP v2
@@ -231,16 +236,16 @@ Native signal handling stays in the same process; the queue closes before exit.
 Checkpoint checks, from the EMURU repository:
 
 ```sh
-bash -n scripts/hermes-telegram.sh
-uv run --frozen python scripts/hermes-telegram.py --offline
-uv run --frozen python scripts/hermes-vault-profile.py
-uv run --frozen python scripts/hermes-telegram.py --check
-./scripts/hermes-telegram.sh
+bash -n scripts/hermes/telegram.sh
+uv run --frozen python scripts/hermes/telegram.py --offline
+uv run --frozen python scripts/hermes/vault-profile.py
+uv run --frozen python scripts/hermes/telegram.py --check
+./scripts/hermes/telegram.sh
 ```
 
 The public profile policy requires `gateway.standalone: true` for the native
 CLI's dedicated emuru gateway. If the profile audit reports drift, review and
-apply it with `uv run --frozen python scripts/hermes-vault-profile.py --apply`,
+apply it with `uv run --frozen python scripts/hermes/vault-profile.py --apply`,
 then repeat the checks. Keep the private owner ID and bot token configured.
 `--offline` reads public policy and checks a temporary pure queue without Hermes,
 private environment files, Ollama, network, or a real vault. `--check` installs
@@ -249,14 +254,14 @@ requests: no polling, acknowledgements, inference, MCP connection or note writes
 `--status` prints private queue counts and safe health codes:
 
 ```sh
-uv run --frozen python scripts/hermes-telegram.py --status
+uv run --frozen python scripts/hermes/telegram.py --status
 uv run --frozen pytest tests/telegram
 ```
 
 The test harness generates synthetic update identities itself, using a temporary
 vault and deterministic fake agent. There is no public replay command or endpoint.
 An installed-native seam check is available as
-`scripts/hermes-telegram.sh --runtime-check` without network or model calls.
+`scripts/hermes/telegram.sh --runtime-check` without network or model calls.
 
 Accept the live checkpoint only after startup prints
 `EMURU Telegram checkpoint: required guards and five MCP tools READY`.
@@ -295,11 +300,11 @@ The user service wraps the guarded launcher, preserving its process lock,
 neutral workspace, native checks and READY gate. Install and validate it:
 
 ```sh
-chmod +x scripts/hermes-telegram.sh scripts/hermes-emuru.sh
-chmod +x scripts/emuru-wake.sh scripts/emuru-sleep.sh scripts/emuru-status.sh
-bash -n scripts/emuru-wake.sh
-bash -n scripts/emuru-sleep.sh
-bash -n scripts/emuru-status.sh
+chmod +x scripts/hermes/telegram.sh scripts/hermes/emuru.sh
+chmod +x scripts/service/wake.sh scripts/service/sleep.sh scripts/service/status.sh
+bash -n scripts/service/wake.sh
+bash -n scripts/service/sleep.sh
+bash -n scripts/service/status.sh
 mkdir -p "$HOME/.config/systemd/user"
 install -m 600 infra/systemd/emuru-telegram.service "$HOME/.config/systemd/user/emuru-telegram.service"
 systemd-analyze --user verify "$HOME/.config/systemd/user/emuru-telegram.service"
@@ -321,7 +326,7 @@ daemon, if needed, must already be available; this unit does not install,
 authenticate or change Ollama.
 
 ```sh
-./scripts/emuru-wake.sh
+./scripts/service/wake.sh
 journalctl --user -u emuru-telegram.service -f
 ```
 
@@ -332,13 +337,13 @@ are ready. Confirm `/status` and a simple synthetic owner question receive
 replies. While the service is running, start a second guarded launcher:
 
 ```sh
-./scripts/hermes-telegram.sh
+./scripts/hermes/telegram.sh
 ```
 
 Expect a clean nonzero exit with `already running`; the original service must
 continue. Do not launch the CLI against the same writable vault during these
-single-writer acceptance tests. Use `./scripts/emuru-status.sh` for service and
-queue health, `./scripts/emuru-sleep.sh` to stop, and `./scripts/emuru-wake.sh`
+single-writer acceptance tests. Use `./scripts/service/status.sh` for service and
+queue health, `./scripts/service/sleep.sh` to stop, and `./scripts/service/wake.sh`
 to start. These scripts operate the user service on an already-awake PC; they
 do not change its power state.
 

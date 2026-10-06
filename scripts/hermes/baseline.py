@@ -13,7 +13,7 @@ def main() -> None:
     mode.add_argument("--live", action="store_true")
     args = parser.parse_args()
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     settings = json.loads(
         (root / "infra/hermes/settings.json").read_text(encoding="utf-8")
     )
@@ -69,7 +69,7 @@ def main() -> None:
     if set(settings) != allowed_keys:
         raise SystemExit("Unexpected setting; review changes to this contract")
 
-    launcher = str(root / "scripts/hermes-emuru.sh")
+    launcher = str(root / "scripts/hermes/emuru.sh")
     if args.apply:
         registered = subprocess.run(
             [launcher, "config", "get", "mcp_servers", "--json"],
@@ -81,7 +81,7 @@ def main() -> None:
         if json.loads(registered.stdout):
             raise SystemExit(
                 "Phase 1 reset refused: an MCP server is configured. "
-                "Use scripts/hermes-vault-profile.py for Phase 2."
+                "Use scripts/hermes/vault-profile.py for Phase 2."
             )
 
         for key, value in settings.items():

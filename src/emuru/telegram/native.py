@@ -14,9 +14,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from emuru import telegram_queue as queue_module
-from emuru.hermes_profile import HealthError
-from emuru.telegram_worker import TelegramWorker, TurnResult
+from emuru.hermes.profile import HealthError
+from emuru.telegram import queue as queue_module
+from emuru.telegram.worker import TelegramWorker, TurnResult
 
 logger = logging.getLogger(__name__)
 

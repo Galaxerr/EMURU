@@ -3,7 +3,7 @@
 import pytest
 from provider_profile_case import ProfileCase
 
-from emuru.providers import provider_settings
+from emuru.models.providers import provider_settings
 
 
 class OpenAIProfileTests(ProfileCase):

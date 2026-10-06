@@ -8,12 +8,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 # Import only stdlib EMURU modules; Hermes keeps its own interpreter and MCP SDK.
 sys.path.insert(0, str(ROOT / "src"))
-from emuru import hermes_profile as profile
-from emuru import telegram_queue as queue_module
-from emuru.hermes_profile import HealthError
+from emuru.hermes import profile
+from emuru.hermes.profile import HealthError
+from emuru.telegram import queue as queue_module
 
 
 def offline():

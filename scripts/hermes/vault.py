@@ -9,9 +9,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from emuru.vault_target import TargetError, load_target, profile_home
+from emuru.vault.target import TargetError, load_target, profile_home
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/fixtures/hermes-vault"
 RUNTIME = ROOT / ".runtime/vault"
 TOOLS = {"vault_map", "vault_search", "vault_open", "vault_neighbors", "vault_write"}

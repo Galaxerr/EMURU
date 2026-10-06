@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from emuru.vault_mcp import create_mcp
+from emuru.vault.mcp import create_mcp
 
 
 def _vault_path() -> Path:

@@ -13,8 +13,8 @@ from unittest.mock import patch
 import pytest
 from telegram_helpers import update
 
-from emuru import telegram_queue as queue_module
-from emuru.telegram_queue import (
+from emuru.telegram import queue as queue_module
+from emuru.telegram.queue import (
     QueueDiagnosticsError,
     QueueFull,
     TelegramQueue,
@@ -157,7 +157,7 @@ def test_completed_receipts_ttl_bound_and_per_bot_keys(tmp_path, policy):
 
 
 def test_queue_imports_in_an_isolated_interpreter_without_mcp():
-    path = Path(__file__).resolve().parents[2] / "src/emuru/telegram_queue.py"
+    path = Path(__file__).resolve().parents[2] / "src/emuru/telegram/queue.py"
     code = "import runpy,sys; runpy.run_path(sys.argv[1]); assert not any(n == 'mcp' or n.startswith('mcp.') for n in sys.modules)"
     subprocess.run(
         [sys.executable, "-I", "-S", "-c", code, str(path)], check=True, timeout=10
@@ -166,7 +166,7 @@ def test_queue_imports_in_an_isolated_interpreter_without_mcp():
 
 def test_real_process_crash_preserves_committed_input(tmp_path, policy):
     path = tmp_path / "queue.sqlite3"
-    source = Path(__file__).resolve().parents[2] / "src/emuru/telegram_queue.py"
+    source = Path(__file__).resolve().parents[2] / "src/emuru/telegram/queue.py"
     code = """import runpy,sys,json,os
 module=runpy.run_path(sys.argv[1])
 q=module['TelegramQueue'](sys.argv[2],json.loads(sys.argv[3]),42,clock=lambda:100000)

@@ -52,16 +52,16 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
       - name: Validate launch script
-        run: bash -n scripts/hermes-emuru.sh
+        run: bash -n scripts/hermes/emuru.sh
       - name: Validate Telegram launcher
-        run: bash -n scripts/hermes-telegram.sh
+        run: bash -n scripts/hermes/telegram.sh
       - name: Validate on-demand operation scripts
         run: |
-          bash -n scripts/emuru-wake.sh
-          bash -n scripts/emuru-sleep.sh
-          bash -n scripts/emuru-status.sh
+          bash -n scripts/service/wake.sh
+          bash -n scripts/service/sleep.sh
+          bash -n scripts/service/status.sh
       - name: Validate Telegram contract offline
-        run: uv run --frozen python scripts/hermes-telegram.py --offline
+        run: uv run --frozen python scripts/hermes/telegram.py --offline
       - name: Test Telegram admission and restart reliability
         run: >-
           uv run --frozen pytest -q
@@ -71,11 +71,11 @@ jobs:
           tests/telegram/test_telegram_vault_integration.py
           tests/telegram/test_telegram_launcher.py
       - name: Validate configuration contract
-        run: python3 scripts/hermes-baseline.py
+        run: python3 scripts/hermes/baseline.py
       - name: Test vault integration over stdio
         run: uv run --frozen pytest -q tests/test_hermes_vault_integration.py tests/test_hermes_vault_profile.py tests/test_openai.py tests/test_gemini.py tests/test_ollama.py tests/test_ollama_profile.py tests/test_ollama_local.py tests/test_ollama_selection.py tests/test_ollama_integration.py
       - name: Validate selected model route
-        run: uv run --frozen python scripts/hermes-vault-profile.py --offline
+        run: uv run --frozen python scripts/hermes/vault-profile.py --offline
       - name: Test private vault target and synthetic isolation
         run: uv run --frozen pytest -q tests/test_vault_target.py
       - name: Validate recorded runtime identity

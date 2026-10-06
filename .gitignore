@@ -26,6 +26,7 @@ Thumbs.db
 # Real vaults must never enter EMURU
 EMURU-vault/
 vault/
+!/src/emuru/vault/
 
 # Generated vault indexes
 _index/

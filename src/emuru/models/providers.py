@@ -1,6 +1,6 @@
 """Dispatch provider configuration while keeping vault policy provider-independent."""
 
-from emuru import gemini, ollama, openai
+from emuru.models import gemini, ollama, openai
 
 PROVIDERS = {"gemini": gemini, "openai-api": openai, "ollama": ollama}
 

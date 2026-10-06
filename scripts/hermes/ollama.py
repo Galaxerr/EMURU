@@ -4,9 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
-from emuru.ollama import DEFAULT_BASE_URL, OllamaClient, OllamaConnection
+from emuru.models.ollama import DEFAULT_BASE_URL, OllamaClient, OllamaConnection
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def choose_model(models: list[dict], requested: str | None = None) -> str:
@@ -94,7 +94,7 @@ def main():
             )
             print(f"Selected Ollama model: {model}")
             print(
-                "Apply it with: uv run python scripts/hermes-vault-profile.py --apply"
+                "Apply it with: uv run python scripts/hermes/vault-profile.py --apply"
             )
             return
         if selection.get("provider") != "ollama":

@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def diagnostic():
     spec = importlib.util.spec_from_file_location(
-        "telegram_diagnostic", ROOT / "scripts/hermes-telegram.py"
+        "telegram_diagnostic", ROOT / "scripts/hermes/telegram.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -136,13 +136,13 @@ def test_readiness_fails_closed_and_hard_exit_closes_queue(
 
 def test_shell_lock_survives_exec_and_neutral_directory_is_private(tmp_path):
     root = tmp_path / "project"
-    (root / "scripts").mkdir(parents=True)
+    (root / "scripts/hermes").mkdir(parents=True)
     (root / ".venv/bin").mkdir(parents=True)
     shutil.copyfile(
-        ROOT / "scripts/hermes-telegram.sh", root / "scripts/hermes-telegram.sh"
+        ROOT / "scripts/hermes/telegram.sh", root / "scripts/hermes/telegram.sh"
     )
     (root / ".venv/bin/python").symlink_to(sys.executable)
-    (root / "scripts/hermes-telegram.py").write_text("""import fcntl,json,os,sys
+    (root / "scripts/hermes/telegram.py").write_text("""import fcntl,json,os,sys
 if sys.argv[1:] == ["--preflight"]: sys.exit(0)
 fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
 print(json.dumps({"cwd":os.getcwd(), "mask":os.umask(0o077)}), flush=True)
@@ -153,7 +153,7 @@ sys.stdin.readline()
         "HOME": str(tmp_path / "home"),
         "XDG_STATE_HOME": str(tmp_path / "state"),
     }
-    launcher = ["bash", str(root / "scripts/hermes-telegram.sh")]
+    launcher = ["bash", str(root / "scripts/hermes/telegram.sh")]
     proc = subprocess.Popen(
         launcher,
         env=env,
@@ -186,7 +186,7 @@ sys.stdin.readline()
 def test_status_only_prints_counts_not_queued_identity_or_text(
     tmp_path, policy, diagnostic, capsys, monkeypatch
 ):
-    from emuru.telegram_queue import TelegramQueue
+    from emuru.telegram.queue import TelegramQueue
 
     q = TelegramQueue(
         tmp_path / "emuru-telegram/queue.sqlite3", policy, 424242, clock=lambda: 100000
