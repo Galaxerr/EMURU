@@ -5,7 +5,7 @@ from emuru import gemini, ollama, openai
 PROVIDERS = {"gemini": gemini, "openai-api": openai, "ollama": ollama}
 
 
-def provider_settings(selection: dict) -> dict:
+def provider_settings(selection: dict, *, cloud: bool | None = None) -> dict:
     if (
         not isinstance(selection, dict)
         or not {"provider", "model"}.issubset(selection)
@@ -25,6 +25,7 @@ def provider_settings(selection: dict) -> dict:
         return ollama.provider_settings(
             model,
             selection.get("base_url", ollama.DEFAULT_BASE_URL),
+            cloud=cloud,
         )
     if set(selection) != {"provider", "model"}:
         raise ValueError("base_url is only configurable for Ollama")
@@ -38,7 +39,12 @@ def check_provider(settings: dict) -> None:
         )
         connection.check()
         settings.update(
-            ollama.provider_settings(
-                connection.model, connection.base_url, cloud=connection.cloud
+            provider_settings(
+                {
+                    "provider": "ollama",
+                    "model": connection.model,
+                    "base_url": connection.base_url,
+                },
+                cloud=connection.cloud,
             )
         )

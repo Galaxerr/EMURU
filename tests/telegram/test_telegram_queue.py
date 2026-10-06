@@ -4,26 +4,23 @@ import copy
 import fcntl
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from telegram_helpers import update
 
-from emuru.telegram_queue import QueueFull, TelegramQueue, admit_update
-
-
-def update(uid=1, text="hello", date=100000):
-    return {
-        "update_id": uid,
-        "message": {
-            "message_id": uid,
-            "date": date,
-            "chat": {"id": 42, "type": "private"},
-            "from": {"id": 42, "is_bot": False},
-            "text": text,
-        },
-    }
+from emuru import telegram_queue as queue_module
+from emuru.telegram_queue import (
+    QueueDiagnosticsError,
+    QueueFull,
+    TelegramQueue,
+    admit_update,
+    diagnostics,
+)
 
 
 def test_admission_rejects_unauthorized_media_commands_and_stale_input(policy):
@@ -265,3 +262,198 @@ def test_fractional_age_and_ptb_service_defaults(policy):
     assert admit_update(raw, 42, policy, 100000)
     raw["message"]["group_chat_created"] = True
     assert admit_update(raw, 42, policy, 100000) is None
+
+
+@pytest.fixture
+def diagnostic_queue(tmp_path, policy):
+    q = TelegramQueue(
+        tmp_path / "queue/queue.sqlite3", policy, 424242, clock=lambda: 100000
+    )
+    # Deliberately stale active input and old terminal receipts must survive inspection.
+    q.db.executemany(
+        """INSERT INTO updates(bot_id,update_id,chat_id,user_id,message_id,
+        message_date,received_at,state,text,error_code,finished_at)
+        VALUES(7,?,424242,424242,?,0,0,?,?,?,-1000000)""",
+        [
+            (
+                number,
+                number,
+                state,
+                "SENSITIVE_NOTE" if state in {"queued", "started"} else None,
+                {
+                    "failed": "provider_failed:reported",
+                    "interrupted": "restart_interrupted:reported",
+                    "rejected": "SENSITIVE_ERROR",
+                }.get(state),
+            )
+            for number, state in enumerate(queue_module.QUEUE_STATES, 1)
+        ],
+    )
+    try:
+        yield q
+    finally:
+        q.close()
+
+
+def test_diagnostics_real_database_redacts_receipts_and_merges_separate_health(
+    diagnostic_queue,
+):
+    q = diagnostic_queue
+    health = q.path.parent / "health.json"
+    health.write_text(
+        json.dumps({"health": ["consumer_exited", "SENSITIVE_HEALTH", ["secret"]]})
+    )
+    health.chmod(0o600)
+    report = diagnostics(
+        q.path, process_health=["consumer_running"], health_file=health
+    )
+    assert report == {
+        "queue": {state: 1 for state in queue_module.QUEUE_STATES},
+        "health": [
+            "consumer_exited",
+            "consumer_failed",
+            "consumer_running",
+            "provider_failed",
+            "restart_interrupted",
+            "turn_failed",
+        ],
+    }
+    serialized = json.dumps(report)
+    assert "SENSITIVE" not in serialized and "424242" not in serialized
+    assert health.read_text() == json.dumps(
+        {"health": ["consumer_exited", "SENSITIVE_HEALTH", ["secret"]]}
+    )
+
+
+def test_diagnostics_never_constructs_recovers_prunes_or_rewrites_rows(
+    diagnostic_queue, monkeypatch
+):
+    q = diagnostic_queue
+    before = list(q.db.iterdump())
+    files = {path: path.read_bytes() for path in (q.path, Path(str(q.path) + "-wal"))}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Diagnostics invoked live queue mutation")
+
+    for name in ("__init__", "recover", "_prune"):
+        monkeypatch.setattr(TelegramQueue, name, forbidden)
+    with patch.object(
+        queue_module.sqlite3, "connect", wraps=sqlite3.connect
+    ) as connect:
+        assert diagnostics(q.path)["queue"] == {
+            state: 1 for state in queue_module.QUEUE_STATES
+        }
+    connect.assert_called_once_with(q.path.as_uri() + "?mode=ro", uri=True)
+    assert list(q.db.iterdump()) == before
+    assert {path: path.read_bytes() for path in files} == files
+    assert not (q.path.parent / "instance.lock").exists()
+
+
+@pytest.mark.parametrize("version", [0, 2, 999])
+def test_diagnostics_unsupported_schema_is_not_initialized_or_repaired(
+    diagnostic_queue, version
+):
+    q = diagnostic_queue
+    q.db.execute(f"PRAGMA user_version={version}")
+    before = list(q.db.iterdump())
+    with pytest.raises(QueueDiagnosticsError, match="^queue_schema_unsupported$"):
+        diagnostics(q.path)
+    assert list(q.db.iterdump()) == before
+
+
+def test_diagnostics_rejects_unknown_states_without_printing_them(diagnostic_queue):
+    q = diagnostic_queue
+    q.db.execute("PRAGMA ignore_check_constraints=ON")
+    q.db.execute("UPDATE updates SET state='SENSITIVE_STATE' WHERE update_id=1")
+    with pytest.raises(QueueDiagnosticsError, match="^queue_schema_unsupported$"):
+        diagnostics(q.path)
+
+
+@pytest.mark.parametrize("target", ["directory", "database", "wal", "shm", "health"])
+def test_diagnostics_rejects_permissions_without_repair(diagnostic_queue, target):
+    q = diagnostic_queue
+    health = q.path.parent / "health.json"
+    health.write_text('{"health":[]}')
+    health.chmod(0o600)
+    path = {
+        "directory": q.path.parent,
+        "database": q.path,
+        "wal": Path(str(q.path) + "-wal"),
+        "shm": Path(str(q.path) + "-shm"),
+        "health": health,
+    }[target]
+    mode = 0o755 if target == "directory" else 0o644
+    path.chmod(mode)
+    with pytest.raises(QueueDiagnosticsError, match="^queue_permissions_invalid$"):
+        diagnostics(q.path, health_file=health)
+    assert path.stat().st_mode & 0o777 == mode
+
+
+@pytest.mark.parametrize("target", ["directory", "database", "wal", "shm", "health"])
+@pytest.mark.parametrize("broken", [False, True])
+def test_diagnostics_rejects_symlinks(diagnostic_queue, tmp_path, target, broken):
+    q = diagnostic_queue
+    health = q.path.parent / "health.json"
+    outside = tmp_path / "outside"
+    if not broken:
+        if target == "directory":
+            outside.mkdir(mode=0o700)
+        else:
+            outside.write_text("SENSITIVE_DATA")
+            outside.chmod(0o600)
+    if target == "directory":
+        alias = tmp_path / "alias"
+        alias.symlink_to(outside, target_is_directory=True)
+        path = alias / "queue.sqlite3"
+    elif target == "database":
+        path = q.path.parent / "alias.sqlite3"
+        path.symlink_to(outside)
+    else:
+        path = q.path
+        candidate = health if target == "health" else Path(str(q.path) + "-" + target)
+        if candidate.exists():
+            candidate.unlink()
+        candidate.symlink_to(outside)
+    with pytest.raises(QueueDiagnosticsError, match="^queue_permissions_invalid$"):
+        diagnostics(path, health_file=health)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "SENSITIVE_INVALID_JSON",
+        "[]",
+        "{}",
+        '{"health":null}',
+        '{"health":"SENSITIVE_HEALTH"}',
+    ],
+)
+def test_diagnostics_malformed_health_has_content_free_error(diagnostic_queue, content):
+    q = diagnostic_queue
+    health = q.path.parent / "health.json"
+    health.write_text(content)
+    health.chmod(0o600)
+    with pytest.raises(QueueDiagnosticsError, match="^queue_unavailable$"):
+        diagnostics(q.path, health_file=health)
+
+
+def test_diagnostics_missing_database_does_not_create_storage(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        queue_module.sqlite3,
+        "connect",
+        lambda *args, **kwargs: pytest.fail("Missing database opened"),
+    )
+    path = tmp_path / "missing/queue.sqlite3"
+    assert diagnostics(path, health_file=path.parent / "health.json") == {
+        "queue": "not_started",
+        "health": ["not_started"],
+    }
+    assert not path.parent.exists()
+
+
+def test_diagnostics_corrupt_database_error_is_redacted(tmp_path):
+    path = tmp_path / "queue.sqlite3"
+    path.write_bytes(b"SENSITIVE_DATABASE_CONTENT")
+    path.chmod(0o600)
+    with pytest.raises(QueueDiagnosticsError, match="^queue_unavailable$"):
+        diagnostics(path)

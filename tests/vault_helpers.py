@@ -22,30 +22,17 @@ def create_vault(tmp_path: Path) -> Path:
         "99_System",
         "_index",
     ):
-        (vault / directory).mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        (vault / directory).mkdir(parents=True, exist_ok=True)
 
     return vault
 
 
-def write_note(
-    vault: Path,
-    relative_path: str,
-    content: str,
-) -> Path:
+def write_note(vault: Path, relative_path: str, content: str) -> Path:
     """Write a Markdown note into the fake vault."""
     path = vault / relative_path
 
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    path.write_text(
-        content.strip() + "\n",
-        encoding="utf-8",
-    )
+    path.write_text(content.strip() + "\n", encoding="utf-8")
 
     return path

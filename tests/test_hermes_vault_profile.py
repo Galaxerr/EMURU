@@ -1,45 +1,24 @@
 """Shared vault policy regressions with synthetic Hermes configuration."""
 
-import contextlib
-import io
 import json
-import subprocess
-import sys
+from copy import deepcopy
 from unittest.mock import patch
 
 from provider_profile_case import REPO, ProfileCase, profile
 
 
 class VaultProfileTests(ProfileCase):
-    def test_missing_live_setting_reports_key_without_private_stderr(self):
-        with (
-            patch.object(sys, "argv", ["hermes-vault-profile.py"]),
-            patch.object(
-                profile.subprocess,
-                "run",
-                side_effect=subprocess.CalledProcessError(
-                    1, "native config", stderr="SYNTHETIC_SECRET"
-                ),
-            ),
-            self.assertRaisesRegex(SystemExit, "unavailable: mcp_servers") as error,
-        ):
-            profile.main()
-        self.assertNotIn("SYNTHETIC_SECRET", str(error.exception))
-
     def test_live_audit_does_not_mutate(self):
         self.run_profile("--apply")
         before = list(self.writes)
-        self.assertIn("PASS", self.run_profile())
+        self.assertEqual(self.run_profile(), self.state["mcp_servers"]["vault"])
         self.assertEqual(self.writes, before)
 
-    def test_offline_check_does_not_launch_hermes(self):
-        with (
-            patch.object(sys, "argv", ["hermes-vault-profile.py", "--offline"]),
-            patch.object(profile.subprocess, "run") as launch,
-            contextlib.redirect_stdout(io.StringIO()),
-        ):
-            profile.main()
-        launch.assert_not_called()
+    def test_offline_check_does_not_preflight(self):
+        with patch.object(profile, "check_provider") as preflight:
+            profile.expected_settings(self.root)
+        preflight.assert_not_called()
+        self.assertEqual(self.writes, [])
 
     def test_wrong_provider_unknown_fields_and_quoted_model_are_rejected(self):
         for selection in (
@@ -49,19 +28,19 @@ class VaultProfileTests(ProfileCase):
         ):
             with self.subTest(selection=selection):
                 self.write_json("model-selection.json", selection)
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(profile.ProfileError):
                     self.run_profile("--apply")
                 self.assertEqual(self.writes, [])
 
     def test_extra_server_is_rejected_before_any_changes(self):
         self.state["mcp_servers"]["unexpected"] = {}
-        with self.assertRaisesRegex(SystemExit, "Unexpected MCP server"):
+        with self.assertRaisesRegex(profile.ProfileError, "Unexpected MCP server"):
             self.run_profile("--apply")
         self.assertEqual(self.writes, [])
 
     def test_inline_key_is_rejected_without_printing_it(self):
         self.state["model.api_key"] = "SYNTHETIC_SECRET"
-        with self.assertRaisesRegex(SystemExit, "Clear inline") as error:
+        with self.assertRaisesRegex(profile.ProfileError, "Clear inline") as error:
             self.run_profile("--apply")
         self.assertNotIn("SYNTHETIC_SECRET", str(error.exception))
         self.assertEqual(self.writes, [])
@@ -78,7 +57,7 @@ class VaultProfileTests(ProfileCase):
         ):
             with self.subTest(key=key):
                 self.write_json("runtime-settings.json", {**original, key: value})
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(profile.ProfileError):
                     self.run_profile("--apply")
                 self.assertEqual(self.writes, [])
 
@@ -95,7 +74,7 @@ class VaultProfileTests(ProfileCase):
                     ],
                 }
                 self.write_json("runtime-settings.json", settings)
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(profile.ProfileError):
                     self.run_profile("--apply")
                 self.assertEqual(self.writes, [])
 
@@ -119,5 +98,103 @@ class VaultProfileTests(ProfileCase):
         ):
             with self.subTest(key=key):
                 self.state["mcp_servers"]["vault"] = {**original, key: value}
-                with self.assertRaisesRegex(SystemExit, "MCP registration mismatch"):
+                with self.assertRaisesRegex(
+                    profile.ProfileError, "MCP registration mismatch"
+                ):
                     self.run_profile()
+
+
+class NativeProfileTests(ProfileCase):
+    def nested_config(self):
+        # Native Hermes reads a nested mapping; CLI transport reads dotted keys.
+        actual = {}
+        for key, value in self.state.items():
+            cursor = actual
+            parts = key.split(".")
+            for part in parts[:-1]:
+                cursor = cursor.setdefault(part, {})
+            cursor[parts[-1]] = value
+        return json.loads(json.dumps(actual))
+
+    def audit_native(self, actual):
+        before = deepcopy(actual)
+        with (
+            patch.object(profile.shutil, "which", return_value="/mock/bin/uv"),
+            patch.object(profile, "check_provider") as preflight,
+            patch("emuru.ollama.urlopen") as http,
+            patch.object(profile.subprocess, "run") as transport,
+        ):
+            server = profile.audit_native_profile(self.root, actual)
+        preflight.assert_not_called()
+        http.assert_not_called()
+        transport.assert_not_called()
+        self.assertEqual(actual, before)
+        return server
+
+    def test_native_audit_all_provider_routes_without_mutation_or_network(self):
+        for provider, model in (
+            ("gemini", "gemini-3.8-flash"),
+            ("openai-api", "gpt-6-astra"),
+            ("ollama", "qwen3:4b"),
+            ("ollama", "gpt-oss:20b-cloud"),
+        ):
+            with self.subTest(provider=provider, model=model):
+                self.select(provider, model)
+                self.run_profile("--apply")
+                actual = self.nested_config()
+                before = list(self.writes)
+                self.assertEqual(
+                    self.audit_native(actual), actual["mcp_servers"]["vault"]
+                )
+                self.assertEqual(self.writes, before)
+
+    def test_native_custom_cloud_alias_uses_persisted_route(self):
+        self.select("ollama", "custom-cloud-alias")
+        self.run_profile("--apply")
+        actual = self.nested_config()
+        actual["model"]["ollama_num_ctx"] = 0
+        actual["providers"]["ollama"].update(
+            request_timeout_seconds=60, stale_timeout_seconds=60
+        )
+        self.audit_native(actual)
+        actual["providers"]["ollama"]["request_timeout_seconds"] = 180
+        with self.assertRaisesRegex(profile.ProfileError, "request_timeout_seconds"):
+            self.audit_native(actual)
+
+    def test_native_context_requires_reviewed_integer(self):
+        self.select("ollama", "qwen3:4b")
+        self.run_profile("--apply")
+        for context in (None, False, True, "65536", 42):
+            with self.subTest(context=context):
+                actual = self.nested_config()
+                actual["model"]["ollama_num_ctx"] = context
+                with self.assertRaises(profile.ProfileError) as error:
+                    self.audit_native(actual)
+                self.assertEqual(error.exception.code, "profile_model_route_mismatch")
+
+    def test_native_secrets_types_and_registration_fail_closed(self):
+        self.run_profile("--apply")
+        for model in (
+            {"api_key": "SYNTHETIC_SECRET"},
+            {"key_env": "SYNTHETIC_SECRET"},
+            None,
+            "SYNTHETIC_SECRET",
+            [],
+        ):
+            with self.subTest(model=model):
+                actual = self.nested_config()
+                actual["model"] = model
+                with self.assertRaises(profile.ProfileError) as error:
+                    self.audit_native(actual)
+                self.assertEqual(error.exception.code, "inline_model_credentials")
+                self.assertNotIn("SYNTHETIC_SECRET", str(error.exception))
+        actual = self.nested_config()
+        actual["agent"]["api_max_retries"] = False
+        with self.assertRaisesRegex(profile.ProfileError, "api_max_retries"):
+            self.audit_native(actual)
+        actual = self.nested_config()
+        actual["mcp_servers"]["unexpected"] = {"token": "SYNTHETIC_SECRET"}
+        with self.assertRaises(profile.ProfileError) as error:
+            self.audit_native(actual)
+        self.assertEqual(error.exception.code, "profile_mcp_registration_mismatch")
+        self.assertNotIn("SYNTHETIC_SECRET", str(error.exception))

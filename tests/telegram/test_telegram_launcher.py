@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
+from telegram_helpers import update
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -34,8 +35,8 @@ def test_native_bootstrap_keeps_its_interpreter_and_external_bridge(
     executable = native / ".hermes/bin/hermes"
     executable.write_text("synthetic")
     executable.chmod(0o700)
-    monkeypatch.setattr(diagnostic, "public_contract", lambda: None)
-    monkeypatch.setattr(diagnostic, "installed_runtime", lambda: native)
+    monkeypatch.setattr(diagnostic.profile, "public_contract", lambda root: None)
+    monkeypatch.setattr(diagnostic.profile, "installed_runtime", lambda root: native)
     monkeypatch.setenv("EMURU_HERMES_PROFILE_HOME", str(tmp_path / "profiles/emuru"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.chdir(tmp_path)
@@ -78,8 +79,8 @@ def test_offline_never_resolves_hermes_or_private_home(diagnostic, monkeypatch, 
     def forbidden(*args, **kwargs):
         raise AssertionError("Offline check crossed its boundary")
 
-    monkeypatch.setattr(diagnostic, "installed_runtime", forbidden)
-    monkeypatch.setattr(diagnostic, "profile_home", forbidden)
+    monkeypatch.setattr(diagnostic.profile, "installed_runtime", forbidden)
+    monkeypatch.setattr(diagnostic.profile, "profile_home", forbidden)
     monkeypatch.setattr(diagnostic.subprocess, "run", forbidden)
     monkeypatch.setattr(diagnostic.subprocess, "check_output", forbidden)
     diagnostic.offline()
@@ -185,32 +186,34 @@ sys.stdin.readline()
 
 
 def test_status_only_prints_counts_not_queued_identity_or_text(
-    tmp_path, policy, diagnostic, capsys
+    tmp_path, policy, diagnostic, capsys, monkeypatch
 ):
     from emuru.telegram_queue import TelegramQueue
 
     q = TelegramQueue(
         tmp_path / "emuru-telegram/queue.sqlite3", policy, 424242, clock=lambda: 100000
     )
-    q.stage(
-        7,
-        [
-            {
-                "update_id": 1,
-                "message": {
-                    "message_id": 1,
-                    "date": 100000,
-                    "chat": {"id": 424242, "type": "private"},
-                    "from": {"id": 424242, "is_bot": False},
-                    "text": "SENSITIVE_NOTE",
-                },
-            }
-        ],
-    )
+    q.stage(7, [update(uid, "SENSITIVE_NOTE", owner_id=424242) for uid in (1, 2, 3)])
+    # Include a started claim and a receipt old enough for pruning.
+    first = q.claim(7)
+    q.finish(first["sequence"], True)
+    q.db.execute("UPDATE updates SET finished_at=-1000000 WHERE state='completed'")
+    q.claim(7)
     q.close()
-    diagnostic.status(tmp_path)
+    before = q.path.read_bytes()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Status invoked live queue mutation")
+
+    for name in ("__init__", "recover", "_prune"):
+        monkeypatch.setattr(TelegramQueue, name, forbidden)
+    assert diagnostic.status(tmp_path) == 0
+    assert q.path.read_bytes() == before
     output = capsys.readouterr().out
-    assert json.loads(output) == {"queue": {"queued": 1}, "health": []}
+    assert json.loads(output) == {
+        "queue": {"completed": 1, "started": 1, "queued": 1},
+        "health": [],
+    }
     assert "SENSITIVE_NOTE" not in output and "424242" not in output
     health = tmp_path / "emuru-telegram/health.json"
     health.write_text(json.dumps({"health": ["consumer_exited", "SENSITIVE_NOTE"]}))
@@ -219,30 +222,31 @@ def test_status_only_prints_counts_not_queued_identity_or_text(
     output = capsys.readouterr().out
     assert json.loads(output)["health"] == ["consumer_exited", "consumer_failed"]
     assert "SENSITIVE_NOTE" not in output
+    assert q.path.read_bytes() == before
 
 
 def test_wrong_or_modified_hermes_source_is_rejected(runtime, monkeypatch, tmp_path):
     native = tmp_path / "native"
     native.mkdir()
     monkeypatch.setenv("EMURU_HERMES_ROOT", str(native))
-    diagnostic = runtime.load_diagnostics()
+    profile = runtime.profile
     monkeypatch.setitem(
         sys.modules, "gateway", NS(__file__="/native/gateway/__init__.py")
     )
     monkeypatch.setattr(
-        diagnostic.subprocess, "check_output", lambda *args, **kwargs: "0" * 40
+        profile.subprocess, "check_output", lambda *args, **kwargs: "0" * 40
     )
     with pytest.raises(RuntimeError, match="commit_mismatch"):
         runtime.runtime_identity()
     lock = json.loads((ROOT / "infra/hermes/runtime-lock.json").read_text())
     monkeypatch.setattr(
-        diagnostic.subprocess, "check_output", lambda *args, **kwargs: lock["commit"]
+        profile.subprocess, "check_output", lambda *args, **kwargs: lock["commit"]
     )
 
     def dirty(*args, **kwargs):
         raise subprocess.CalledProcessError(1, args[0])
 
-    monkeypatch.setattr(diagnostic.subprocess, "run", dirty)
+    monkeypatch.setattr(profile.subprocess, "run", dirty)
     with pytest.raises(RuntimeError, match="source_unverified"):
         runtime.runtime_identity()
 
@@ -312,3 +316,27 @@ def test_native_main_keeps_its_lifecycle_with_guards_and_private_config(
         os.umask(old_mask)
         os.close(fd)
     assert calls == ["guards", {"config": config}]
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["queue_schema_unsupported", "queue_permissions_invalid", "queue_unavailable"],
+)
+def test_status_adapter_formats_diagnostic_failure(
+    diagnostic, tmp_path, monkeypatch, capsys, code
+):
+    calls = []
+
+    def fail(path, *, health_file):
+        calls.append((path, health_file))
+        raise diagnostic.queue_module.QueueDiagnosticsError(code)
+
+    monkeypatch.setattr(diagnostic.queue_module, "diagnostics", fail)
+    assert diagnostic.status(tmp_path) == 1
+    assert calls == [
+        (
+            tmp_path / "emuru-telegram/queue.sqlite3",
+            tmp_path / "emuru-telegram/health.json",
+        )
+    ]
+    assert json.loads(capsys.readouterr().out) == {"queue": {}, "health": [code]}

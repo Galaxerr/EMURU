@@ -1,6 +1,5 @@
 """Provider-specific regressions with synthetic Hermes configuration."""
 
-import sys
 from unittest.mock import patch
 
 from provider_profile_case import ProfileCase, profile
@@ -73,20 +72,18 @@ class OllamaProfileTests(ProfileCase):
             },
         ):
             self.write_json("model-selection.json", selection)
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(profile.ProfileError):
                 self.run_profile("--apply")
             self.assertEqual(self.writes, [])
 
     def test_unavailable_ollama_does_not_change_live_profile(self):
         self.select("ollama", "qwen3:4b")
         with (
-            patch.object(sys, "argv", ["profile", "--apply"]),
-            patch.object(profile.subprocess, "run", side_effect=self.cli),
             patch.object(profile.shutil, "which", return_value="/mock/bin/uv"),
             patch.object(
                 profile, "check_provider", side_effect=RuntimeError("offline")
             ),
-            self.assertRaisesRegex(SystemExit, "offline"),
+            self.assertRaisesRegex(profile.ProfileError, "offline"),
         ):
-            profile.main()
+            profile.configure_profile(self.root, self.get, self.set_value)
         self.assertEqual(self.writes, [])

@@ -7,21 +7,9 @@ from enum import Enum
 from types import SimpleNamespace as NS
 
 import pytest
+from telegram_helpers import update as raw
 
 from emuru.telegram_queue import TelegramQueue
-
-
-def raw(uid, text="hello"):
-    return {
-        "update_id": uid,
-        "message": {
-            "message_id": uid,
-            "date": 100000,
-            "chat": {"id": 42, "type": "private"},
-            "from": {"id": 42, "is_bot": False},
-            "text": text,
-        },
-    }
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@ import sys
 from types import SimpleNamespace as NS
 
 import pytest
-from provider_profile_case import REPO, ProfileCase
+from provider_profile_case import REPO, ProfileCase, profile
 
 
 class TelegramProfileTests(ProfileCase):
@@ -21,7 +21,7 @@ class TelegramProfileTests(ProfileCase):
         ):
             with self.subTest(key=key, value=value):
                 self.write_json("runtime-settings.json", {**original, key: value})
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(profile.ProfileError):
                     self.run_profile("--apply")
                 self.assertEqual(self.writes, [])
 
@@ -54,7 +54,7 @@ class TelegramProfileTests(ProfileCase):
         for key, value in changes:
             with self.subTest(key=key, value=value):
                 self.write_json("telegram-settings.json", {**original, key: value})
-                with self.assertRaises(SystemExit):
+                with self.assertRaises(profile.ProfileError):
                     self.run_profile("--apply")
                 self.assertEqual(self.writes, [])
 

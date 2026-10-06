@@ -17,11 +17,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
-spec = importlib.util.spec_from_file_location(
-    "emuru_telegram_queue", ROOT / "src/emuru/telegram_queue.py"
-)
-queue_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(queue_module)
+# Only stdlib EMURU modules enter Hermes's independently installed environment.
+sys.path.insert(0, str(ROOT / "src"))
+from emuru import hermes_profile as profile
+from emuru import telegram_queue as queue_module
+from emuru.hermes_profile import HealthError
 
 
 def contract_signature(function):
@@ -110,10 +110,10 @@ class Bridge:
             raise RuntimeError("An interrupted native turn requires a gateway restart")
         self.app = app
         if self.bot_id is not None and self.bot_id != app.bot.id:
-            raise load_diagnostics().HealthError("consumer_bot_scope_changed")
+            raise HealthError("consumer_bot_scope_changed")
         self.bot_id = app.bot.id
         if self.worker is not None and self.worker.done():
-            raise load_diagnostics().HealthError(self.health_error or "consumer_exited")
+            raise HealthError(self.health_error or "consumer_exited")
         if self.worker is None:
             self.stopping = False
             self.running.clear()
@@ -132,7 +132,7 @@ class Bridge:
                 path = self.queue.path.parent / "health.json"
                 temporary = path.with_suffix(".tmp")
                 temporary.write_text(json.dumps({"health": [self.health_error]}))
-                temporary.chmod(0o600)
+                temporary.chmod(queue_module.PRIVATE_FILE_MODE)
                 temporary.replace(path)
             except OSError:
                 logger.error("EMURU Telegram health: consumer_health_unavailable")
@@ -149,9 +149,7 @@ class Bridge:
             or self.bot_id != self.app.bot.id
             or self.intake_failed
         ):
-            raise load_diagnostics().HealthError(
-                self.health_error or "consumer_not_running"
-            )
+            raise HealthError(self.health_error or "consumer_not_running")
         (self.queue.path.parent / "health.json").unlink(missing_ok=True)
 
     async def local_status(self, app):
@@ -171,7 +169,9 @@ class Bridge:
                     chat_id=self.queue.owner_id,
                     text="EMURU Telegram: "
                     + json.dumps(
-                        {"queue": self.queue.status(), "health": [health]},
+                        queue_module.diagnostics(
+                            self.queue.path, process_health=[health]
+                        ),
                         sort_keys=True,
                     ),
                 )
@@ -339,7 +339,7 @@ def install_guards(
             raise
         try:
             if bridge.bot_id is not None and bridge.bot_id != bot.id:
-                raise load_diagnostics().HealthError("consumer_bot_scope_changed")
+                raise HealthError("consumer_bot_scope_changed")
             bridge.queue.stage(
                 bot.id, [json.loads(u.to_json()) for u in updates], bot.username or ""
             )
@@ -480,7 +480,7 @@ def install_guards(
         await native_reset(runner, event)
         new = runner.session_store._entries.get(key)
         if new is None or new.session_id == old_id:
-            raise load_diagnostics().HealthError("session_transition_failed")
+            raise HealthError("session_transition_failed")
         return True, "New session started. Previous conversation preserved."
 
     async def no_onboarding(runner, source, history, turn_sidecar_notes):
@@ -617,9 +617,7 @@ def install_guards(
                 if Path(inspect.getfile(cls)).resolve() != (
                     Path(inspect.getfile(Adapter)).resolve()
                 ):
-                    raise load_diagnostics().HealthError(
-                        "telegram_adapter_contract_changed"
-                    )
+                    raise HealthError("telegram_adapter_contract_changed")
                 verify_native_contract(
                     Bot, Application, Updater, cls, None, adapter_only=True
                 )
@@ -648,24 +646,11 @@ def install_guards(
 def runtime_identity():
     import gateway
 
-    diagnostic = load_diagnostics()
-    expected = diagnostic.installed_runtime()
+    expected = profile.installed_runtime(ROOT)
     native = Path(gateway.__file__).resolve().parents[1]
     if native != expected:
-        raise diagnostic.HealthError("runtime_import_location_mismatch")
+        raise HealthError("runtime_import_location_mismatch")
     return native
-
-
-def load_diagnostics():
-    if "emuru_telegram_diagnostics" in sys.modules:
-        return sys.modules["emuru_telegram_diagnostics"]
-    spec = importlib.util.spec_from_file_location(
-        "emuru_telegram_diagnostics", ROOT / "scripts/hermes-telegram.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def verify_functions(run, gateway_cli):
@@ -692,38 +677,13 @@ def restrict_prompt(system_prompt):
 
 
 def audit_live_profile():
-    """Read the native profile without model requests, MCP calls or config writes."""
+    """Native config access only; the shared module owns profile verification."""
     from hermes_cli.config import read_user_config_raw
 
-    diagnostic = load_diagnostics()
-    expected, server = diagnostic.public_contract()
-    actual = read_user_config_raw()
-    model = actual.get("model", {})
-    if not isinstance(model, dict) or model.get("api_key") or model.get("key_env"):
-        raise diagnostic.HealthError("inline_model_credentials")
-    # Metadata-based cloud aliases have the same reviewed route with cloud bounds.
-    if expected["model.provider"] == "ollama":
-        from emuru.ollama import provider_settings
-
-        context = model.get("ollama_num_ctx")
-        if type(context) is not int or context not in (0, 65536):
-            raise diagnostic.HealthError("profile_model_route_mismatch")
-        expected.update(
-            provider_settings(
-                expected["model.default"],
-                expected["model.base_url"],
-                cloud=context == 0,
-            )
-        )
-    for key, value in expected.items():
-        cursor = actual
-        for part in key.split("."):
-            cursor = cursor.get(part) if isinstance(cursor, dict) else None
-        if type(cursor) is not type(value) or cursor != value:
-            raise diagnostic.HealthError("profile_settings_mismatch")
-    if actual.get("mcp_servers") != {"vault": server}:
-        raise diagnostic.HealthError("profile_mcp_registration_mismatch")
-    return server
+    try:
+        return profile.audit_native_profile(ROOT, read_user_config_raw())
+    except profile.ProfileError as error:
+        raise HealthError(error.code) from None
 
 
 def vault_tools_ready():
@@ -761,7 +721,7 @@ def install_launch_guards(run, gateway_cli, queue, config, bridge):
         from gateway.host_attach import host_gateway
 
         if host_gateway() is not None:
-            raise load_diagnostics().HealthError("unguarded_host_gateway_running")
+            raise HealthError("unguarded_host_gateway_running")
 
     async def guarded_host(replace, force=False):
         refuse_host()
@@ -779,10 +739,10 @@ def install_launch_guards(run, gateway_cli, queue, config, bridge):
 
     async def ready_start(runner):
         if not vault_tools_ready():
-            raise load_diagnostics().HealthError("vault_mcp_not_ready")
+            raise HealthError("vault_mcp_not_ready")
         result = await runner_start(runner)
         if not result:
-            raise load_diagnostics().HealthError("native_start_failed")
+            raise HealthError("native_start_failed")
         await bridge.require_consumer()
         print(
             "EMURU Telegram checkpoint: required guards and five MCP tools READY",
@@ -806,7 +766,7 @@ def install_launch_guards(run, gateway_cli, queue, config, bridge):
 def private_config():
     from gateway.config import Platform, load_gateway_config
 
-    health_error = load_diagnostics().HealthError
+    health_error = HealthError
     config = load_gateway_config()
     telegram = config.platforms.get(Platform.TELEGRAM)
     owner = os.environ.get("EMURU_TELEGRAM_OWNER_ID", "")
@@ -847,7 +807,7 @@ def main():
     parser.add_argument("--runtime-check", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
-    load_diagnostics().public_contract()
+    profile.public_contract(ROOT)
     runtime_identity()
 
     settings = queue_module.load_telegram_settings(
@@ -999,10 +959,9 @@ def main():
                     raise RuntimeError(
                         "Native background turn/delivery contract changed"
                     )
-                case = load_diagnostics().load_module(
-                    "emuru_native_session_case",
-                    ROOT / "tests/telegram/native_session_case.py",
-                )
+                sys.path.insert(0, str(ROOT / "tests/telegram"))
+                import native_session_case as case
+
                 await case.check(run, adapter, bridge, directory)
                 if len(sent) != 5 or sent[3].replace("\\.", ".") != (
                     "New session started. Previous conversation preserved."
@@ -1091,11 +1050,11 @@ def main():
         sys.argv = ["hermes", "-p", "emuru", "gateway", "run"]
         # Keep the CLI in this process: a supervisor exec would discard the guards.
         os.environ["HERMES_GATEWAY_NO_SUPERVISE"] = "1"
-        profile = Path(os.environ["HERMES_HOME"]).resolve()
+        profile_path = Path(os.environ["HERMES_HOME"]).resolve()
         from hermes_cli import main as native_cli
 
-        if Path(os.environ["HERMES_HOME"]).resolve() != profile:
-            raise load_diagnostics().HealthError("native_profile_changed")
+        if Path(os.environ["HERMES_HOME"]).resolve() != profile_path:
+            raise HealthError("native_profile_changed")
         install_launch_guards(run, gateway_cli, queue, config, bridge)
         native_cli.main()
 
@@ -1114,10 +1073,13 @@ if __name__ == "__main__":
                 f"Native seam check failed: {type(error).__name__} at {Path(frame.filename).name}:{frame.lineno}",
                 file=sys.stderr,
             )
-        diagnostic = load_diagnostics()
         code = (
-            str(error)
-            if isinstance(error, diagnostic.HealthError)
-            else "guarded_runtime_failed"
+            error.code
+            if isinstance(error, profile.ProfileError)
+            else (
+                str(error)
+                if isinstance(error, HealthError)
+                else "guarded_runtime_failed"
+            )
         )
         raise SystemExit("EMURU Telegram: " + code) from None

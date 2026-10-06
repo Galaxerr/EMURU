@@ -5,38 +5,15 @@ import os
 import stat
 from pathlib import Path
 
-
-class TargetError(ValueError):
-    """Content-free target diagnostic safe to display."""
-
-
-def profile_home() -> Path:
-    raw = os.environ.get(
-        "EMURU_HERMES_PROFILE_HOME",
-        os.environ.get("HERMES_HOME", str(Path.home() / ".hermes/profiles/emuru")),
-    )
-    path = Path(raw)
-    if (
-        not path.is_absolute()
-        or ".." in path.parts
-        or path.name != "emuru"
-        or path.parent.name != "profiles"
-    ):
-        raise TargetError("profile_location_invalid")
-    _no_symlinks(path)
-    return path
-
-
-def _no_symlinks(path: Path) -> None:
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        if current.is_symlink():
-            raise TargetError("target_symlink_refused")
+from emuru.hermes_profile import ProfileError as TargetError
+from emuru.hermes_profile import (
+    no_symlinks,
+    profile_home,  # noqa: F401 -- shared public import
+)
 
 
 def _read_record(path: Path):
-    _no_symlinks(path)
+    no_symlinks(path)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
@@ -78,7 +55,7 @@ def load_target(repo: Path, home: Path) -> tuple[str, Path]:
         root = Path(data["vault_path"])
         if not root.is_absolute() or ".." in root.parts:
             raise TargetError("target_root_invalid")
-        _no_symlinks(root)
+        no_symlinks(root)
         if not root.is_dir():
             raise TargetError("target_root_unavailable")
         root = root.resolve()

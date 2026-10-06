@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace as NS
 
+from telegram_helpers import update as raw
+
 from emuru.telegram_queue import TelegramQueue
 
 
@@ -30,18 +32,6 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
     )
     queue_path = tmp_path / "queue/queue.sqlite3"
     protected = {p: p.read_bytes() for p in vault.rglob("*.md")}
-
-    def raw(uid, text):
-        return {
-            "update_id": uid,
-            "message": {
-                "message_id": uid,
-                "date": 100000,
-                "chat": {"id": 42, "type": "private"},
-                "from": {"id": 42, "is_bot": False},
-                "text": text,
-            },
-        }
 
     async def check():
         async with (

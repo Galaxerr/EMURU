@@ -10,7 +10,7 @@ class OpenAIProfileTests(ProfileCase):
     def test_openai_switch_uses_raw_strings_and_restores_route_after_provider_change(
         self,
     ):
-        self.assertIn("PASS", self.run_profile("--apply"))
+        self.run_profile("--apply")
         self.assertEqual(self.state["model.provider"], "openai-api")
         self.assertEqual(self.state["model.default"], "gpt-6-astra")
         self.assertEqual(self.state["model.base_url"], "https://api.openai.com/v1")

@@ -1,22 +1,14 @@
 """Provider-switch regressions without Hermes, credentials or network requests."""
 
-import contextlib
-import importlib.util
-import io
 import json
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from emuru import hermes_profile as profile
+
 REPO = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location(
-    "emuru_vault_profile", REPO / "scripts/hermes-vault-profile.py"
-)
-profile = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(profile)
 
 
 class ProfileCase(unittest.TestCase):
@@ -43,9 +35,6 @@ class ProfileCase(unittest.TestCase):
             "model.api_mode": "chat_completions",
         }
         self.writes = []
-        root_patch = patch.object(profile, "ROOT", self.root)
-        root_patch.start()
-        self.addCleanup(root_patch.stop)
 
     def select(self, provider, model):
         self.write_json("model-selection.json", {"provider": provider, "model": model})
@@ -53,54 +42,36 @@ class ProfileCase(unittest.TestCase):
     def write_json(self, name, data):
         (self.root / "infra/hermes" / name).write_text(json.dumps(data))
 
-    def cli(self, command, **kwargs):
-        self.assertEqual(command[0], str(self.root / "scripts/hermes-emuru.sh"))
-        self.assertEqual(command[1], "config")
-        if command[2] == "get":
-            key = command[3]
-            self.assertEqual(command[4], "--json")
-            if key == "model":
-                value = {
-                    name.removeprefix("model."): value
-                    for name, value in self.state.items()
-                    if name.startswith("model.")
-                }
-            else:
-                value = self.state[key]
-            return subprocess.CompletedProcess(command, 0, json.dumps(value))
-        self.assertEqual(command[2], "set")
-        forced = command[3] == "--force"
-        key, raw = command[4:] if forced else command[3:]
-        self.writes.append((key, raw, forced))
-        # Hermes parses structured JSON but stores quoted JSON strings literally.
-        if (
-            raw.startswith(("[", "{"))
-            or raw in ("true", "false", "null")
-            or raw.isdigit()
-        ):
-            value = json.loads(raw)
-        else:
-            value = raw
+    def get(self, key):
+        if key == "model":
+            return {
+                name.removeprefix("model."): value
+                for name, value in self.state.items()
+                if name.startswith("model.")
+            }
+        return self.state[key]
+
+    def set_value(self, key, value, force=False):
+        self.writes.append((key, value, force))
         if key == "mcp_servers.vault":
             self.state["mcp_servers"]["vault"] = value
         else:
             if key == "model.provider" and value != self.state[key]:
-                # Mimic the CLI's clearing of a previous provider's route.
+                # Native CLI clears the previous route when changing providers.
                 self.state.pop("model.base_url", None)
                 self.state.pop("model.api_mode", None)
             self.state[key] = value
-        return subprocess.CompletedProcess(command, 0, "")
 
     def run_profile(self, *arguments):
         with (
-            patch.object(sys, "argv", ["hermes-vault-profile.py", *arguments]),
-            patch.object(profile.subprocess, "run", side_effect=self.cli),
             patch.object(profile.shutil, "which", return_value="/mock/bin/uv"),
             patch.object(profile, "check_provider"),
-            contextlib.redirect_stdout(io.StringIO()) as output,
         ):
-            profile.main()
-        return output.getvalue()
+            if "--offline" in arguments:
+                return profile.expected_settings(self.root)
+            return profile.configure_profile(
+                self.root, self.get, self.set_value if "--apply" in arguments else None
+            )
 
     def assert_vault_only(self):
         self.assertEqual(set(self.state["mcp_servers"]), {"vault"})

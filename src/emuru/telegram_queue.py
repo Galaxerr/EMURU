@@ -1,4 +1,4 @@
-"""EMURU transport policy; these are not native Hermes configuration keys."""
+"""Durable Telegram queue, transport policy, and read-only redacted diagnostics."""
 
 import fcntl
 import json
@@ -6,9 +6,150 @@ import math
 import os
 import re
 import sqlite3
+import stat
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
+
+SCHEMA_VERSION = 1
+QUEUE_STATES = (
+    "queued",
+    "started",
+    "completed",
+    "failed",
+    "interrupted",
+    "expired",
+    "rejected",
+)
+PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+ERROR_CODES = frozenset(
+    {
+        "turn_timeout",
+        "queue_database_error",
+        "turn_failed",
+        "provider_failed",
+        "tool_failed",
+        "native_failure",
+        "native_cancelled",
+        "dispatch_admission",
+        "restart_interrupted",
+        "turn_interrupted",
+        "consumer_failed",
+        "consumer_exited",
+        "consumer_not_running",
+        "status_reply_failed",
+    }
+)
+PROCESS_HEALTH_CODES = ERROR_CODES | {"consumer_running"}
+
+_SCHEMA = f"""CREATE TABLE IF NOT EXISTS updates (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id INTEGER NOT NULL, update_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL, message_date INTEGER NOT NULL,
+    received_at INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ({",".join(repr(state) for state in QUEUE_STATES)})),
+    text TEXT, session_key TEXT, error_code TEXT, finished_at INTEGER,
+    UNIQUE (bot_id, update_id))"""
+
+
+class QueueDiagnosticsError(RuntimeError):
+    """Content-free diagnostic code; never expose database or file error text."""
+
+
+def _private_files(path):
+    return path, Path(str(path) + "-wal"), Path(str(path) + "-shm")
+
+
+def _check_private_file(path):
+    if path.is_symlink():
+        raise QueueDiagnosticsError("queue_permissions_invalid")
+    metadata = path.stat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != PRIVATE_FILE_MODE
+    ):
+        raise QueueDiagnosticsError("queue_permissions_invalid")
+
+
+def _schema_supported(db, *, allow_empty=False):
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version == SCHEMA_VERSION:
+        return True
+    return (
+        allow_empty
+        and version == 0
+        and not db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    )
+
+
+def _receipt_error(code):
+    code = code.removesuffix(":reported") if isinstance(code, str) else None
+    return code if code in ERROR_CODES else "turn_failed"
+
+
+def _process_health(codes):
+    if not isinstance(codes, (list, tuple)):
+        raise QueueDiagnosticsError("queue_unavailable")
+    return {
+        code
+        if isinstance(code, str) and code in PROCESS_HEALTH_CODES
+        else "consumer_failed"
+        for code in codes
+    }
+
+
+def diagnostics(path: Path, *, process_health=(), health_file: Path | None = None):
+    """Read durable receipts; merge separate process health without queue mutation.
+
+    No live queue, recovery, pruning, permission repair, or schema initialization.
+    The optional health file is an input owned by the runtime, never an output.
+    """
+    try:
+        path = Path(path).absolute()
+        if path.is_symlink() or path.parent.is_symlink():
+            raise QueueDiagnosticsError("queue_permissions_invalid")
+        if not path.exists():
+            return {"queue": "not_started", "health": ["not_started"]}
+        metadata = path.parent.stat()
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != PRIVATE_DIRECTORY_MODE
+        ):
+            raise QueueDiagnosticsError("queue_permissions_invalid")
+        for candidate in _private_files(path):
+            if candidate.exists() or candidate.is_symlink():
+                _check_private_file(candidate)
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+            if not _schema_supported(db):
+                raise QueueDiagnosticsError("queue_schema_unsupported")
+            counts = dict(
+                db.execute("SELECT state,count(*) FROM updates GROUP BY state")
+            )
+            if set(counts) - set(QUEUE_STATES):
+                raise QueueDiagnosticsError("queue_schema_unsupported")
+            health = {
+                _receipt_error(raw)
+                for (raw,) in db.execute(
+                    "SELECT DISTINCT error_code FROM updates WHERE error_code IS NOT NULL"
+                )
+            }
+        health.update(_process_health(process_health))
+        if health_file is not None:
+            health_file = Path(health_file)
+            if health_file.exists() or health_file.is_symlink():
+                _check_private_file(health_file)
+                health.update(
+                    _process_health(json.loads(health_file.read_text())["health"])
+                )
+        return {"queue": counts, "health": sorted(health)}
+    except QueueDiagnosticsError:
+        raise
+    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError):
+        raise QueueDiagnosticsError("queue_unavailable") from None
 
 
 def load_telegram_settings(path: Path) -> dict:
@@ -172,51 +313,36 @@ class TelegramQueue:
         self.path = Path(path)
         self._lock_fd, self._owns_lock = lock_fd, False
         os.umask(0o077)
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=PRIVATE_DIRECTORY_MODE, parents=True, exist_ok=True)
         if self.path.parent.is_symlink():
             raise ValueError("Queue directory must not be a symlink")
-        os.chmod(self.path.parent, 0o700)
-        for private in (
-            self.path,
-            Path(str(self.path) + "-wal"),
-            Path(str(self.path) + "-shm"),
-        ):
+        os.chmod(self.path.parent, PRIVATE_DIRECTORY_MODE)
+        for private in _private_files(self.path):
             if private.is_symlink():
                 raise ValueError("Queue files must not be symlinks")
             if private.exists():
-                os.chmod(private, 0o600)
-        fd = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        os.fchmod(fd, 0o600)
+                os.chmod(private, PRIVATE_FILE_MODE)
+        fd = os.open(
+            self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, PRIVATE_FILE_MODE
+        )
+        os.fchmod(fd, PRIVATE_FILE_MODE)
         os.close(fd)
         self.db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         try:
             self.db.execute("PRAGMA busy_timeout=5000")
-            version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            tables = self.db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-            if version not in (0, 1) or version == 0 and tables:
+            if not _schema_supported(self.db, allow_empty=True):
                 raise RuntimeError(
                     "Unsupported Telegram queue schema; preserve the database for review"
                 )
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             with self.transaction():
-                self.db.execute("""CREATE TABLE IF NOT EXISTS updates (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    bot_id INTEGER NOT NULL, update_id INTEGER NOT NULL,
-                    chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
-                    message_id INTEGER NOT NULL, message_date INTEGER NOT NULL,
-                    received_at INTEGER NOT NULL,
-                    state TEXT NOT NULL CHECK (state IN (
-                        'queued','started','completed','failed','interrupted','expired','rejected')),
-                    text TEXT, session_key TEXT, error_code TEXT, finished_at INTEGER,
-                    UNIQUE (bot_id, update_id))""")
+                self.db.execute(_SCHEMA)
                 self.db.execute(
                     "CREATE INDEX IF NOT EXISTS pending_updates ON updates(bot_id,state,sequence)"
                 )
-                self.db.execute("PRAGMA user_version=1")
+                self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         except BaseException:
             self.db.close()
             raise
@@ -325,14 +451,14 @@ class TelegramQueue:
             self._lock_fd = os.open(
                 self.path.parent / "instance.lock",
                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
-                0o600,
+                PRIVATE_FILE_MODE,
             )
             self._owns_lock = True
         expected = (self.path.parent / "instance.lock").stat()
         actual = os.fstat(self._lock_fd)
         if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
             raise RuntimeError("Recovery requires the queue's lifetime process lock")
-        os.fchmod(self._lock_fd, 0o600)
+        os.fchmod(self._lock_fd, PRIVATE_FILE_MODE)
         fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with self.transaction():
             self.db.execute(

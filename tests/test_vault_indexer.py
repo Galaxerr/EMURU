@@ -1,36 +1,18 @@
+"""Vault parsing, index outputs, link resolution, and private-content isolation."""
+
 import json
 import sqlite3
-from pathlib import Path
+from contextlib import closing
 
 import pytest
 from vault_helpers import create_vault, write_note
 
-from emuru.vault_indexer import (
-    collect_notes,
-    extract_wikilinks,
-    index_vault,
-)
-
-
-def load_graph(vault: Path) -> dict:
-    return json.loads((vault / "_index" / "graph.json").read_text(encoding="utf-8"))
-
-
-def open_index_db(
-    vault: Path,
-) -> sqlite3.Connection:
-    return sqlite3.connect(vault / "_index" / "notes.sqlite")
+from emuru.vault_indexer import collect_notes, extract_wikilinks, index_vault
 
 
 def test_extract_wikilinks():
-    body = """
-    See [[AI Security]]
-    and [[Cloud/GCP|Google Cloud]]
-    and [[Project#Architecture]]
-    and [[notes/example.md]]
-    and [[AI Security]] again.
-    """
-
+    body = """See [[AI Security]] and [[Cloud/GCP|Google Cloud]],
+    [[Project#Architecture]], [[notes/example.md]], and [[AI Security]] again."""
     assert extract_wikilinks(body) == [
         "AI Security",
         "Cloud/GCP",
@@ -39,468 +21,184 @@ def test_extract_wikilinks():
     ]
 
 
-def test_frontmatter_is_parsed(
-    tmp_path: Path,
-):
+def test_frontmatter_is_parsed(tmp_path):
     vault = create_vault(tmp_path)
-
     write_note(
         vault,
         "10_Projects/emuru.md",
         """
-        ---
-        title: EMURU
-        type: project
-        project: emuru
-        tags:
-          - ai
-          - agents
-        updated: 2026-10-04
-        summary: Personal AI agent platform.
-        ---
-
-        # EMURU
-
-        Project content.
-        """,
+---
+title: EMURU
+type: project
+project: emuru
+tags:
+  - ai
+  - agents
+updated: 2026-10-04
+summary: Personal AI agent platform.
+---
+# EMURU
+Project content.
+""",
     )
-
     notes = collect_notes(vault)
-
     assert len(notes) == 1
-
     note = notes[0]
-
-    assert note.path == ("10_Projects/emuru.md")
+    assert note.path == "10_Projects/emuru.md"
     assert note.title == "EMURU"
     assert note.note_type == "project"
     assert note.project == "emuru"
-    assert note.tags == [
-        "ai",
-        "agents",
-    ]
+    assert note.tags == ["ai", "agents"]
     assert note.updated == "2026-10-04"
-    assert note.summary == ("Personal AI agent platform.")
+    assert note.summary == "Personal AI agent platform."
     assert "Project content." in note.body
 
 
-def test_note_without_frontmatter_uses_defaults(
-    tmp_path: Path,
-):
+def test_note_without_frontmatter_uses_defaults(tmp_path):
     vault = create_vault(tmp_path)
-
-    write_note(
-        vault,
-        "30_Resources/plain-note.md",
-        """
-        # Plain Note
-
-        This note has no frontmatter.
-        """,
-    )
-
+    write_note(vault, "30_Resources/plain-note.md", "# Plain Note\nNo frontmatter.")
     notes = collect_notes(vault)
-
     assert len(notes) == 1
-
     note = notes[0]
-
     assert note.title == "plain-note"
     assert note.note_type == "note"
-    assert note.project == ""
+    assert note.project == note.summary == ""
     assert note.tags == []
-    assert note.summary == ""
 
 
-def test_only_allowlisted_roots_are_indexed(
-    tmp_path: Path,
-):
+def test_only_allowlisted_roots_are_indexed(tmp_path):
     vault = create_vault(tmp_path)
-
-    write_note(
-        vault,
-        "10_Projects/public.md",
-        """
-        # Public
-
-        This should be indexed.
-        """,
-    )
-
-    write_note(
-        vault,
-        "99_Private/private.md",
-        """
-        EMURU_PRIVATE_CANARY
-        """,
-    )
-
-    write_note(
-        vault,
-        "UnexpectedFolder/unknown.md",
-        """
-        EMURU_UNKNOWN_FOLDER_CANARY
-        """,
-    )
-
-    notes = collect_notes(vault)
-
-    paths = {note.path for note in notes}
-
-    assert "10_Projects/public.md" in paths
-
-    assert "99_Private/private.md" not in paths
-
-    assert "UnexpectedFolder/unknown.md" not in paths
+    for path, content in (
+        ("10_Projects/public.md", "# Public\nThis should be indexed."),
+        ("99_Private/private.md", "EMURU_PRIVATE_CANARY"),
+        ("UnexpectedFolder/unknown.md", "EMURU_UNKNOWN_FOLDER_CANARY"),
+    ):
+        write_note(vault, path, content)
+    assert {note.path for note in collect_notes(vault)} == {"10_Projects/public.md"}
 
 
-def test_private_content_never_enters_outputs(
-    tmp_path: Path,
-):
+def test_private_content_never_enters_outputs(tmp_path):
     vault = create_vault(tmp_path)
-
+    canary = "EMURU_PRIVATE_CANARY_934782"
     write_note(
-        vault,
-        "10_Projects/public.md",
-        """
-        ---
-        title: Public Project
-        type: project
-        ---
-
-        Safe public knowledge.
-        """,
+        vault, "10_Projects/public.md", "# Public Project\nSafe public knowledge."
     )
-
-    write_note(
-        vault,
-        "99_Private/private.md",
-        """
-        EMURU_PRIVATE_CANARY_934782
-        """,
-    )
-
+    write_note(vault, "99_Private/private.md", canary)
     index_vault(vault)
-
-    graph_text = (vault / "_index" / "graph.json").read_text(encoding="utf-8")
-
-    human_index = (vault / "99_System" / "INDEX.md").read_text(encoding="utf-8")
-
-    assert "EMURU_PRIVATE_CANARY_934782" not in graph_text
+    graph_text = (vault / "_index/graph.json").read_text(encoding="utf-8")
+    assert canary not in graph_text
     assert not any(
         node["path"].startswith("99_Private/")
         for node in json.loads(graph_text)["nodes"]
     )
-
-    assert "EMURU_PRIVATE_CANARY_934782" not in human_index
-
-    db = open_index_db(vault)
-
-    try:
-        private_paths = db.execute(
-            """
-            SELECT COUNT(*)
-            FROM note_fts
-            WHERE path LIKE '99_Private/%'
-            """
-        ).fetchone()[0]
-
-        private_search = db.execute(
-            """
-            SELECT COUNT(*)
-            FROM note_fts
-            WHERE note_fts MATCH ?
-            """,
-            ("EMURU_PRIVATE_CANARY_934782",),
-        ).fetchone()[0]
-
-        assert private_paths == 0
-        assert private_search == 0
-
-    finally:
-        db.close()
+    assert canary not in (vault / "99_System/INDEX.md").read_text(encoding="utf-8")
+    with closing(sqlite3.connect(vault / "_index/notes.sqlite")) as db:
+        assert (
+            db.execute(
+                "SELECT count(*) FROM note_fts WHERE path LIKE '99_Private/%'"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT count(*) FROM note_fts WHERE note_fts MATCH ?", (canary,)
+            ).fetchone()[0]
+            == 0
+        )
 
 
-def test_wikilink_resolves_to_graph_edge(
-    tmp_path: Path,
-):
+@pytest.mark.parametrize(
+    "target,paths,status",
+    [
+        ("AI Security", ["30_Resources/ai-security.md"], "resolved"),
+        ("Something That Does Not Exist", [], "unresolved"),
+        (
+            "Architecture",
+            ["20_Areas/architecture.md", "30_Resources/architecture.md"],
+            "ambiguous",
+        ),
+    ],
+)
+def test_wikilink_resolution(tmp_path, target, paths, status):
     vault = create_vault(tmp_path)
-
-    write_note(
-        vault,
-        "10_Projects/emuru.md",
-        """
-        ---
-        title: EMURU
-        type: project
-        ---
-
-        EMURU uses [[AI Security]].
-        """,
-    )
-
-    write_note(
-        vault,
-        "30_Resources/ai-security.md",
-        """
-        ---
-        title: AI Security
-        type: resource
-        ---
-
-        Security research notes.
-        """,
-    )
-
+    write_note(vault, "10_Projects/source.md", f"See [[{target}]].")
+    for path in paths:
+        write_note(vault, path, f"---\ntitle: {target}\n---\nReference note.")
     index_vault(vault)
-
-    graph = load_graph(vault)
-
-    edge = next(
-        edge for edge in graph["edges"] if (edge["source"] == "10_Projects/emuru.md")
-    )
-
-    assert edge["raw_target"] == ("AI Security")
-
-    assert edge["target"] == ("30_Resources/ai-security.md")
-
-    assert edge["status"] == "resolved"
+    edges = json.loads((vault / "_index/graph.json").read_text())["edges"]
+    assert len(edges) == 1
+    assert edges[0] == {
+        "source": "10_Projects/source.md",
+        "raw_target": target,
+        "target": paths[0] if status == "resolved" else None,
+        "status": status,
+    }
 
 
-def test_unresolved_wikilink_is_recorded(
-    tmp_path: Path,
-):
+def test_fts_search_returns_matching_note(tmp_path):
     vault = create_vault(tmp_path)
-
-    write_note(
-        vault,
-        "10_Projects/emuru.md",
-        """
-        ---
-        title: EMURU
-        type: project
-        ---
-
-        See [[Something That Does Not Exist]].
-        """,
-    )
-
-    index_vault(vault)
-
-    graph = load_graph(vault)
-
-    assert len(graph["edges"]) == 1
-
-    edge = graph["edges"][0]
-
-    assert edge["raw_target"] == ("Something That Does Not Exist")
-
-    assert edge["target"] is None
-    assert edge["status"] == "unresolved"
-
-
-def test_ambiguous_wikilink_is_recorded(
-    tmp_path: Path,
-):
-    vault = create_vault(tmp_path)
-
-    write_note(
-        vault,
-        "10_Projects/source.md",
-        """
-        ---
-        title: Source
-        ---
-
-        See [[Architecture]].
-        """,
-    )
-
-    write_note(
-        vault,
-        "20_Areas/architecture.md",
-        """
-        ---
-        title: Architecture
-        ---
-
-        Area architecture note.
-        """,
-    )
-
-    write_note(
-        vault,
-        "30_Resources/architecture.md",
-        """
-        ---
-        title: Architecture
-        ---
-
-        Resource architecture note.
-        """,
-    )
-
-    index_vault(vault)
-
-    graph = load_graph(vault)
-
-    edge = next(
-        edge for edge in graph["edges"] if (edge["source"] == "10_Projects/source.md")
-    )
-
-    assert edge["raw_target"] == ("Architecture")
-    assert edge["target"] is None
-    assert edge["status"] == "ambiguous"
-
-
-def test_fts_search_returns_matching_note(
-    tmp_path: Path,
-):
-    vault = create_vault(tmp_path)
-
     write_note(
         vault,
         "30_Resources/retrieval.md",
         """
-        ---
-        title: Retrieval Systems
-        type: resource
-        tags:
-          - search
-          - knowledge
-        summary: Notes about information retrieval.
-        ---
-
-        Semantic retrieval and full-text
-        search are useful for EMURU.
-        """,
+---
+title: Retrieval Systems
+type: resource
+tags: [search, knowledge]
+summary: Notes about information retrieval.
+---
+Semantic retrieval and full-text search are useful for EMURU.
+""",
     )
-
-    write_note(
-        vault,
-        "30_Resources/networking.md",
-        """
-        ---
-        title: Networking
-        type: resource
-        ---
-
-        TCP and UDP networking notes.
-        """,
-    )
-
+    write_note(vault, "30_Resources/networking.md", "TCP and UDP networking notes.")
     index_vault(vault)
-
-    db = open_index_db(vault)
-
-    try:
+    with closing(sqlite3.connect(vault / "_index/notes.sqlite")) as db:
         rows = db.execute(
-            """
-            SELECT path, title
-            FROM note_fts
-            WHERE note_fts MATCH ?
-            """,
-            ("retrieval",),
+            "SELECT path,title FROM note_fts WHERE note_fts MATCH ?", ("retrieval",)
         ).fetchall()
-
-    finally:
-        db.close()
-
-    assert rows == [
-        (
-            "30_Resources/retrieval.md",
-            "Retrieval Systems",
-        )
-    ]
+    assert rows == [("30_Resources/retrieval.md", "Retrieval Systems")]
 
 
-def test_generated_human_index_contains_notes(
-    tmp_path: Path,
-):
+def test_generated_human_index_contains_notes(tmp_path):
     vault = create_vault(tmp_path)
-
     write_note(
         vault,
         "10_Projects/emuru.md",
         """
-        ---
-        title: EMURU
-        type: project
-        summary: Personal AI agent platform.
-        ---
-
-        # EMURU
-        """,
+---
+title: EMURU
+type: project
+summary: Personal AI agent platform.
+---
+# EMURU
+""",
     )
-
     index_vault(vault)
-
-    index_text = (vault / "99_System" / "INDEX.md").read_text(encoding="utf-8")
-
-    assert "# EMURU Vault Index" in index_text
-
-    assert "## 10_Projects" in index_text
-
-    assert "[[10_Projects/emuru|EMURU]]" in index_text
-
-    assert "Personal AI agent platform." in index_text
-
-
-def test_file_symlink_is_not_indexed(
-    tmp_path: Path,
-):
-    vault = create_vault(tmp_path)
-
-    private_note = write_note(
-        vault,
-        "99_Private/secret.md",
-        """
-        EMURU_SYMLINK_SECRET
-        """,
-    )
-
-    link = vault / "30_Resources" / "fake-public-note.md"
-
-    link.symlink_to(private_note)
-
-    notes = collect_notes(vault)
-
-    assert all(note.path != "30_Resources/fake-public-note.md" for note in notes)
-
-
-def test_directory_symlink_is_not_followed(
-    tmp_path: Path,
-):
-    vault = create_vault(tmp_path)
-
-    private_dir = vault / "99_Private" / "secret-directory"
-
-    private_dir.mkdir()
-
-    (private_dir / "secret.md").write_text(
-        "EMURU_DIRECTORY_SYMLINK_SECRET",
-        encoding="utf-8",
-    )
-
-    link = vault / "30_Resources" / "linked-private-directory"
-
-    link.symlink_to(
-        private_dir,
-        target_is_directory=True,
-    )
-
-    notes = collect_notes(vault)
-
-    assert all("linked-private-directory" not in note.path for note in notes)
-
-
-def test_missing_vault_raises_error(
-    tmp_path: Path,
-):
-    missing = tmp_path / "does-not-exist"
-
-    with pytest.raises(
-        ValueError,
-        match="vault does not exist",
+    text = (vault / "99_System/INDEX.md").read_text(encoding="utf-8")
+    for expected in (
+        "# EMURU Vault Index",
+        "## 10_Projects",
+        "[[10_Projects/emuru|EMURU]]",
+        "Personal AI agent platform.",
     ):
-        index_vault(missing)
+        assert expected in text
+
+
+@pytest.mark.parametrize("directory", [False, True], ids=["file", "directory"])
+def test_symlinks_are_not_indexed(tmp_path, directory):
+    vault = create_vault(tmp_path)
+    note = write_note(
+        vault, "99_Private/secret-directory/secret.md", "EMURU_SYMLINK_SECRET"
+    )
+    link = (
+        vault
+        / "30_Resources"
+        / ("linked-private" if directory else "linked-private.md")
+    )
+    link.symlink_to(note.parent if directory else note, target_is_directory=directory)
+    assert all("linked-private" not in note.path for note in collect_notes(vault))
+
+
+def test_missing_vault_raises_error(tmp_path):
+    with pytest.raises(ValueError, match="vault does not exist"):
+        index_vault(tmp_path / "does-not-exist")

@@ -107,6 +107,19 @@ The baseline serializes string values directly and structured values as JSON,
 and audits both value and type. Its `--apply` refuses a profile that already
 has an MCP server so it cannot silently reset the vault integration.
 
+`src/emuru/hermes_profile.py` owns profile policy, provider composition, MCP
+registration, apply/audit ordering, runtime source verification, and profile-home
+validation. It and its imported EMURU modules use only the Python standard
+library, so the installed Hermes interpreter can import them without the
+project's MCP SDK. Deleting an owner CLI entry point does not delete this policy.
+
+`scripts/hermes-vault-profile.py` supplies the CLI config transport. The Telegram
+launcher imports the shared module directly; the native runtime supplies its
+already-read nested config mapping. Both audits use the same value/type and MCP
+registration verification. Native audits never make provider requests or config
+writes. Ollama preflight discovers the route before CLI apply; native audits
+verify the persisted context and timeout combination through shared composition.
+
 The vault profile permits only the `vault` MCP registration and the CLI
 `mcp-vault` toolset. It validates the shared policy before changes and rejects
 inline `model.api_key` / `model.key_env` overrides without printing their
@@ -134,6 +147,11 @@ Its stdio checks pass explicit tool arguments. It provides five modes:
 - `check`: verify retrieval, search, relationships, Inbox writes, immediate
   reindexing, rejection of a non-Inbox write, and unchanged protected notes
   against a temporary fixture copy.
+
+The shared profile-home resolver preserves owner-variable precedence, rejects
+relative/traversal paths and symlinks in every path segment, and requires the
+`profiles/emuru` location. Telegram launch and private vault selection both use
+this resolver; target-specific file and root checks remain in `vault_target.py`.
 
 The owner-controlled `vault-target.json` lives in the private `emuru` profile,
 not Git. It must be an owner-owned regular file with mode `0600`. Synthetic mode
@@ -289,6 +307,20 @@ lock files are mode `0600`, under umask `077`. It uses schema version 1,
 `busy_timeout=5000`, WAL and `synchronous=FULL`. Unrecognized schemas stop startup
 without discarding existing queue data. Recovery acquires the lifetime lock
 before changing any rows.
+
+`src/emuru/telegram_queue.py` owns queue schema/version, state names, private
+file modes, receipt error redaction, and read-only diagnostics. Its independent
+`diagnostics` function opens existing SQLite storage with `mode=ro`; it never
+constructs a live queue, initializes schema, repairs permissions, recovers,
+prunes, or rewrites receipts. Missing storage remains missing. The CLI formats
+the returned safe counts and health codes and reports diagnostic failures.
+
+Process health remains runtime-owned. The runtime writes or clears `health.json`
+separately; the CLI passes that file as an explicit diagnostic input. Native
+`/status` passes current worker health as a separate input. Diagnostics merge
+these codes with receipt errors without exposing identities, input text, or
+unknown error content. Native `/status` still claims and completes its own
+command receipt; diagnostic inspection does not mutate other queue rows.
 
 The queue commits the entire eligible polling batch before PTB can advance its
 acknowledgement. Queue overflow or disk failure stops intake and reports a local

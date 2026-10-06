@@ -1,6 +1,5 @@
 """Opt-in Hermes vault retrieval with the selected cloud or downloaded Ollama model."""
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -8,6 +7,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from emuru import hermes_profile as profile
 
 
 @pytest.mark.skipif(
@@ -18,20 +19,15 @@ def test_live_hermes_ollama_vault_retrieval(tmp_path):
     root = Path(__file__).resolve().parents[1]
     selection = json.loads((root / "infra/hermes/model-selection.json").read_text())
     assert selection["provider"] == "ollama"
-    spec = importlib.util.spec_from_file_location(
-        "live_profile", root / "scripts/hermes-vault-profile.py"
-    )
-    profile = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(profile)
     config = {}
     # Use only the reviewed local route and vault tools, with no real credentials.
-    for key, value in profile.expected_settings().items():
+    for key, value in profile.expected_settings(root).items():
         cursor = config
         parts = key.split(".")
         for part in parts[:-1]:
             cursor = cursor.setdefault(part, {})
         cursor[parts[-1]] = value
-    config["mcp_servers"] = {"vault": profile.expected_server()}
+    config["mcp_servers"] = {"vault": profile.expected_server(root)}
     home = tmp_path / "hermes" / "profiles" / "emuru"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text(yaml.safe_dump(config))
