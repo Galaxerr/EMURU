@@ -1,0 +1,13 @@
+{
+  "transport": "polling",
+  "private_chat_only": true,
+  "text_only": true,
+  "max_message_age_seconds": 86400,
+  "max_input_chars": 8000,
+  "max_pending_updates": 1000,
+  "max_active_turns": 1,
+  "poll_timeout_seconds": 25,
+  "reconnect_delay_seconds": 5,
+  "allowed_commands": ["start", "help", "status", "new", "stop"],
+  "ambiguous_turn_recovery": "report_without_replay"
+}

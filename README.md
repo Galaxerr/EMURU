@@ -6,7 +6,10 @@ and can save meaningful owner facts as new Inbox notes.
 
 ## Current status — v0.3.0
 
-The Hermes branch milestone is concluded. Delivered capabilities include:
+The original v0.3.0 release outcome remains pending Phase 4. The historical
+completion report describes the delivered Phase 2 branch scope, not release
+acceptance. The [active progress record](docs/releases/v0.3.0-progress.md) tracks
+Phase 3 verification and the remaining acceptance gates. Delivered capabilities include:
 
 - Obsidian Markdown/frontmatter indexing, wikilink graph, SQLite FTS5 search,
   and a generated Obsidian index from the existing v0.2 implementation;
@@ -24,8 +27,11 @@ The Hermes branch milestone is concluded. Delivered capabilities include:
   and CI contract validation.
 
 The default agent binding uses the synthetic vault, not your private notes.
+The guarded native Telegram launcher is described below; queue and recovery
+details are in the [architecture](docs/ARCHITECTURE.md). Telegram tests live in
+`tests/telegram/`.
 See the [architecture](docs/ARCHITECTURE.md) and
-[completed v0.3.0 report](docs/releases/v0.3.0-report.md) for implementation,
+[historical Phase 2 branch report](docs/releases/v0.3.0-report.md) for implementation,
 validation evidence, and deferred scope. Package metadata still reports `0.1.0`.
 
 ## Repository layout
@@ -33,7 +39,7 @@ validation evidence, and deferred scope. Package metadata still reports `0.1.0`.
 | Path | Purpose |
 | --- | --- |
 | `src/emuru/` | Indexer, MCP server, and separate provider modules |
-| `infra/hermes/` | Baseline/runtime policy, runtime identity, model selection, and vault command binding |
+| `infra/hermes/` | Baseline/runtime policy, runtime identity, and model selection |
 | `scripts/` | Hermes launcher, configuration audits, synthetic vault adapter, and Ollama chooser/checker |
 | `agents/emuru/SOUL.md` | Conversational policy to install in the Hermes profile |
 | `tests/fixtures/hermes-vault/` | Synthetic project/resource notes and an untrusted reference |
@@ -47,7 +53,8 @@ curated vault notes. Saving Markdown does not train model weights.
 
 Install Python 3.12 or newer, uv, and Hermes independently. The Hermes identity
 used for the baseline is recorded in `infra/hermes/runtime-lock.json`; EMURU
-scripts do not install Hermes or enforce that checkout. Create/configure an
+CLI vault scripts do not install Hermes or enforce that checkout; the Telegram
+bridge verifies it before startup. Create/configure an
 `emuru` Hermes profile and its provider credentials before applying settings.
 
 Install `agents/emuru/SOUL.md` as the profile's `SOUL.md`. For the default Hermes
@@ -209,15 +216,105 @@ audits live settings; `--apply` writes and audits them. Unexpected MCP servers
 and inline model credential overrides cause a refusal. Keep secrets in the
 private profile/environment rather than repository configuration.
 
+## Telegram setup and operation
+
+Run `scripts/hermes-telegram.sh` to start the guarded native Hermes gateway.
+The launcher uses a private umask, a neutral workspace, and a lifetime lock.
+It checks the installed commit against `infra/hermes/runtime-lock.json` and
+refuses modified tracked Hermes source. It never installs EMURU or its MCP v2
+SDK in Hermes's environment. The native launcher selects Hermes's dependencies.
+Install the pinned native Telegram extra with `hermes pm install --extra telegram`
+if it is missing; use Hermes's package manager, not EMURU's uv environment.
+An existing host gateway cannot substitute for the required bridge.
+`infra/hermes/telegram-native-contract.json` also pins PTB 22.8 and the inspected
+native method signatures. Missing or changed seams stop startup before polling.
+
+Store `TELEGRAM_BOT_TOKEN` and `EMURU_TELEGRAM_OWNER_ID` in the private
+`~/.hermes/profiles/emuru/.env`, mode `600`, or supply them privately through
+the environment. The owner ID must be one positive numeric Telegram user ID.
+Keep credentials and the owner ID out of the public transport settings.
+The bridge restricts native authorization to that owner. Webhooks, custom Bot
+API endpoints, multiplexing, and other enabled transports are rejected.
+
+A custom installed checkout uses the operator-controlled absolute
+`EMURU_HERMES_ROOT`. A custom profile uses `EMURU_HERMES_PROFILE_HOME` and must
+end in `profiles/emuru`. Never obtain these paths from model or Telegram input.
+Credentials load through Hermes's native dotenv loader. The launcher uses the
+checkout's `.venv/bin/python` when present, otherwise the installed native
+package manager's isolated interpreter. No dependencies download on startup.
+Native signal handling stays in the same process; the queue closes before exit.
+
+Checkpoint checks, from the EMURU repository:
+
+```sh
+bash -n scripts/hermes-telegram.sh
+uv run --frozen python scripts/hermes-telegram.py --offline
+uv run --frozen python scripts/hermes-vault-profile.py
+uv run --frozen python scripts/hermes-telegram.py --check
+./scripts/hermes-telegram.sh
+```
+
+The public profile policy requires `gateway.standalone: true` for the native
+CLI's dedicated emuru gateway. If the profile audit reports drift, review and
+apply it with `uv run --frozen python scripts/hermes-vault-profile.py --apply`,
+then repeat the checks. Keep the private owner ID and bot token configured.
+`--offline` reads public policy and checks a temporary pure queue without Hermes,
+private environment files, Ollama, network, or a real vault. `--check` installs
+native guards, checks live restrictions and uses only bot identity/webhook
+requests: no polling, acknowledgements, inference, MCP connection or note writes.
+`--status` prints private queue counts and safe health codes:
+
+```sh
+uv run --frozen python scripts/hermes-telegram.py --status
+uv run --frozen pytest tests/telegram
+```
+
+The test harness generates synthetic update identities itself, using a temporary
+vault and deterministic fake agent. There is no public replay command or endpoint.
+An installed-native seam check is available as
+`scripts/hermes-telegram.sh --runtime-check` without network or model calls.
+
+Accept the live checkpoint only after startup prints
+`EMURU Telegram checkpoint: required guards and five MCP tools READY`.
+READY requires a running durable consumer bound to the adapter's bot identity.
+The native plugin factory is guarded before connection, including adapters loaded
+under the plugin registry's separate module namespace. Consumer exits stop intake
+and persist `consumer_failed` or `consumer_exited` for local `--status` diagnostics.
+Authenticated `/status` is handled locally after durable admission and replies
+with queue counts and consumer health even while an agent turn is busy; duplicate
+delivery does not resend it. Other commands retain their native FIFO handling.
+`/new` stays in that FIFO and invokes Hermes's native session reset after auth,
+without callback confirmation or model dispatch. A successful transition rotates
+the session ID, preserves the old transcript and clears cached conversation state
+before sending a static acknowledgement. Earlier queued requests finish in the
+old session; requests after the boundary use the new session. Update receipts
+prevent a replayed command from rotating the session again.
+The restricted runtime omits native first-contact/home-channel onboarding and
+the unused mid-turn steering example from system-prompt construction. It never
+rewrites user text or filters those markers from generated replies.
+`--runtime-check` also exercises marker → `/new` → fresh question through real
+native session storage, cache eviction, transcript replay and prompt guidance,
+using a fake provider in temporary state. It checks distinct session IDs, fresh
+agent/history, retained old transcript, exact fresh question, and no onboarding
+or out-of-band placeholder in provider input.
+Send fresh plain text from the owner's private chat and verify the reply and
+native history. Test another account, a group, media with a caption, and an
+unsupported command: none may create a turn, note or transcript, download media,
+pair, or show typing. A second launcher must fail with `already running`.
+Stop with Ctrl-C, inspect `--status`, and restart to check recovery without
+replaying started work. Only the guarded launcher is an accepted Phase 3
+deployment; plain `hermes gateway` or `hermes-emuru.sh gateway run` bypasses it.
+
+
 ## Planned
 
-- Telegram owner allowlist, offline queue, durable update deduplication, and
-  transport failure reporting
 - on-demand startup/shutdown and interruption recovery
 - real-vault deployment acceptance
 - LiteLLM gateway routing and automatic fallback
 - Paperclip integration
 - general vault cleanup under a separate constrained policy
 
-Telegram tools are currently disabled. These deferred features were not
-implemented in the concluded Hermes branch scope.
+The guarded Telegram transport now supports owner admission, durable queued
+input, deduplication, and failure reporting. The implementation and its CI changes
+remain uncommitted by owner instruction; passing working-tree checks does not
+close Phase 3. The original release acceptance target remains pending Phase 4.

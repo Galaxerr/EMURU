@@ -2,54 +2,9 @@ from pathlib import Path
 
 import pytest
 from mcp import Client
+from vault_helpers import create_vault, write_note
 
 from emuru.vault_mcp import create_mcp
-
-INDEXABLE_DIRS = (
-    "00_Inbox",
-    "10_Projects",
-    "20_Areas",
-    "30_Resources",
-    "40_Journal",
-    "90_Archive",
-)
-
-
-def create_test_vault(
-    tmp_path: Path,
-) -> Path:
-    vault = tmp_path / "EMURU-vault"
-
-    for directory in (
-        *INDEXABLE_DIRS,
-        "99_Private",
-        "99_System",
-        "_index",
-    ):
-        (vault / directory).mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-    return vault
-
-
-def write_note(
-    vault: Path,
-    relative: str,
-    content: str,
-) -> None:
-    path = vault / relative
-
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    path.write_text(
-        content.strip() + "\n",
-        encoding="utf-8",
-    )
 
 
 @pytest.fixture
@@ -61,7 +16,7 @@ def anyio_backend():
 async def test_lists_expected_tools(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     server = create_mcp(vault)
 
@@ -86,7 +41,7 @@ async def test_lists_expected_tools(
 async def test_vault_map(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     write_note(
         vault,
@@ -132,7 +87,7 @@ async def test_vault_map(
 async def test_vault_search(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     write_note(
         vault,
@@ -174,7 +129,7 @@ async def test_vault_search(
 async def test_vault_open(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     write_note(
         vault,
@@ -212,7 +167,7 @@ async def test_vault_open(
 async def test_private_note_cannot_be_opened(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     write_note(
         vault,
@@ -242,7 +197,7 @@ async def test_private_note_cannot_be_opened(
 async def test_path_traversal_is_rejected(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     server = create_mcp(vault)
 
@@ -264,7 +219,7 @@ async def test_path_traversal_is_rejected(
 async def test_write_creates_inbox_note(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     server = create_mcp(vault)
 
@@ -293,7 +248,7 @@ async def test_write_creates_inbox_note(
 async def test_write_outside_inbox_is_denied(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     server = create_mcp(vault)
 
@@ -318,7 +273,7 @@ async def test_write_outside_inbox_is_denied(
 async def test_existing_note_cannot_be_overwritten(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     write_note(
         vault,
@@ -353,7 +308,7 @@ async def test_existing_note_cannot_be_overwritten(
 async def test_write_is_immediately_searchable(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     server = create_mcp(vault)
 
@@ -388,7 +343,7 @@ async def test_write_is_immediately_searchable(
 async def test_vault_neighbors(
     tmp_path: Path,
 ):
-    vault = create_test_vault(tmp_path)
+    vault = create_vault(tmp_path)
 
     write_note(
         vault,

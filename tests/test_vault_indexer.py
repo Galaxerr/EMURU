@@ -3,60 +3,13 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from vault_helpers import create_vault, write_note
 
 from emuru.vault_indexer import (
     collect_notes,
     extract_wikilinks,
     index_vault,
 )
-
-INDEXABLE_DIRS = (
-    "00_Inbox",
-    "10_Projects",
-    "20_Areas",
-    "30_Resources",
-    "40_Journal",
-    "90_Archive",
-)
-
-
-def create_vault(tmp_path: Path) -> Path:
-    """Create a minimal fake EMURU vault."""
-    vault = tmp_path / "EMURU-vault"
-
-    for directory in (
-        *INDEXABLE_DIRS,
-        "99_Private",
-        "99_System",
-        "_index",
-    ):
-        (vault / directory).mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-    return vault
-
-
-def write_note(
-    vault: Path,
-    relative_path: str,
-    content: str,
-) -> Path:
-    """Write a Markdown note into the fake vault."""
-    path = vault / relative_path
-
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    path.write_text(
-        content.strip() + "\n",
-        encoding="utf-8",
-    )
-
-    return path
 
 
 def load_graph(vault: Path) -> dict:
@@ -234,16 +187,20 @@ def test_private_content_never_enters_outputs(
     human_index = (vault / "99_System" / "INDEX.md").read_text(encoding="utf-8")
 
     assert "EMURU_PRIVATE_CANARY_934782" not in graph_text
+    assert not any(
+        node["path"].startswith("99_Private/")
+        for node in json.loads(graph_text)["nodes"]
+    )
 
     assert "EMURU_PRIVATE_CANARY_934782" not in human_index
 
     db = open_index_db(vault)
 
     try:
-        private_metadata = db.execute(
+        private_paths = db.execute(
             """
             SELECT COUNT(*)
-            FROM note_meta
+            FROM note_fts
             WHERE path LIKE '99_Private/%'
             """
         ).fetchone()[0]
@@ -257,7 +214,7 @@ def test_private_content_never_enters_outputs(
             ("EMURU_PRIVATE_CANARY_934782",),
         ).fetchone()[0]
 
-        assert private_metadata == 0
+        assert private_paths == 0
         assert private_search == 0
 
     finally:

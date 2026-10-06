@@ -15,55 +15,7 @@ RUNTIME = ROOT / ".runtime/vault"
 TOOLS = {"vault_map", "vault_search", "vault_open", "vault_neighbors", "vault_write"}
 
 
-def binding() -> dict:
-    data = json.loads((ROOT / "infra/hermes/vault-binding.json").read_text())
-    if "CHANGE_ME" in json.dumps(data):
-        raise ValueError("Finish vault-binding.json using your actual v0.2.0 interface")
-    for name in ("server_args", "indexer_args"):
-        if (
-            not isinstance(data.get(name), list)
-            or not data[name]
-            or not all(isinstance(x, str) for x in data[name])
-        ):
-            raise ValueError(f"{name} must be a nonempty argv list after 'uv run'")
-        if data[name][0] == "uv":
-            raise ValueError("Do not include 'uv run' in the bound argv lists")
-    if not isinstance(data.get("env"), dict):
-        raise TypeError("env must be a mapping")
-    if not all(
-        isinstance(key, str) and isinstance(value, str)
-        for key, value in data["env"].items()
-    ):
-        raise ValueError("env names and values must be strings")
-    for kind in ("server", "indexer"):
-        encoded = json.dumps([data[f"{kind}_args"], data["env"]])
-        if "@VAULT_ROOT@" not in encoded:
-            raise ValueError(f"{kind} invocation must be bound to @VAULT_ROOT@")
-    for name in TOOLS:
-        if not isinstance(data.get("tool_args", {}).get(name), dict):
-            raise TypeError(f"Missing argument template for {name}")
-    return data
-
-
-def render(value, replacements):
-    if isinstance(value, str):
-        for token, replacement in replacements.items():
-            value = value.replace(token, replacement)
-        return value
-    if isinstance(value, list):
-        return [render(item, replacements) for item in value]
-    if isinstance(value, dict):
-        return {key: render(item, replacements) for key, item in value.items()}
-    return value
-
-
-def backend(vault: Path, kind: str):
-    config = binding()
-    replacements = {
-        "@VAULT_ROOT@": str(vault.resolve()),
-        "@INDEX_DIR@": str((vault / "_index").resolve()),
-        "@REPO_ROOT@": str(ROOT),
-    }
+def backend(vault: Path, *arguments: str):
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError("uv is not on PATH")
@@ -72,7 +24,7 @@ def backend(vault: Path, kind: str):
         for key in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
         if key in os.environ
     }
-    env.update(render(config["env"], replacements))
+    env["EMURU_VAULT_PATH"] = str(vault.resolve())
     env["UV_OFFLINE"] = "1"
     command = [
         uv,
@@ -81,7 +33,7 @@ def backend(vault: Path, kind: str):
         "run",
         "--frozen",
         "--no-sync",
-        *render(config[f"{kind}_args"], replacements),
+        *arguments,
     ]
     return command, env
 
@@ -89,7 +41,7 @@ def backend(vault: Path, kind: str):
 def prepare(vault: Path):
     if not vault.exists():
         shutil.copytree(FIXTURE, vault)
-    command, env = backend(vault, "indexer")
+    command, env = backend(vault, "emuru-index", "--vault", str(vault.resolve()))
     subprocess.run(command, cwd=ROOT, env=env, check=True, timeout=60)
 
 
@@ -98,7 +50,7 @@ async def inspect_or_check(vault: Path, inspect: bool):
     from mcp.client.stdio import stdio_client
     from mcp.shared.exceptions import MCPError
 
-    command, env = backend(vault, "server")
+    command, env = backend(vault, "emuru-vault-mcp")
     params = StdioServerParameters(
         command=command[0], args=command[1:], env=env, cwd=str(ROOT)
     )
@@ -120,11 +72,8 @@ async def inspect_or_check(vault: Path, inspect: bool):
                 )
             )
             return
-        templates = binding()["tool_args"]
 
-        async def call(name, **values):
-            replacements = {f"@{key.upper()}@": value for key, value in values.items()}
-            arguments = render(templates[name], replacements)
+        async def call(name, **arguments):
             async with asyncio.timeout(15):
                 return await session.call_tool(name, arguments)
 
@@ -218,7 +167,7 @@ def main():
     elif args.mode == "serve":
         if not RUNTIME.is_dir():
             raise SystemExit("Run hermes-vault.py prepare before connecting Hermes")
-        command, env = backend(RUNTIME, "server")
+        command, env = backend(RUNTIME, "emuru-vault-mcp")
         os.chdir(ROOT)
         os.execvpe(command[0], command, env)
     else:

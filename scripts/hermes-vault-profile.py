@@ -7,12 +7,45 @@ import subprocess
 from pathlib import Path
 
 from emuru.providers import check_provider, provider_settings
+from emuru.telegram_queue import load_telegram_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ["vault_map", "vault_search", "vault_open", "vault_neighbors", "vault_write"]
+DISABLED_TOOLSETS = {
+    "web",
+    "browser",
+    "terminal",
+    "file",
+    "code_execution",
+    "vision",
+    "video",
+    "image_gen",
+    "video_gen",
+    "x_search",
+    "tts",
+    "stt",
+    "skills",
+    "todo",
+    "kanban",
+    "memory",
+    "context_engine",
+    "session_search",
+    "connections",
+    "clarify",
+    "delegation",
+    "cronjob",
+    "spotify",
+    "yuanbao",
+    "computer_use",
+    "a2a",
+}
 
 
 def expected_settings():
+    try:
+        load_telegram_settings(ROOT / "infra/hermes/telegram-settings.json")
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     settings = json.loads(
         (ROOT / "infra/hermes/runtime-settings.json").read_text(encoding="utf-8")
     )
@@ -39,23 +72,10 @@ def expected_settings():
     if type(turns) is not int or not 1 <= turns <= 12:
         raise SystemExit("Invalid turn bound")
     disabled = settings.get("agent.disabled_toolsets")
-    forbidden = {
-        "terminal",
-        "file",
-        "code_execution",
-        "browser",
-        "web",
-        "delegation",
-        "skills",
-        "cronjob",
-        "memory",
-        "session_search",
-        "computer_use",
-    }
     if (
         not isinstance(disabled, list)
         or not all(isinstance(name, str) for name in disabled)
-        or not forbidden.issubset(disabled)
+        or not DISABLED_TOOLSETS.issubset(disabled)
     ):
         raise SystemExit("Required disabled toolsets are missing")
     for key in ("agent.api_max_retries", "agent.auto_recovery_cycles"):
@@ -73,7 +93,14 @@ def expected_settings():
         settings.get("fallback_providers") != []
         or settings.get("security.redact_secrets") is not True
         or settings.get("platform_toolsets.cli") != ["mcp-vault"]
-        or settings.get("platform_toolsets.telegram") != []
+        or settings.get("platform_toolsets.telegram") != ["mcp-vault"]
+        or settings.get("tools.tool_search.enabled") != "off"
+        or settings.get("platforms.telegram.extra.drop_pending_on_cold_boot")
+        is not False
+        or type(settings.get("platforms.telegram.extra.max_concurrent_updates"))
+        is not int
+        or settings.get("platforms.telegram.extra.max_concurrent_updates") != 1
+        or settings.get("gateway.standalone") is not True
     ):
         raise SystemExit("Fallback, tool exposure or secret-redaction policy changed")
     settings.update(route)
@@ -127,13 +154,16 @@ def main():
     launcher = str(ROOT / "scripts/hermes-emuru.sh")
 
     def get(key):
-        response = subprocess.run(
-            [launcher, "config", "get", key, "--json"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            response = subprocess.run(
+                [launcher, "config", "get", key, "--json"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError:
+            raise SystemExit(f"EMURU live configuration unavailable: {key}") from None
         return json.loads(response.stdout)
 
     def set_value(key, value, force=False):

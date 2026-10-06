@@ -33,3 +33,6 @@ _index/
 # Hermes
 .hermes/
 .runtime/
+# Private Telegram runtime state (normally outside the repository)
+emuru-telegram/
+queue.sqlite*

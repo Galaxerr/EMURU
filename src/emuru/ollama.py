@@ -129,44 +129,31 @@ class OllamaConnection(OllamaClient):
         self.model = model_id(model)
         self.cloud = self.direct_cloud or model.endswith(("-cloud", ":cloud"))
 
-    def check(self, *, require_tools: bool = True) -> dict:
+    def check(self) -> dict:
         """Check availability and discover the selected model's actual route."""
-        if self.direct_cloud:
-            catalog = self.request("/api/tags")
-            if self.model not in {
-                item.get("name")
-                for item in catalog.get("models", [])
-                if isinstance(item, dict)
-            }:
+        names = (
+            {self.model} if self.direct_cloud else {self.model, f"{self.model}:latest"}
+        )
+        registered = next(
+            (item for item in self.list_models() if item["name"] in names),
+            None,
+        )
+        if registered is None:
+            if self.direct_cloud:
                 raise RuntimeError("Selected model is not in Ollama's cloud catalog")
-            # Catalog discovery does not advertise tools; smoke verifies them live.
-            return {}
-        catalog = self.request("/api/tags")
-        names = {
-            item.get("name")
-            for item in catalog.get("models", [])
-            if isinstance(item, dict)
-        }
-        if self.model not in names and f"{self.model}:latest" not in names:
             raise RuntimeError(
                 f"Ollama model {self.model} is not installed; "
                 f"run 'ollama pull {self.model}'"
             )
+        if self.direct_cloud:
+            # Catalog discovery does not advertise tools; smoke verifies them live.
+            return {}
         info = self.request("/api/show", {"model": self.model})
-        registered = next(
-            (
-                item
-                for item in catalog.get("models", [])
-                if isinstance(item, dict)
-                and item.get("name") in {self.model, f"{self.model}:latest"}
-            ),
-            {},
-        )
         # Remote metadata also identifies user-created cloud aliases without a suffix.
         self.cloud = bool(
             registered.get("remote_host") or registered.get("remote_model")
         )
-        if require_tools and "tools" not in info.get("capabilities", []):
+        if "tools" not in info.get("capabilities", []):
             raise RuntimeError(
                 "Selected Ollama model lacks tool calling; agent vault chat requires a tools model"
             )

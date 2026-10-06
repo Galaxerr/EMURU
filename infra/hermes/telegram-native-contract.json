@@ -1,0 +1,136 @@
+{
+  "telegram_version": "22.8",
+  "methods": {
+    "Bot.get_updates": [
+      true,
+      "(self, offset=None, limit=None, timeout=None, allowed_updates=None, *, read_timeout=None, write_timeout=None, connect_timeout=None, pool_timeout=None, api_kwargs=None)"
+    ],
+    "Bot._post": [
+      true,
+      "(self, endpoint, data=None, *, read_timeout=None, write_timeout=None, connect_timeout=None, pool_timeout=None, api_kwargs=None)"
+    ],
+    "Updater.start_polling": [
+      true,
+      "(self, poll_interval=0.0, timeout=datetime.timedelta(seconds=10), bootstrap_retries=0, allowed_updates=None, drop_pending_updates=None, error_callback=None)"
+    ],
+    "TelegramApplication.process_update": [
+      true,
+      "(self, update)"
+    ],
+    "TelegramAdapter.connect": [
+      true,
+      "(self, *, is_reconnect=False)"
+    ],
+    "TelegramAdapter.disconnect": [
+      true,
+      "(self)"
+    ],
+    "TelegramAdapter.handle_message": [
+      true,
+      "(self, event)"
+    ],
+    "TelegramAdapter._run_processing_hook": [
+      true,
+      "(self, hook_name, *args, **kwargs)"
+    ],
+    "TelegramAdapter._event_session_key": [
+      false,
+      "(self, event)"
+    ],
+    "TelegramAdapter._build_message_event": [
+      false,
+      "(self, message, msg_type, update_id=None)"
+    ],
+    "TelegramAdapter._enqueue_text_event": [
+      false,
+      "(self, event)"
+    ],
+    "GatewayRunner._handle_message": [
+      true,
+      "(self, event)"
+    ],
+    "GatewayRunner._hmwa_agent_error_reply": [
+      true,
+      "(self, e, event, source, session_entry, session_key, prepared)"
+    ],
+    "GatewayRunner._handle_message_with_agent": [
+      true,
+      "(self, event, source, _quick_key, run_generation)"
+    ],
+    "GatewayRunner._run_agent": [
+      true,
+      "(self, message, context_prompt, history, source, session_id, **turn_kwargs)"
+    ],
+    "GatewayRunner._resume_pending_candidates": [
+      false,
+      "(self, platform=None)"
+    ],
+    "GatewayRunner._schedule_resume_pending_sessions": [
+      false,
+      "(self, platform=None)"
+    ],
+    "GatewayRunner.start": [
+      true,
+      "(self)"
+    ],
+    "GatewayRunner._create_adapter": [
+      false,
+      "(self, platform, config)"
+    ],
+    "GatewayRunner._hm_cmd_new": [
+      true,
+      "(self, event, source, _quick_key)"
+    ],
+    "GatewayRunner._handle_reset_command": [
+      true,
+      "(self, event)"
+    ],
+    "GatewayRunner._session_key_for_source": [
+      false,
+      "(self, source)"
+    ],
+    "GatewayRunner._hmwa_first_contact_notes": [
+      true,
+      "(self, source, history, turn_sidecar_notes)"
+    ]
+  },
+  "functions": {
+    "gateway.run._discover_gateway_mcp_tools": [
+      true,
+      "(config)"
+    ],
+    "gateway.run._exit_after_graceful_shutdown": [
+      false,
+      "(exit_code)"
+    ],
+    "hermes_cli.gateway._attach_to_host_gateway_or_guard": [
+      false,
+      "(force=False, replace=False)"
+    ],
+    "agent.system_prompt._guidance_parts": [
+      false,
+      "(agent)"
+    ]
+  },
+  "source_sha256": {
+    "gateway/run.py": "a40b3ba3b4a0bfaa8337413327db1b464e34aac1077055593be87a3f62d88bf6",
+    "gateway/run_startup.py": "0ac8da7d92534d7cbe7d144c9c25fdc3c0beb5369e42e3d14da1b5af8a0f8685",
+    "gateway/run_inbound.py": "1e6b4a07e68b7679cde5f747ca2c64f50757056079af162a203a33e33036bbcf",
+    "gateway/run_turn.py": "dc5149f838c54fb8fbcf66715ae2b44442e5441d3c62994471925cb2fd4a06e0",
+    "gateway/platforms/base.py": "8657cab37e6e481a7f7893d975c623a24500a216ccf82a1bdf35e473b04a357b",
+    "plugins/platforms/telegram/adapter.py": "faf184dea87c9e5d85c3b264a326a22a122c83def76cfbff5b290dfdc7e360bc",
+    "plugins/platforms/telegram/update_admission.py": "951aaffd712fa75f87dd9043fed0cacdc63f7fb6f9f07c2bf828ff853e8d2fcc",
+    "hermes_cli/gateway.py": "7c213473bb3ff6a74da10fbb09d76c8a2460c5877dfc5a4b7c5c68bea8596fb7",
+    "hermes_cli/main.py": "25f5bc1705b57576d899e15a2816e7f9a54d50044bef931efd2be3047f5eeb38",
+    "hermes_cli/env_loader.py": "fd7f5debf99701e153f77c21e433da280316a0846c4314023eda4aeb9fab5ecd",
+    "gateway/run_adapters.py": "2e3ab75c31a3a1a261b2cc38d7af341aae3c0b0d91315993d975f6b659a67037",
+    "hermes_cli/plugins_loader.py": "4c30636dd1229cb04b4065867478a4bec79abd824a182c8cbe3a583aaac67b35",
+    "gateway/slash_commands_session.py": "0d22c9304c1522dde4f60a094c3dead1c42d76108e1f00e0ef579c19ccc98ed9",
+    "gateway/run_agent_cache.py": "b92d48aa9f8fc4ca898301a76743d050f6ed24e30b0b1775140afb75cfd3943e",
+    "gateway/session.py": "b40abd1cc84c9f495e5900b4c6f3d26d75c72ae136404aff7fe0183baffc1337",
+    "gateway/run_busy.py": "e4baf0d89c3d035660be743543fc0504348619d17d7df2ddb28dfe066b666ddb",
+    "agent/system_prompt.py": "ed20750a13d2a797a1ca0d55006522204a95dd4bd1a1a071aeccdbb4285bc173",
+    "agent/prompt_builder.py": "d109f9c08441dcc03cc3d7eb52e489cc0de7a68b25007ec2bcb460b0506f95dd",
+    "gateway/run_turn_runner.py": "0d3c581cdb61bd2da8faedfa798f2419b7c8e59dfcc105ce5b259442db50e11e"
+  }
+}

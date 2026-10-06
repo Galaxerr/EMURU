@@ -113,6 +113,21 @@ def test_cloud_proxy_uses_remote_manifest_without_downloading_weights():
     assert connection.cloud
 
 
+@pytest.mark.parametrize("catalog_name", ["custom", "custom:latest"])
+def test_preflight_accepts_exact_name_and_latest_alias(catalog_name):
+    replies = [
+        {"models": [{"name": catalog_name, "remote_host": "https://ollama.com"}]},
+        {"capabilities": ["tools"]},
+    ]
+    with patch(
+        "emuru.ollama.urlopen", side_effect=[response(x) for x in replies]
+    ) as http:
+        connection = OllamaConnection("custom")
+        connection.check()
+    assert connection.cloud
+    assert json.loads(http.call_args_list[1].args[0].data) == {"model": "custom"}
+
+
 def test_model_suffix_does_not_override_actual_downloaded_route():
     replies = [{"models": [{"name": "custom-cloud"}]}, {"capabilities": ["tools"]}]
     with patch("emuru.ollama.urlopen", side_effect=[response(x) for x in replies]):

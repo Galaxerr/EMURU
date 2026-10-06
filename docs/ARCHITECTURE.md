@@ -120,9 +120,9 @@ and prompts. It starts the backend through `uv run --frozen --no-sync`.
 
 ### Synthetic vault adapter
 
-`infra/hermes/vault-binding.json` defines argv, environment, and argument
-templates for the existing indexer and MCP commands. `scripts/hermes-vault.py`
-renders those templates for a specific vault root and provides four modes:
+`scripts/hermes-vault.py` invokes `emuru-index --vault PATH` and
+`emuru-vault-mcp` directly, passing the vault root through `EMURU_VAULT_PATH`.
+Its stdio checks pass explicit tool arguments. It provides four modes:
 
 - `prepare`: copy the fixtures to `.runtime/vault` if absent and index them;
   an existing runtime vault is preserved and reindexed.
@@ -203,8 +203,10 @@ The Hermes runtime disables generic filesystem, shell, execution, browser,
 web, delegation, skills, scheduling, built-in memory, and session-search tools.
 The turn limit is at most 12; API retries and automatic recovery cycles are
 zero. Fallback providers, background review, title generation, and automatic
-memory/profile updates are disabled; secret redaction is enabled. The Telegram
-toolset is empty.
+memory/profile updates are disabled; secret redaction is enabled. CLI and
+Telegram expose only `mcp-vault`. The supported Telegram launcher installs the
+required durable admission bridge before starting the native gateway. See the
+Telegram boundary below for state and recovery, and the README for operation.
 
 Persistent transcripts are Hermes state; durable knowledge is vault Markdown.
 Neither updates model weights. Allowed notes sent to a cloud model leave the
@@ -232,7 +234,66 @@ selected-route validation, and runtime-record format checks. It does not
 install Hermes or prove the installed runtime matches the recorded commit.
 
 Telegram owner authentication, offline queues, durable update deduplication,
-interruption recovery, on-demand power lifecycle, LiteLLM gateway routing,
-Paperclip integration, and general vault cleanup remain future work. See the
-[completed v0.3.0 report](releases/v0.3.0-report.md) for the delivered scope and
+and interrupted-claim reporting are implemented by the guarded native runtime.
+On-demand power lifecycle, LiteLLM gateway routing, Paperclip integration,
+and general vault cleanup remain future work. See the
+[historical Phase 2 branch report](releases/v0.3.0-report.md) for the delivered scope and
 recorded validation.
+
+## Telegram durable boundary
+
+The public `telegram-settings.json` belongs to EMURU, not native Hermes.
+Types and fields are strict. Positive integer limits can be lowered, up to the
+checked-in ceilings; active turns stay exactly one. Commands, polling mode,
+private/text-only admission, and recovery policy are fixed. Native
+`platforms.telegram.extra` settings are checked separately. Polling timeout is
+25 seconds; the configured reconnect delay is a minimum between native poll
+attempts after a failure. Hermes may impose a longer native reconnect backoff.
+
+The runtime queue lives at `$HERMES_HOME/emuru-telegram/queue.sqlite3`, under the
+active emuru profile. Its directory is mode `0700`; the database, WAL/SHM and
+lock files are mode `0600`, under umask `077`. It uses schema version 1,
+`busy_timeout=5000`, WAL and `synchronous=FULL`. Unrecognized schemas stop startup
+without discarding existing queue data. Recovery acquires the lifetime lock
+before changing any rows.
+
+The queue commits the entire eligible polling batch before PTB can advance its
+acknowledgement. Queue overflow or disk failure stops intake and reports a local
+health error. Identity is `(bot_id, update_id)`; an autoincrement sequence preserves
+returned batch order, including decreasing or newly randomized update IDs.
+Unsupported updates are discarded before native callbacks, with no retained body.
+The original UTC message date may be at most one day old or 300 seconds ahead;
+exactly one day is allowed. Text and pending-capacity limits never truncate input
+or evict queued work.
+
+A single worker rechecks age and owner, then atomically claims FIFO input with
+its native session route before dispatch. Only claimed updates enter native
+Telegram admission, auth, handlers, context scopes and session locks. It awaits
+native text-flush tasks and the actual background turn through delivery; each
+update remains a separate turn. Provider/tool error results and processing
+failures are terminal even when native handlers contain their exceptions.
+Commands other than local `/status` use native handling in FIFO order, so `/stop` waits behind an
+active turn. Model routing, tool execution, transcripts, and conversation history
+remain Hermes-owned.
+
+States are `queued`, `started`, `completed`, `failed`, `interrupted`, `expired`
+and `rejected`. Queued input survives restart. Started input becomes interrupted
+and is reported without replay, including a crash after `vault_write` committed. The uncertainty
+notice is attempted once; a crash during that notice cannot resend it. Completed
+queue receipts are retained for seven days. Terminal rows shed their text;
+queued/started rows and native conversation history are never pruned. Native
+completed receipts are also reused. Native history
+recovery remains available, but synthetic Telegram auto-resume turns and
+unsolicited recovered sends cannot bypass the durable worker. An interrupted
+executor turn retires the worker until the gateway process restarts, preventing
+an old executor thread from overlapping a new agent turn.
+
+Egress permits text only to the owner's private chat while its claimed turn is
+open. An uncertain network send latches the turn against native resend fallbacks.
+This is durable admission and at-most-once dispatch, not a claim of exactly-once
+external effects or guaranteed delivery. Never delete or reset a live queue to
+resolve an uncertain write; inspect the vault and native transcript first.
+
+The [active v0.3.0 progress record](releases/v0.3.0-progress.md) separates
+working-tree checks, owner-reported Telegram acceptance, committed CI evidence,
+and the remaining Phase 4 release target. The historical report remains intact.

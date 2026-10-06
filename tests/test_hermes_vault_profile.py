@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import sys
 from unittest.mock import patch
 
@@ -10,6 +11,21 @@ from provider_profile_case import REPO, ProfileCase, profile
 
 
 class VaultProfileTests(ProfileCase):
+    def test_missing_live_setting_reports_key_without_private_stderr(self):
+        with (
+            patch.object(sys, "argv", ["hermes-vault-profile.py"]),
+            patch.object(
+                profile.subprocess,
+                "run",
+                side_effect=subprocess.CalledProcessError(
+                    1, "native config", stderr="SYNTHETIC_SECRET"
+                ),
+            ),
+            self.assertRaisesRegex(SystemExit, "unavailable: mcp_servers") as error,
+        ):
+            profile.main()
+        self.assertNotIn("SYNTHETIC_SECRET", str(error.exception))
+
     def test_live_audit_does_not_mutate(self):
         self.run_profile("--apply")
         before = list(self.writes)
@@ -56,10 +72,52 @@ class VaultProfileTests(ProfileCase):
             ("agent.api_max_retries", 1),
             ("agent.auto_recovery_cycles", 1),
             ("platform_toolsets.cli", ["mcp-vault", "terminal"]),
+            ("tools.tool_search.enabled", "on"),
             ("fallback_providers", [{"provider": "gemini"}]),
+            ("mcp_servers.other", {}),
         ):
             with self.subTest(key=key):
                 self.write_json("runtime-settings.json", {**original, key: value})
                 with self.assertRaises(SystemExit):
                     self.run_profile("--apply")
                 self.assertEqual(self.writes, [])
+
+    def test_all_generic_toolsets_must_stay_disabled(self):
+        original = json.loads((REPO / "infra/hermes/runtime-settings.json").read_text())
+        for name in profile.DISABLED_TOOLSETS:
+            with self.subTest(toolset=name):
+                settings = {
+                    **original,
+                    "agent.disabled_toolsets": [
+                        item
+                        for item in original["agent.disabled_toolsets"]
+                        if item != name
+                    ],
+                }
+                self.write_json("runtime-settings.json", settings)
+                with self.assertRaises(SystemExit):
+                    self.run_profile("--apply")
+                self.assertEqual(self.writes, [])
+
+    def test_broader_live_mcp_registration_fails_audit(self):
+        self.run_profile("--apply")
+        server = self.state["mcp_servers"]["vault"]
+        original = json.loads(json.dumps(server))
+        for key, value in (
+            (
+                "tools",
+                {
+                    "include": profile.TOOLS + ["terminal"],
+                    "resources": False,
+                    "prompts": False,
+                },
+            ),
+            ("sampling", {"enabled": True}),
+            ("elicitation", {"enabled": True}),
+            ("timeout", 30),
+            ("connect_timeout", 30),
+        ):
+            with self.subTest(key=key):
+                self.state["mcp_servers"]["vault"] = {**original, key: value}
+                with self.assertRaisesRegex(SystemExit, "MCP registration mismatch"):
+                    self.run_profile()

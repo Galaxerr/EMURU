@@ -26,7 +26,11 @@ class ProfileCase(unittest.TestCase):
         self.root = Path(temporary.name)
         (self.root / "infra/hermes").mkdir(parents=True)
         (self.root / ".runtime/vault").mkdir(parents=True)
-        for name in ("runtime-settings.json", "model-selection.json"):
+        for name in (
+            "runtime-settings.json",
+            "model-selection.json",
+            "telegram-settings.json",
+        ):
             source = REPO / "infra/hermes" / name
             (self.root / "infra/hermes" / name).write_bytes(source.read_bytes())
         # Regression scenarios are independent of the owner's active selection.
@@ -104,8 +108,17 @@ class ProfileCase(unittest.TestCase):
         self.assertEqual(server["tools"]["include"], profile.TOOLS)
         self.assertFalse(server["sampling"]["enabled"])
         self.assertFalse(server["elicitation"]["enabled"])
+        self.assertEqual(server["timeout"], 15)
+        self.assertEqual(server["connect_timeout"], 15)
         self.assertEqual(self.state["platform_toolsets.cli"], ["mcp-vault"])
-        self.assertEqual(self.state["platform_toolsets.telegram"], [])
+        self.assertEqual(self.state["platform_toolsets.telegram"], ["mcp-vault"])
+        self.assertEqual(self.state["tools.tool_search.enabled"], "off")
+        self.assertIs(
+            self.state["platforms.telegram.extra.drop_pending_on_cold_boot"], False
+        )
+        self.assertEqual(
+            self.state["platforms.telegram.extra.max_concurrent_updates"], 1
+        )
         self.assertEqual(self.state["agent.api_max_retries"], 0)
         self.assertEqual(self.state["agent.auto_recovery_cycles"], 0)
         self.assertEqual(self.state["fallback_providers"], [])

@@ -33,7 +33,11 @@
   "platform_toolsets.cli": [
     "mcp-vault"
   ],
-  "platform_toolsets.telegram": [],
+  "platform_toolsets.telegram": ["mcp-vault"],
+  "tools.tool_search.enabled": "off",
+  "platforms.telegram.extra.drop_pending_on_cold_boot": false,
+  "platforms.telegram.extra.max_concurrent_updates": 1,
+  "gateway.standalone": true,
   "fallback_providers": [],
   "memory.memory_enabled": false,
   "memory.user_profile_enabled": false,

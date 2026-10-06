@@ -287,16 +287,6 @@ def write_sqlite(
     try:
         conn.executescript(
             """
-            CREATE TABLE note_meta (
-                path TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                note_type TEXT NOT NULL,
-                project TEXT NOT NULL,
-                updated TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                links_json TEXT NOT NULL
-            );
-
             CREATE VIRTUAL TABLE note_fts
             USING fts5(
                 path UNINDEXED,
@@ -310,33 +300,6 @@ def write_sqlite(
         )
 
         for note in notes:
-            conn.execute(
-                """
-                INSERT INTO note_meta (
-                    path,
-                    title,
-                    note_type,
-                    project,
-                    updated,
-                    sha256,
-                    links_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    note.path,
-                    note.title,
-                    note.note_type,
-                    note.project,
-                    note.updated,
-                    note.sha256,
-                    json.dumps(
-                        note.links,
-                        ensure_ascii=False,
-                    ),
-                ),
-            )
-
             conn.execute(
                 """
                 INSERT INTO note_fts (

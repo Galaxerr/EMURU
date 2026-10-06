@@ -228,6 +228,11 @@ def create_mcp(
         """
         Search indexed EMURU vault notes.
 
+        Use a short lexical query: all words must match. Words become
+        quoted terms joined with AND; OR is a literal word and security*
+        searches for security, not a wildcard prefix. Raw FTS syntax is
+        not supported.
+
         Returns matching note paths, titles, summaries and excerpts.
         Use the returned path with vault_open when more detail is
         required.

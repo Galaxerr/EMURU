@@ -5,7 +5,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   quality:
@@ -30,31 +30,13 @@ jobs:
         run: uv sync --locked
 
       - name: Format with Ruff
-        run: uv run ruff format .
-
-      - name: Apply Ruff fixes
-        run: uv run ruff check --fix .
+        run: uv run ruff format --check .
 
       - name: Verify lint
         run: uv run ruff check .
 
       - name: Run tests
         run: uv run pytest -q
-
-      - name: Commit Ruff changes
-        if: github.event_name == 'push'
-        run: |
-          if git diff --quiet; then
-            echo "No Ruff changes required."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add .
-          git commit -m "style: apply Ruff automatic fixes"
-          git push
 
   hermes-baseline:
     name: Hermes baseline contract
@@ -71,6 +53,18 @@ jobs:
         run: uv sync --locked
       - name: Validate launch script
         run: bash -n scripts/hermes-emuru.sh
+      - name: Validate Telegram launcher
+        run: bash -n scripts/hermes-telegram.sh
+      - name: Validate Telegram contract offline
+        run: uv run --frozen python scripts/hermes-telegram.py --offline
+      - name: Test Telegram admission and restart reliability
+        run: >-
+          uv run --frozen pytest -q
+          tests/telegram/test_telegram_queue.py
+          tests/telegram/test_telegram_runtime.py
+          tests/telegram/test_hermes_telegram_profile.py
+          tests/telegram/test_telegram_vault_integration.py
+          tests/telegram/test_telegram_launcher.py
       - name: Validate configuration contract
         run: python3 scripts/hermes-baseline.py
       - name: Test vault integration over stdio
