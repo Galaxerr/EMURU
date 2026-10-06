@@ -1,7 +1,7 @@
 [project]
 name = "emuru"
-version = "0.3.0"
-description = "Add your description here"
+version = "0.3.1"
+description = "Self-hosted knowledge assistant with constrained vault MCP and durable Telegram execution"
 readme = "README.md"
 authors = [
     { name = "Galaxerr", email = "160768649+Galaxerr@users.noreply.github.com" }
