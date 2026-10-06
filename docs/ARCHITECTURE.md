@@ -331,6 +331,22 @@ The original UTC message date may be at most one day old or 300 seconds ahead;
 exactly one day is allowed. Text and pending-capacity limits never truncate input
 or evict queued work.
 
+`src/emuru/telegram_worker.py` owns durable admission, FIFO claims, completion,
+interruption, and worker lifecycle. Its execution seam accepts only primitive
+identity/routing data, normalized input, notices, and frozen `TurnResult` values.
+The worker never reads native applications, sessions, tasks, recovery flags, or
+turn state. Process health reporting is an injected callback.
+
+`src/emuru/telegram_native.py` implements the pinned Hermes/PTB adapter. It owns
+polling, session routing, startup recovery waits, detached task completion, class
+guards, lifecycle binding, and egress. Mutable turn state stays inside scoped
+adapter contexts; closing a scope also closes inherited detached-task contexts.
+The runtime entry point composes this adapter with the worker. Tests reuse a
+deterministic adapter for worker outcomes and real synthetic MCP operations,
+while retaining native guard checks and installed-native session regressions.
+The upstream contract pins remain unchanged because this refactor does not
+change Hermes or PTB.
+
 A single worker rechecks age and owner, then atomically claims FIFO input with
 its native session route before dispatch. Only claimed updates enter native
 Telegram admission, auth, handlers, context scopes and session locks. It awaits

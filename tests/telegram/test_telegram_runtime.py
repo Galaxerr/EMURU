@@ -7,9 +7,11 @@ from enum import Enum
 from types import SimpleNamespace as NS
 
 import pytest
+from telegram_helpers import DeterministicTelegram
 from telegram_helpers import update as raw
 
 from emuru.telegram_queue import TelegramQueue
+from emuru.telegram_worker import TelegramWorker, TurnResult
 
 
 @pytest.fixture
@@ -52,6 +54,8 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             return True
 
         async def send_message(self, chat_id, text):
+            if text.startswith("Telegram update "):
+                reports.append(int(text.split()[2]))
             return await self._post("sendMessage", {"chat_id": chat_id, "text": text})
 
     class Updater:
@@ -150,6 +154,7 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             self._seen_update_ids = {}
             self._pending_text_batch_tasks = {}
             self.runner = Runner()
+            self.gateway_runner = self.runner
 
         async def connect(self):
             return True
@@ -208,20 +213,18 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
     app.bot, app.adapter = bot, adapter
     adapter._app = app
 
-    async def report(app, uid):
-        reports.append(uid)
-
-    bridge = runtime.Bridge(queue, None, report)
     prompt = NS(STEER_CHANNEL_NOTE="[OUT-OF-BAND USER MESSAGE] <their message>")
-    runtime.restrict_prompt(prompt)
+    runtime.native.restrict_prompt(prompt)
     receipts = NS(
         _load_receipts=lambda adapter, bot: None,
         _record_receipt=lambda adapter, key: adapter._seen_update_ids.update(
             {key: 100000}
         ),
     )
-    runtime.install_guards(
-        bridge,
+    execution = runtime.native.NativeTelegram(
+        queue,
+        runtime.ROOT,
+        app=app,
         Bot=Bot,
         Application=Application,
         Updater=Updater,
@@ -233,7 +236,8 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
     )
     result = NS(
         queue=queue,
-        bridge=bridge,
+        bridge=execution.worker,
+        execution=execution,
         bot=bot,
         adapter=adapter,
         app=app,
@@ -256,7 +260,7 @@ def test_registry_adapter_starts_consumer_and_drains_ingress(
     boundary, runtime, monkeypatch
 ):
     b = boundary
-    monkeypatch.setattr(runtime, "verify_native_contract", lambda *a, **kw: None)
+    monkeypatch.setattr(runtime.native, "verify_native_contract", lambda *a, **kw: None)
 
     async def check():
         # Factory returns a second import of the adapter, as the native registry does.
@@ -276,7 +280,7 @@ def test_registry_adapter_starts_consumer_and_drains_ingress(
             await asyncio.sleep(0.001)
         assert b.effects == ["factory request"]
         assert b.queue.status() == {"completed": 1}
-        assert b.bridge.bot_id == b.bot.id == 7
+        assert b.execution.identity()[0] == b.bot.id == 7
         assert b.network == [("sendMessage", {"chat_id": 42, "text": "native reply"})]
         await adapter.disconnect()
 
@@ -292,7 +296,7 @@ def test_readiness_requires_real_consumer_and_bot_scope(boundary):
         await b.adapter.connect()
         await b.bridge.require_consumer()
         assert b.bridge.queue is b.queue
-        b.bridge.bot_id = 8
+        b.bot.id = 8
         with pytest.raises(RuntimeError, match="consumer_not_running"):
             await b.bridge.require_consumer()
         await b.bridge.stop()
@@ -393,7 +397,7 @@ def test_worker_exit_reports_safe_health_and_preserves_pending(
 ):
     b = boundary
 
-    async def crash(app):
+    async def crash():
         raise RuntimeError("SYNTHETIC_SECRET")
 
     monkeypatch.setattr(b.bridge, "once", crash)
@@ -416,8 +420,9 @@ def test_worker_exit_reports_safe_health_and_preserves_pending(
     assert "SYNTHETIC_SECRET" not in caplog.text
 
 
+@pytest.mark.parametrize("failure", ["storage", "serialization"])
 def test_poll_stages_before_return_and_durability_failure_prevents_ack(
-    boundary, monkeypatch
+    boundary, monkeypatch, failure
 ):
     b = boundary
 
@@ -430,10 +435,14 @@ def test_poll_stages_before_return_and_durability_failure_prevents_ack(
         def fail(*args):
             raise OSError("disk full")
 
-        monkeypatch.setattr(b.queue, "stage", fail)
+        if failure == "storage":
+            monkeypatch.setattr(b.queue, "stage", fail)
+        else:
+            monkeypatch.setattr(b.Update, "to_json", fail)
         with pytest.raises(RuntimeError, match="persistence failed"):
             await b.bot.get_updates(offset=3)
         assert b.bridge.intake_failed and len(b.fatal) == 1
+        assert b.queue.status() == {"queued": 2}
         with pytest.raises(RuntimeError, match="intake stopped"):
             await b.bot.get_updates(offset=999)
         assert b.effects == []
@@ -481,8 +490,7 @@ def test_egress_owner_text_only_and_no_send_retry_after_uncertain_failure(
         ):
             with pytest.raises(RuntimeError, match="egress"):
                 await b.bot._post(endpoint, data)
-        token = b.bridge.current.set({"open": True, "failed": False})
-        try:
+        with b.execution._turn_scope(1):
             with pytest.raises(RuntimeError, match="egress"):
                 await b.bot._post(
                     "editMessageText", {"chat_id": 43, "text": "wrong destination"}
@@ -494,13 +502,11 @@ def test_egress_owner_text_only_and_no_send_retry_after_uncertain_failure(
                 await b.bot._post(
                     "sendMessage", {"chat_id": 42, "text": "native formatting fallback"}
                 )
-        finally:
-            b.bridge.current.reset(token)
         assert len(b.network) == 1
         b.queue.stage(7, [raw(1)])
-        assert await b.bridge.once(b.app)
+        assert await b.bridge.once()
         assert b.queue.status() == {"failed": 1}
-        assert await b.bridge.once(b.app)
+        assert await b.bridge.once()
         assert b.reports == [1]
         assert b.effects == ["hello"]
         assert "SYNTHETIC_TOKEN" not in caplog.text
@@ -522,12 +528,12 @@ def test_returned_provider_or_tool_failure_is_terminal(boundary, result, caplog)
 
     async def check():
         b.queue.stage(7, [raw(1)])
-        assert await b.bridge.once(b.app)
+        assert await b.bridge.once()
         assert b.queue.status() == {"failed": 1}
         assert b.queue.db.execute("SELECT text FROM updates").fetchone()[0] is None
-        assert await b.bridge.once(b.app)
+        assert await b.bridge.once()
         b.queue.stage(7, [raw(1)])
-        assert not await b.bridge.once(b.app)
+        assert not await b.bridge.once()
         assert b.effects == ["hello"] and b.reports == [1]
 
     asyncio.run(check())
@@ -548,7 +554,6 @@ def test_changed_native_signature_fails_closed(
             }
         )
     )
-    monkeypatch.setattr(runtime, "ROOT", tmp_path)
     classes = (
         type(b.bot),
         type(b.app),
@@ -556,14 +561,14 @@ def test_changed_native_signature_fails_closed(
         type(b.adapter),
         type(b.adapter.runner),
     )
-    runtime.verify_native_contract(*classes)
+    runtime.native.verify_native_contract(tmp_path, *classes)
 
     async def changed(bot, unexpected):
         pass
 
     monkeypatch.setattr(type(b.bot), "get_updates", changed)
     with pytest.raises(RuntimeError, match="seam changed"):
-        runtime.verify_native_contract(*classes)
+        runtime.native.verify_native_contract(tmp_path, *classes)
 
 
 def test_unclaimed_synthetic_recovery_and_second_turn_are_blocked(boundary):
@@ -576,10 +581,7 @@ def test_unclaimed_synthetic_recovery_and_second_turn_are_blocked(boundary):
         assert [
             e.origin.platform for e in b.adapter.runner._resume_pending_candidates()
         ] == ["discord"]
-        token = b.bridge.current.set(
-            {"uid": 1, "open": True, "notice": False, "agent_entered": False}
-        )
-        try:
+        with b.execution._turn_scope(1):
             event.internal = True
             with pytest.raises(RuntimeError, match="Unclaimed"):
                 await b.adapter.runner._handle_message(event)
@@ -587,9 +589,17 @@ def test_unclaimed_synthetic_recovery_and_second_turn_are_blocked(boundary):
             await b.adapter.runner._handle_message_with_agent(event)
             with pytest.raises(RuntimeError, match="second agent"):
                 await b.adapter.runner._handle_message_with_agent(event)
-        finally:
-            b.bridge.current.reset(token)
         assert b.effects == ["hello"]
+
+        async def detached_send():
+            await asyncio.sleep(0)
+            await b.bot._post("sendMessage", {"chat_id": 42, "text": "late reply"})
+
+        with b.execution._turn_scope(2):
+            late = asyncio.create_task(detached_send())
+        with pytest.raises(RuntimeError, match="egress"):
+            await late
+        assert b.network == []
 
     asyncio.run(check())
 
@@ -600,7 +610,7 @@ def test_native_receipts_and_polling_contract_are_reused(boundary):
     async def check():
         b.adapter._seen_update_ids["7:1"] = 100000
         b.queue.stage(7, [raw(1)])
-        assert await b.bridge.once(b.app)
+        assert await b.bridge.once()
         assert b.effects == [] and b.queue.status() == {"completed": 1}
         options = await b.Updater().start_polling(drop_pending_updates=True, timeout=99)
         assert options["drop_pending_updates"] is False
@@ -635,11 +645,11 @@ def test_native_startup_gate_cannot_requeue_or_merge_durable_pending_input(bound
 
     async def check():
         b.queue.stage(7, [raw(1), raw(2, "second")])
-        b.bridge.native_runner = NS(_startup_restore_in_progress=True)
+        b.adapter.runner._startup_restore_in_progress = True
         await b.adapter.connect()
         await asyncio.sleep(0)
         assert b.queue.status() == {"queued": 2} and b.effects == []
-        b.bridge.native_runner._startup_restore_in_progress = False
+        b.adapter.runner._startup_restore_in_progress = False
         await asyncio.wait_for(b.started.wait(), 1)
         for _ in range(100):
             if b.queue.status() == {"completed": 2}:
@@ -650,3 +660,69 @@ def test_native_startup_gate_cannot_requeue_or_merge_durable_pending_input(bound
         await b.bridge.stop()
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "outcome,state,error",
+    [
+        (TurnResult(True), "completed", None),
+        (TurnResult(False, "provider_failed"), "failed", "provider_failed"),
+        (TurnResult(False, "tool_failed"), "failed", "tool_failed"),
+        (
+            TurnResult(False, "native_cancelled", True),
+            "interrupted",
+            "turn_interrupted",
+        ),
+        (RuntimeError("SYNTHETIC_SECRET"), "failed", "turn_failed"),
+        (asyncio.CancelledError(), "interrupted", "turn_interrupted"),
+        (False, "failed", "turn_failed"),
+    ],
+)
+def test_worker_outcomes_through_execution_seam(
+    tmp_path, policy, caplog, outcome, state, error
+):
+    queue = TelegramQueue(tmp_path / "queue.sqlite3", policy, 42, clock=lambda: 100000)
+    calls = []
+
+    async def execute(payload):
+        calls.append(payload["update_id"])
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    execution = DeterministicTelegram(execute)
+    worker = TelegramWorker(queue, execution)
+
+    async def check():
+        worker.stage(7, [raw(1), raw(1)])
+        if isinstance(outcome, asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await worker.once()
+        else:
+            assert await worker.once()
+        row = queue.db.execute("SELECT * FROM updates").fetchone()
+        assert (row["state"], row["error_code"], row["session_key"], row["text"]) == (
+            state,
+            error,
+            "owner",
+            None,
+        )
+        if state == "interrupted":
+            with pytest.raises(RuntimeError, match="restart"):
+                await worker.once()
+            # Restart preserves terminal state and permits only one uncertainty notice.
+            worker_after_restart = TelegramWorker(queue, execution)
+            assert await worker_after_restart.once()
+            assert not await worker_after_restart.once()
+        else:
+            if state == "failed":
+                assert await worker.once()
+            assert not await worker.once()
+        assert calls == [1]
+        assert execution.notices == ([] if state == "completed" else [1])
+
+    try:
+        asyncio.run(check())
+        assert "SYNTHETIC_SECRET" not in caplog.text
+    finally:
+        queue.close()

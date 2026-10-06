@@ -5,15 +5,16 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from types import SimpleNamespace as NS
 
+from telegram_helpers import DeterministicTelegram
 from telegram_helpers import update as raw
 
 from emuru.telegram_queue import TelegramQueue
+from emuru.telegram_worker import TelegramWorker, TurnResult
 
 
 def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
-    tmp_path, policy, runtime
+    tmp_path, policy
 ):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -47,7 +48,7 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
                 "vault_neighbors",
                 "vault_write",
             }
-            calls, notices = [], []
+            calls = []
 
             async def call(name, arguments):
                 calls.append(name)
@@ -55,13 +56,13 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
                 assert not result.is_error
                 return result.model_dump_json()
 
-            async def fake_agent(app, payload):
+            async def fake_agent(payload):
                 if payload["message"]["text"] == "read":
                     found = await call("vault_search", {"query": "EMURU"})
                     assert "10_Projects/EMURU.md" in found
                     opened = await call("vault_open", {"path": "10_Projects/EMURU.md"})
                     assert "Synthetic source marker" in opened
-                    return True
+                    return TurnResult(True)
                 if payload["message"]["text"] == "save":
                     await call(
                         "vault_write",
@@ -79,16 +80,13 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
                     raise asyncio.CancelledError
                 raise AssertionError("Unexpected deterministic prompt")
 
-            async def report(app, uid):
-                notices.append(uid)
-
-            app = NS(bot=NS(id=7, username="emuru"))
+            execution = DeterministicTelegram(fake_agent)
             q = TelegramQueue(queue_path, policy, 42, clock=lambda: 100000)
             q.stage(7, [raw(1, "read"), raw(1, "read"), raw(2, "save")])
-            bridge = runtime.Bridge(q, fake_agent, report)
-            assert await bridge.once(app)
+            bridge = TelegramWorker(q, execution)
+            assert await bridge.once()
             try:
-                await bridge.once(app)
+                await bridge.once()
             except asyncio.CancelledError:
                 pass
             else:
@@ -96,12 +94,12 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
             q.close()
             q = TelegramQueue(queue_path, policy, 42, clock=lambda: 100000)
             q.recover()
-            bridge = runtime.Bridge(q, fake_agent, report)
-            while await bridge.once(app):
+            bridge = TelegramWorker(q, execution)
+            while await bridge.once():
                 pass
             q.stage(7, [raw(2, "save"), raw(1, "read")])
-            assert not await bridge.once(app)
-            assert notices == [2] and calls.count("vault_write") == 1
+            assert not await bridge.once()
+            assert execution.notices == [2] and calls.count("vault_write") == 1
             assert q.status() == {"completed": 1, "interrupted": 1}
             q.close()
             assert (vault / "00_Inbox/telegram-memory.md").read_text().count(

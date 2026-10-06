@@ -121,7 +121,7 @@ async def check(run, adapter, bridge, directory):
     try:
         bridge.queue.stage(bot.id, updates, bot.username)
         with patch("hermes_cli.lifecycle.invoke_hook"):
-            while await bridge.once(adapter._app):
+            while await bridge.once():
                 pass
         assert len(captured) == 2 and len(transitions) == 1
         old, new = transitions[0]
@@ -131,6 +131,6 @@ async def check(run, adapter, bridge, directory):
         assert captured[1][1][-1] == {"role": "user", "content": question}
         assert marker in json.dumps(store.load_transcript(old))
         bridge.queue.stage(bot.id, [updates[1]], bot.username)
-        assert not await bridge.once(adapter._app) and len(transitions) == 1
+        assert not await bridge.once() and len(transitions) == 1
     finally:
         db.close()

@@ -118,18 +118,16 @@ def test_readiness_fails_closed_and_hard_exit_closes_queue(
     async def consumer():
         calls.append("consumer")
 
-    runtime.install_launch_guards(
-        run,
-        NS(_attach_to_host_gateway_or_guard=None),
-        queue,
-        NS(),
-        NS(require_consumer=consumer),
+    execution = object.__new__(runtime.native.NativeTelegram)
+    execution.queue, execution.worker = queue, NS(require_consumer=consumer)
+    execution.install_launch_guards(
+        run, NS(_attach_to_host_gateway_or_guard=None), NS()
     )
-    monkeypatch.setattr(runtime, "vault_tools_ready", lambda: False)
+    monkeypatch.setattr(runtime.native, "vault_tools_ready", lambda: False)
     with pytest.raises(RuntimeError, match="vault_mcp_not_ready"):
         asyncio.run(Runner().start())
     assert calls == [] and capsys.readouterr().out == ""
-    monkeypatch.setattr(runtime, "vault_tools_ready", lambda: True)
+    monkeypatch.setattr(runtime.native, "vault_tools_ready", lambda: True)
     assert asyncio.run(Runner().start()) is True
     assert "five MCP tools READY" in capsys.readouterr().out
     run._exit_after_graceful_shutdown(0)
@@ -298,11 +296,17 @@ def test_native_main_keeps_its_lifecycle_with_guards_and_private_config(
     monkeypatch.setattr(runtime, "runtime_identity", lambda: None)
     monkeypatch.setattr(runtime, "private_config", lambda: (config, 42))
     monkeypatch.setattr(runtime, "audit_live_profile", lambda: None)
-    monkeypatch.setattr(runtime, "verify_functions", lambda *args: None)
-    monkeypatch.setattr(runtime, "verify_native_contract", lambda *args: None)
-    monkeypatch.setattr(
-        runtime, "install_guards", lambda *args, **kwargs: calls.append("guards")
-    )
+    monkeypatch.setattr(runtime.native, "verify_functions", lambda *args: None)
+    monkeypatch.setattr(runtime.native, "verify_native_contract", lambda *args: None)
+    native_class = runtime.native.NativeTelegram
+
+    def execution_adapter(queue, *args, **kwargs):
+        calls.append("guards")
+        execution = object.__new__(native_class)
+        execution.queue, execution.worker = queue, NS()
+        return execution
+
+    monkeypatch.setattr(runtime.native, "NativeTelegram", execution_adapter)
     monkeypatch.setattr(sys, "argv", ["bridge"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "emuru-telegram/instance.lock"

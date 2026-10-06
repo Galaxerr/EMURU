@@ -12,3 +12,26 @@ def update(uid=1, text="hello", date=100000, *, owner_id=42):
             "text": text,
         },
     }
+
+
+class DeterministicTelegram:
+    """The worker's execution seam without PTB, native sessions, or guard state."""
+
+    def __init__(self, execute):
+        self._execute = execute
+        self.notices = []
+
+    def identity(self):
+        return 7, "emuru"
+
+    async def wait_ready(self):
+        pass
+
+    def route(self, payload):
+        return "owner"
+
+    async def execute(self, payload, session_key):
+        return await self._execute(payload)
+
+    async def notice(self, uid, status=None):
+        self.notices.append(uid)
