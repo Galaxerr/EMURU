@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 # Import only stdlib EMURU modules; Hermes keeps its own interpreter and MCP SDK.
 sys.path.insert(0, str(ROOT / "src"))
+from emuru.environment import load_env
 from emuru.hermes import profile
 from emuru.hermes.profile import HealthError
 from emuru.telegram import queue as queue_module
@@ -125,6 +126,7 @@ def launch(mode):
 
 
 def main():
+    load_env(ROOT / ".env")
     parser = argparse.ArgumentParser()
     modes = parser.add_mutually_exclusive_group(required=True)
     for name in ("offline", "check", "status", "runtime-check", "launch", "preflight"):

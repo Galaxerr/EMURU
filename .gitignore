@@ -41,3 +41,6 @@ queue.sqlite*
 
 # Owner-only live vault binding; normally outside this repository
 vault-target.json
+
+# Generated Docker deployment paths (private state lives outside the checkout)
+infra/docker/deployment.env

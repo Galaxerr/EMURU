@@ -85,7 +85,13 @@ def expected_settings(root: Path, *, model: dict | None = None):
                 )
             # Native audits use the reviewed, persisted route without contacting Ollama.
             cloud = context == 0
-        route = provider_settings(selection, cloud=cloud)
+        if os.environ.get("EMURU_CONTAINER_ROUTE"):
+            from emuru.models.gateway import read_route
+            from emuru.models.gateway import settings as gateway_settings
+
+            route = gateway_settings(read_route(os.environ["EMURU_CONTAINER_ROUTE"]))
+        else:
+            route = provider_settings(selection, cloud=cloud)
     except ProfileError:
         raise
     except ValueError as error:

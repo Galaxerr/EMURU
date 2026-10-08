@@ -1,4 +1,4 @@
-# EMURU architecture — v0.3.1
+# EMURU architecture — v0.3.2
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
 vault through five constrained MCP tools. Telegram adds durable owner-only
@@ -31,7 +31,9 @@ All module paths below are relative to `src/emuru/`.
 | `vault/target.py` | Private live-target validation using indexer-owned derived paths and shared profile-home validation |
 | `vault/cli.py`, `vault/server.py` | `emuru-index` and `emuru-vault-mcp` entry points |
 | `hermes/profile.py` | Shared profile policy, provider composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
+| `environment.py` | Owner-only root `.env` parsing and atomic secret updates |
 | `models/providers.py`, provider modules | Explicit provider selection and provider-specific configuration/preflight |
+| `models/gateway.py` | Private primary route validation, local-candidate metadata, and authenticated primary-only proxy rendering |
 | `telegram/queue.py` | SQLite durability, seven states, admission/claims/recovery, permissions, receipt error normalization and read-only diagnostics |
 | `telegram/worker.py` | FIFO orchestration, durable outcomes and worker lifecycle through the execution interface |
 | `telegram/native.py` | Pinned Hermes/PTB polling, routing, completion, scoped turn state, scheduling, egress guards, native patches and process health |
@@ -49,14 +51,24 @@ use only stdlib; MCP and YAML dependencies stay in EMURU's vault environment.
 
 ## Configuration and state
 
+The workspace-root `.env` is the source for external API keys and the Telegram
+token. Launch tools load it only when it is owner-owned and mode `0600`;
+process-environment values take precedence. Docker initialization syncs only the
+needed credentials into mode-`0600` Compose secret files and the private Hermes
+profile. The generated gateway key also lives in the root `.env`; Docker gets
+separate copies for the app and LiteLLM. The MCP child receives none of these keys.
+
 | Location | Purpose |
 | --- | --- |
 | `infra/hermes/runtime-settings.json`, `model-selection.json` | Public shared policy and explicit provider/model route |
 | `infra/hermes/telegram-settings.json` | Public transport/admission limits |
 | `infra/hermes/runtime-lock.json`, `telegram-native-contract.json` | Installed Hermes identity and required native contract pins |
 | `infra/hermes/settings.json` | Original tools-disabled Gemini baseline |
+| Workspace-root `.env` | Source for provider/API keys, Telegram token and generated gateway key (ignored by Git; mode 0600) |
+| `$HOME/.local/state/emuru/container/` | Default private container profile, state, route, model config, secret copies and Ollama cache |
+| `infra/docker/deployment.env` | Generated UID/GID, owner ID and absolute private bind paths (ignored by Git; mode 0600; no keys) |
 | `agents/emuru/SOUL.md` | Conversational policy, installed separately in the private Hermes profile |
-| Private `profiles/emuru/` | Credentials, native history, `vault-target.json`, queue storage and process health |
+| Private `profiles/emuru/` | Runtime token copy, native history, `vault-target.json`, queue storage and process health |
 | Separate vault repository | Authoritative Markdown and generated `_index/graph.json`, `_index/notes.sqlite`, `99_System/INDEX.md` |
 | `tests/fixtures/hermes-vault/`, ignored `.runtime/vault/` | Synthetic fixtures and their optional runtime copy |
 
@@ -97,5 +109,47 @@ uses the installed pinned Hermes/PTB session implementation with synthetic
 HTTP/provider behavior. Hosted CI does not prove live deployment acceptance.
 
 Follow [README](../README.md) for setup and [RUNBOOK](RUNBOOK.md) for migration,
-service lifecycle and recovery. [Release evidence](releases/v0.3.1-report.md)
-separates v0.3.1 verification from archived v0.3.0 acceptance.
+service lifecycle and recovery. [Release evidence](releases/v0.3.2-report.md)
+separates container foundation checks from pending live acceptance. Historical
+v0.3.1 and v0.3.0 evidence remains archived unchanged.
+
+## Opt-in container foundation
+
+The application image contains separate EMURU and pinned Hermes environments.
+The immutable checkout retains Git metadata and native source hashes. The guarded
+launcher still owns the lifetime flock and execs the native runtime. Startup is
+offline, with lazy installation disabled. The host installation remains independent.
+
+`models/gateway.py` validates the private route, composes the Hermes named custom
+provider, and renders one authenticated LiteLLM alias. `EMURU_CONTAINER_ROUTE`
+explicitly enables this composition; it does not alter the host selection file.
+Ollama cloud primaries use `https://ollama.com` with the private `OLLAMA_API_KEY`
+secret. Pair selection resolves daemon aliases to their discovered `remote_model`
+before rendering; older alias routes must be reselected. This avoids depending
+on daemon sign-in state inside the proxy.
+The local candidate has a catalog digest and null qualification, and is never
+rendered into the proxy. All retry/fallback settings remain disabled.
+
+Compose uses one ordinary bridge network with outbound connectivity, no default
+published ports, and a separate opt-in `agent` profile. The profile, workspace,
+synthetic runtime and Ollama cache have explicit persistent bind sources. Missing
+sources fail rather than becoming empty state. Credentials use file secrets;
+only the application and proxy receive the gateway key; only LiteLLM receives
+selected upstream provider keys. The existing MCP child environment allowlist
+excludes gateway and upstream credentials.
+
+`scripts/hermes/container.py` is the operator seam for this deployment. It owns
+the private directory layout, key generation, route copy, proxy rendering,
+Compose environment and lifecycle delegation. Private data defaults to
+`$HOME/.local/state/emuru/container`; Compose metadata stays in
+`infra/docker/deployment.env`, including when `--home` selects another root.
+Rebuilds initialize that layout and reuse existing state. Its interface is
+intentionally small (`init`, `config`, `up`, `down`, `status`); route selection
+and model qualification remain behind the existing explicit picker seam.
+
+The container checker replaces Ollama with a deterministic native-chat fixture
+only in its disposable Compose project. Proxy authentication, structured tool
+round trips and upstream attempt counts are tested against the actual pinned
+proxy. It separately checks the real daemon and recreates application containers
+around an unchanged queued receipt. Empty-cache survival does not prove a model
+digest survives, model qualification, or 64k context usability.

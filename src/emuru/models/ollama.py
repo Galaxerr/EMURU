@@ -36,6 +36,8 @@ def ollama_base_url(value: str = DEFAULT_BASE_URL) -> str:
     if not isinstance(value, str):
         raise ValueError("Ollama base_url must be a local HTTP URL")  # noqa: TRY004
     parsed = urlsplit(value)
+    if value == "http://ollama:11434/v1" and os.environ.get("EMURU_CONTAINER_ROUTE"):
+        return value
     if value.rstrip("/") in {"https://ollama.com", "https://ollama.com/v1"}:
         return "https://ollama.com/v1"
     try:
@@ -145,15 +147,32 @@ class OllamaConnection(OllamaClient):
                 f"Ollama model {self.model} is not installed; "
                 f"run 'ollama pull {self.model}'"
             )
+        self.registered = registered
         if self.direct_cloud:
             # Catalog discovery does not advertise tools; smoke verifies them live.
             return {}
         info = self.request("/api/show", {"model": self.model})
         # Remote metadata also identifies user-created cloud aliases without a suffix.
-        self.cloud = bool(
-            registered.get("remote_host") or registered.get("remote_model")
+        for key in ("remote_host", "remote_model"):
+            values = [
+                record.get(key)
+                for record in (registered, info)
+                if record.get(key) not in (None, "")
+            ]
+            if (
+                any(not isinstance(value, str) for value in values)
+                or len(set(values)) > 1
+            ):
+                raise RuntimeError("Inconsistent Ollama remote metadata")
+        self.cloud = any(
+            record.get(key)
+            for record in (registered, info)
+            for key in ("remote_host", "remote_model")
         )
-        if "tools" not in info.get("capabilities", []):
+        if (
+            not isinstance(info.get("capabilities"), list)
+            or "tools" not in info["capabilities"]
+        ):
             raise RuntimeError(
                 "Selected Ollama model lacks tool calling; agent vault chat requires a tools model"
             )
