@@ -2,8 +2,10 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 
+from emuru.environment import load_env
 from emuru.models.ollama import DEFAULT_BASE_URL, OllamaClient, OllamaConnection
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +43,7 @@ def choose_model(models: list[dict], requested: str | None = None) -> str:
 
 
 def main():
+    load_env(Path(__file__).resolve().parents[2] / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--smoke", action="store_true", help="Run chat and tool calls")
     actions = parser.add_mutually_exclusive_group()
@@ -57,7 +60,44 @@ def main():
     actions.add_argument(
         "--model", help="Test a model without changing the saved selection"
     )
+    parser.add_argument("--route", default=os.environ.get("EMURU_CONTAINER_ROUTE"))
+    parser.add_argument("--primary")
+    parser.add_argument("--local-candidate")
+    parser.add_argument(
+        "--provider", choices=("ollama", "gemini", "openai-api"), default="ollama"
+    )
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     args = parser.parse_args()
+    if args.primary or args.local_candidate:
+        if (
+            not (args.primary and args.local_candidate and args.route)
+            or args.select is not None
+            or args.model
+            or args.smoke
+            or args.list
+        ):
+            parser.error(
+                "Pair selection requires --route, --primary and --local-candidate only"
+            )
+        from emuru.models.gateway import select_pair, write_private
+
+        try:
+            route = select_pair(
+                args.primary, args.local_candidate, args.base_url, args.provider
+            )
+            write_private(args.route, json.dumps(route, indent=2) + "\n")
+        except (ValueError, RuntimeError, OSError) as error:
+            raise SystemExit(str(error)) from None
+        print(
+            "Private primary/local-candidate selection saved; qualification remains null"
+        )
+        return
+    if args.route and not args.list:
+        parser.error(
+            "Private route requires pair selection or --list; legacy selection remains separate"
+        )
+    if args.provider != "ollama":
+        parser.error("--provider applies only to pair selection")
     if args.list and args.smoke:
         parser.error("--list cannot be combined with --smoke")
     path = ROOT / "infra/hermes/model-selection.json"
@@ -72,7 +112,7 @@ def main():
             # The PC's list is served by its daemon, not the public cloud catalog.
             if base_url.rstrip("/") in {"https://ollama.com", "https://ollama.com/v1"}:
                 base_url = DEFAULT_BASE_URL
-            client = OllamaClient(base_url)
+            client = OllamaClient(args.base_url if args.route else base_url)
             models = client.list_models()
             if args.list:
                 print(

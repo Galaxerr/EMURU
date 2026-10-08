@@ -1,12 +1,28 @@
-# EMURU operating runbook — v0.3.1
+# EMURU operating runbook — v0.3.2
 
 ## Requirements
 
 Use an awake, logged-in Linux PC, the locked EMURU Python environment, the
 pinned installed Hermes checkout, and an available explicitly selected model.
-The owner-only Hermes profile holds provider/Telegram credentials, the numeric
-owner identity, conversation history, queue receipts, and private vault binding.
-Use one guarded Telegram poller and one vault writer at a time.
+The workspace `.env` owns source credentials and owner ID. The private Hermes
+profile stores runtime token copies, conversation history, queue receipts, and
+the private vault binding. Use one guarded poller and one vault writer.
+
+Store provider API keys, `TELEGRAM_BOT_TOKEN`, and
+`EMURU_TELEGRAM_OWNER_ID` in the workspace-root `.env`. Keep it owner-owned,
+mode `0600`, and out of Git. Launch tools load the file; existing process
+variables take precedence. Initialize once from the example:
+
+```bash
+if [ ! -e .env ]; then install -m 600 .env.example .env; fi
+chmod 600 .env
+${EDITOR:-nano} .env
+```
+
+Container initialization writes the generated `EMURU_GATEWAY_KEY` back to this
+file. It also copies required keys into private service files. Those copies stay
+mode `0600`; only the selected Ollama, Gemini or OpenAI key reaches LiteLLM.
+The Telegram token is copied into the private Hermes profile for the container.
 
 ## Start, stop and status
 
@@ -20,6 +36,28 @@ Service-active alone does not establish readiness. The user service is installed
 without login enablement or remote physical wake. Stopping it keeps it stopped.
 Abnormal process termination can trigger bounded recovery; ordinary errors
 require owner investigation and a manual start.
+
+## Run tests
+
+Run these commands from the checkout root. Tests use synthetic data and need no
+provider credentials:
+
+```bash
+uv sync --locked
+uv run --frozen pytest tests
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
+uv run --frozen python scripts/hermes/vault.py check
+uv run --frozen python scripts/hermes/vault-profile.py --offline
+uv run --frozen python scripts/hermes/telegram.py --offline
+scripts/hermes/telegram.sh --runtime-check
+```
+
+Run one file with `uv run --frozen pytest tests/test_environment.py`. The
+runtime check requires the pinned Hermes installation but makes no provider
+calls. Run `uv run --frozen python scripts/hermes/container-check.py` for Docker
+acceptance. It needs Docker and pinned images, uses disposable keys and a
+synthetic upstream, and starts no Telegram poller.
 
 ## Vault target and indexing
 
@@ -86,7 +124,8 @@ already attempted effects. Restore notes only after comparing newer genuine
 changes. Correct a failure before running
 `systemctl --user reset-failed emuru-telegram.service` and a manual wake.
 General vault cleanup, automatic synchronization, physical remote wake, provider
-fallback, gateway routing and broader automation are outside this release.
+fallback and broader automation are outside this release. Gateway routing is
+limited to the explicit isolated container profile described below.
 Local lifecycle scripts are owner operations, not model tools.
 
 
@@ -131,3 +170,89 @@ The unit does not install Hermes, models or credentials.
 
 See [architecture](ARCHITECTURE.md) for module ownership and
 [release evidence](releases/v0.3.1-report.md) for measured checks and limitations.
+
+## v0.3.2 Isolated Container Foundation
+
+Pins are locked in `infra/docker/deployment-lock.json`. Uses Hermes (Python 3.14 with `telegram` and `mcp` extras) in an isolated `.venv`. Host deployment remains operational.
+
+### 1. Select Route
+
+```bash
+install -d -m 700 "$HOME/.local/state/emuru/container"
+uv run --frozen python scripts/hermes/ollama.py --list
+uv run --frozen python scripts/hermes/ollama.py \
+  --route "$HOME/.local/state/emuru/container/route.json" \
+  --primary <CLOUD_ID> --local-candidate <LOCAL_ID>
+
+```
+
+### 2. Initialize Deployment & Configure
+
+Set API keys (`OLLAMA_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `EMURU_TELEGRAM_OWNER_ID`) in root `.env` first, then run:
+
+```bash
+uv run --frozen python scripts/hermes/container.py init
+uv run --frozen python scripts/hermes/container.py config
+
+```
+
+*Note: Recreate LiteLLM if keys or routes change:*
+
+```bash
+docker compose --project-name emuru \
+  --env-file infra/docker/deployment.env \
+  -f infra/docker/compose.yaml up -d --force-recreate litellm
+
+```
+
+### 3. Start Containers
+
+```bash
+uv run --frozen python scripts/hermes/container.py up
+uv run --frozen python scripts/hermes/container.py status
+
+```
+
+### 4. Install SOUL & Preflight Checks
+
+```bash
+docker compose --project-name emuru \
+  --env-file infra/docker/deployment.env \
+  -f infra/docker/compose.yaml run --rm --no-deps emuru \
+  install -m 600 agents/emuru/SOUL.md /state/profiles/emuru/SOUL.md
+
+docker compose --project-name emuru \
+  --env-file infra/docker/deployment.env \
+  -f infra/docker/compose.yaml run --rm --no-deps emuru \
+  uv run --frozen --no-sync python scripts/hermes/vault-profile.py --apply
+
+docker compose --project-name emuru \
+  --env-file infra/docker/deployment.env \
+  -f infra/docker/compose.yaml run --rm --no-deps emuru \
+  scripts/hermes/telegram.sh --check
+
+```
+
+### 5. Start Telegram Agent
+
+Stop any active host poller, then start the containerized agent:
+
+```bash
+docker compose --project-name emuru \
+  --env-file infra/docker/deployment.env \
+  -f infra/docker/compose.yaml --profile agent up -d emuru
+
+```
+
+### 6. Run Acceptance Tests
+
+```bash
+uv run --frozen python scripts/hermes/container-check.py
+
+```
+
+### Key Operational Rules
+
+* **DB-Free Architecture:** No Redis, database, or spend persistence is used. Missing or invalid keys throw standard 401/400 errors upstream.
+* **Vault Mounts:** Mount the vault root read-only, with writable overlays specifically for `00_Inbox`, `_index`, and `99_System`.
+* **Safety:** Never run concurrent host and container Telegram pollers using the same bot token.

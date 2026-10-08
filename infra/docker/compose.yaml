@@ -1,0 +1,88 @@
+name: emuru-foundation
+services:
+  emuru:
+    profiles: [agent]
+    build:
+      context: ../..
+    image: emuru:0.3.2
+    user: "${EMURU_UID:?}:${EMURU_GID:?}"
+    restart: "no"
+    stop_grace_period: 120s
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      EMURU_CONTAINER_ROUTE: /run/emuru/route.json
+      EMURU_TELEGRAM_OWNER_ID: "${EMURU_TELEGRAM_OWNER_ID:?}"
+      EMURU_HERMES_PROFILE_HOME: /state/profiles/emuru
+      HERMES_HOME: /state/profiles/emuru
+    secrets: [emuru_gateway_key]
+    volumes:
+      - type: bind
+        source: ${EMURU_PROFILE:?}
+        target: /state/profiles/emuru
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EMURU_STATE:?}
+        target: /state
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EMURU_RUNTIME:?}
+        target: /opt/emuru/.runtime
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EMURU_ROUTE:?}
+        target: /run/emuru/route.json
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      litellm: {condition: service_healthy}
+  litellm:
+    image: ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
+    restart: "no"
+    user: "${EMURU_UID:?}:${EMURU_GID:?}"
+    entrypoint: [python, /opt/emuru/secret-exec.py]
+    command: [litellm, --config, /run/emuru/litellm.yaml, --port, "4000"]
+    environment:
+      LITELLM_LOG: ERROR
+      HOME: /tmp
+    secrets: [emuru_gateway_key, ollama_api_key, gemini_api_key, openai_api_key]
+    volumes:
+      - type: bind
+        source: ./secret-exec.py
+        target: /opt/emuru/secret-exec.py
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EMURU_GATEWAY_CONFIG:?}
+        target: /run/emuru/litellm.yaml
+        read_only: true
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+    depends_on:
+      ollama: {condition: service_healthy}
+  ollama:
+    image: ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${EMURU_OLLAMA_STATE:?}
+        target: /root/.ollama
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, ollama, list]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+secrets:
+  emuru_gateway_key:
+    file: ${EMURU_GATEWAY_KEY_FILE:?}
+  ollama_api_key:
+    file: ${EMURU_OLLAMA_API_KEY_FILE:?}
+  gemini_api_key:
+    file: ${EMURU_GEMINI_API_KEY_FILE:?}
+  openai_api_key:
+    file: ${EMURU_OPENAI_API_KEY_FILE:?}

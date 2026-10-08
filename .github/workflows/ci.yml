@@ -97,3 +97,23 @@ jobs:
               raise SystemExit("Unexpected model")
           print("Runtime identity: PASS")
           PY
+
+  container-foundation:
+    name: Disposable primary-only container contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked
+      - name: Route generation and legacy policy
+        run: uv run --frozen pytest -q tests/test_gateway_integration.py tests/test_ollama_selection.py tests/test_hermes_profile_adapters.py
+      - name: Compose validation with disposable secrets
+        run: uv run --frozen python scripts/hermes/container-check.py --config-only
+      - name: Fetch pinned infrastructure
+        run: |
+          docker pull ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
+          docker pull ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
+      - name: Build application and pinned native runtime
+        run: docker build -t emuru:0.3.2 .
+      - name: Native MCP, auth, tools and persistent receipts
+        run: uv run --frozen python scripts/hermes/container-check.py
