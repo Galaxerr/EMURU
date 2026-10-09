@@ -171,6 +171,16 @@ def verify_profile(settings, server, get):
     """Verify through the same read seam used by the config transport."""
     for key, expected in settings.items():
         actual = get(key)
+        if key == "auxiliary.compression" and actual == {
+            **expected,
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+            "reasoning_effort": "",
+            "no_progress_timeout": None,
+        }:
+            continue
         if type(actual) is not type(expected) or actual != expected:
             raise ProfileError(f"EMURU live configuration mismatch: {key}")
     if get("mcp_servers") != {"vault": server}:

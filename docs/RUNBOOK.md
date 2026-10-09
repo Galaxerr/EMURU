@@ -1,4 +1,4 @@
-# EMURU operating runbook — v0.3.3
+# EMURU operating runbook — v0.3.4
 
 ## Requirements
 
@@ -50,6 +50,7 @@ uv run --frozen ruff format --check .
 uv run --frozen python scripts/hermes/vault.py check
 uv run --frozen python scripts/hermes/vault-profile.py --offline
 uv run --frozen python scripts/hermes/telegram.py --offline
+uv run --frozen python scripts/hermes/qualify.py --fixture
 scripts/hermes/telegram.sh --runtime-check
 ```
 
@@ -86,7 +87,7 @@ repeating the write. This rollback does not guarantee atomicity during SIGKILL
 or power loss. `vault_write` creates new Inbox notes only;
 overwrite/update/delete/merge are unsupported. External vault edits require
 owner-managed indexing/restart. Git synchronization is an owner operation;
-v0.3.3 does not supply automatic synchronization or its monitoring.
+v0.3.4 does not supply automatic synchronization or its monitoring.
 
 If the agent reports an empty vault, first run `scripts/hermes/vault.py target
 --require-real`, then inspect the result of `vault_map` through the configured
@@ -145,13 +146,13 @@ broader automation are outside this release. All agent inference requires the
 authenticated LiteLLM gateway described below.
 Local lifecycle scripts are owner operations, not model tools.
 
-## Upgrade to v0.3.3
+## Upgrade to v0.3.4
 
 1. Drain and stop the current poller; back up the stopped profile and vault.
    Preserve queue receipts and history. Never run host and container pollers together.
 2. Update the checkout and run `uv sync --locked`. For Docker, run
-   `container.py up` to rebuild the application and initialize private configuration,
-   then recreate LiteLLM as shown below.
+   `container.py up` to rebuild infrastructure and initialize private configuration,
+   then update the agent explicitly as shown below.
 3. Reinstall `SOUL.md`, apply the gateway profile and run the preflight commands
    in [container deployment](#container-deployment). A host profile needs the
    loopback gateway settings described under [gateway policy](#gateway-policy).
@@ -181,7 +182,7 @@ lock prevents a second poller on this PC, not on another machine using the token
 The unit does not install Hermes, models or credentials.
 
 See [architecture](ARCHITECTURE.md) for module ownership and
-[release evidence](releases/v0.3.3-report.md) for measured checks and limitations.
+[release evidence](releases/v0.3.4-report.md) for measured checks and limitations.
 
 ## Container deployment
 
@@ -205,7 +206,24 @@ Use `--provider gemini` with a `gemini-*` primary or `--provider openai-api`
 with a `gpt-*` primary for an explicit alternative. The candidate remains
 unqualified regardless of the selected provider.
 
-### 2. Initialize and configure
+### 2. Qualify local fallback
+
+Qualification supports only the selected Ollama cloud/local pair and never uses
+the real vault. Keep the route directory owner-owned and mode `0700`:
+
+```bash
+uv run --frozen python scripts/hermes/qualify.py --live \
+  --route "$HOME/.local/state/emuru/container/route.json"
+```
+
+The route updates atomically only after every gate passes. Private evidence is
+`route.qualification.json`; redacted evidence is
+`route.qualification-report.json`. Both use mode `0600`. `LOCAL_UNQUALIFIED`
+means cloud-only operation. Fix the failed gate and rerun. Requalify before the
+30-day expiry and after changing either model, digest, Ollama runtime/template,
+context, output reserve or workload policy. Never hand-edit the fingerprint.
+
+### 3. Initialize and configure
 
 Set the selected provider key (`OLLAMA_API_KEY`, `GEMINI_API_KEY` or
 `OPENAI_API_KEY`), `TELEGRAM_BOT_TOKEN`, `EMURU_TELEGRAM_OWNER_ID` and
@@ -224,14 +242,17 @@ docker compose --project-name emuru \
   -f infra/docker/compose.yaml up -d --force-recreate litellm
 ```
 
-### 3. Start infrastructure
+### 4. Start infrastructure
+
+This rebuilds and starts only Ollama and LiteLLM. It does not replace a running
+Telegram agent.
 
 ```bash
 uv run --frozen python scripts/hermes/container.py up
 uv run --frozen python scripts/hermes/container.py status
 ```
 
-### 4. Install policy and check the profile
+### 5. Install policy and check the profile
 
 ```bash
 docker compose --project-name emuru \
@@ -250,17 +271,20 @@ docker compose --project-name emuru \
   scripts/hermes/telegram.sh --check
 ```
 
-### 5. Start Telegram
+### 6. Start Telegram
 
 Stop any active host poller, then start the containerized agent:
 
 ```bash
 docker compose --project-name emuru \
   --env-file infra/docker/deployment.env \
-  -f infra/docker/compose.yaml --profile agent up -d emuru
+  -f infra/docker/compose.yaml --profile agent up -d --build emuru
 ```
 
-### 6. Run disposable acceptance
+This explicit update replaces the agent. A graceful `SIGTERM` from the old
+container during replacement is expected.
+
+### 7. Run disposable acceptance
 
 ```bash
 uv run --frozen python scripts/hermes/container-check.py
@@ -303,17 +327,14 @@ and `EMURU_INTER_CHUNK_SECONDS` (30) may shorten their respective limits, never
 increase them. Set proxy environment explicitly when changing these settings.
 Cancellation does not guarantee that remote compute or billing stops.
 
-The picker deliberately writes `qualification: null`. A configured context
-number, installed weights, or successful chat does not qualify a local model.
-v0.3.4 owns hardware/model qualification; do not manufacture a production record
-to enable fallback. The v0.3.3 evidence contract requires exact model/digest,
-Ollama runtime, template SHA256, context and output reserve, expiry within 30 days,
-all tool/context/latency/counting gates, and counting evidence against upstream
-`prompt_eval_count`. `utf8_bytes_plus_256_per_message_v1` counts the complete
-request conservatively, including tools/history/results and output reserve.
-Missing, stale, mismatched or oversized evidence disables local dispatch without
-truncation. Synthetic fixture provenance is accepted only by the disposable test
-configuration and never qualifies a production route.
+The picker deliberately writes `qualification: null`. A configured context,
+installed weights or successful chat does not qualify a local model. The v2
+record binds both model identities, digest, Ollama runtime/template, effective
+context, output reserve, workload policy and canonical fingerprint. Tools,
+context, latency, hardware, fault and workload gates must all pass. Missing,
+stale, malformed, changed or failed evidence disables local dispatch without
+truncation and returns `LOCAL_UNQUALIFIED`. Synthetic fixture provenance works
+only in disposable test configuration.
 
 A failed turn is not requeued or replayed. Terminal notices use durable tool
 start facts: proven no-tool turns say the request could not be carried out;
@@ -321,5 +342,9 @@ completed/uncertain effects or missing historical facts warn that actions may
 already have completed. Inspect committed paths and receipts before resubmitting.
 
 Use [the test commands](#run-tests) for offline checks and the disposable checker
-for pinned-proxy acceptance. The [release report](releases/v0.3.3-report.md)
-records existing evidence and live-model, real-vault and Telegram checks.
+for pinned-proxy acceptance. For manual Telegram acceptance, send one read-only
+retrieval/navigation request through cloud. Then cause a controlled eligible
+primary outage and repeat it through qualified local. Inspect Git status and the
+Inbox before and after; no real-vault mutation is allowed. Restore primary and
+confirm the next request uses cloud. The [release report](releases/v0.3.4-report.md)
+records evidence and remaining live checks.

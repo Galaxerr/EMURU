@@ -1,16 +1,146 @@
 """Private gateway routing and fail-closed local qualification contract."""
 
+import hashlib
 import json
 import os
 import re
 import stat
 import tempfile
+import time
 from pathlib import Path
 
 from emuru.models.ollama import OllamaConnection, model_id
 from emuru.models.providers import provider_settings
 
 ENDPOINT = "http://litellm:4000/v1"
+QUALIFICATION_DAYS = 30
+WORKLOAD_POLICY_VERSION = "synthetic-vault-v1"
+QUALIFICATION_GATES = {
+    "tools": True,
+    "context": True,
+    "latency": True,
+    "hardware": True,
+    "fault": True,
+    "workload": True,
+}
+WORKLOAD_REPETITIONS = {
+    backend: {
+        "fact_retrieval": 5,
+        "mcp_navigation": 5,
+        "inbox_create_search_readback": 5,
+    }
+    for backend in ("cloud", "local")
+}
+
+
+def qualification_fingerprint(route, runtime_version, template_sha256):
+    candidate = route["fallback"]
+    bound = {
+        "primary": route["primary"],
+        "local": {key: candidate[key] for key in ("provider", "model", "digest")},
+        "runtime_version": runtime_version,
+        "template_sha256": template_sha256,
+        "effective_context_tokens": candidate["context_tokens"],
+        "output_reserve_tokens": candidate["output_reserve_tokens"],
+        "workload_policy_version": WORKLOAD_POLICY_VERSION,
+    }
+    canonical = json.dumps(bound, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def valid_qualification(route, *, runtime_version=None, template_sha256=None, now=None):
+    """Validate v2 evidence without trusting it to repair or widen the route."""
+    candidate = route["fallback"]
+    record = candidate.get("qualification")
+    required = {
+        "schema_version",
+        "primary",
+        "local",
+        "runtime_version",
+        "template_sha256",
+        "effective_context_tokens",
+        "output_reserve_tokens",
+        "workload_policy_version",
+        "config_fingerprint",
+        "qualified_at",
+        "expires_at",
+        "gates",
+        "provenance",
+        "evidence",
+    }
+    if not isinstance(record, dict) or set(record) != required:
+        return False
+    timestamp = time.time() if now is None else now
+    local = {key: candidate[key] for key in ("provider", "model", "digest")}
+    evidence = record["evidence"]
+    evidence_keys = {
+        "offline_local",
+        "workload_repetitions",
+        "context_trials",
+        "latency_samples",
+        "cold_seconds",
+        "warm_p95_seconds",
+        "available_ram_bytes",
+        "model_size_bytes",
+        "gpu_present",
+        "gpu_vram_bytes",
+        "oom_events",
+    }
+    numbers = (int, float)
+    if (
+        type(record["schema_version"]) is not int
+        or record["schema_version"] != 2
+        or record["primary"] != route["primary"]
+        or record["local"] != local
+        or not isinstance(record["runtime_version"], str)
+        or not record["runtime_version"]
+        or not isinstance(record["template_sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", record["template_sha256"])
+        or record["effective_context_tokens"] != candidate["context_tokens"]
+        or record["output_reserve_tokens"] != candidate["output_reserve_tokens"]
+        or record["workload_policy_version"] != WORKLOAD_POLICY_VERSION
+        or record["config_fingerprint"]
+        != qualification_fingerprint(
+            route, record["runtime_version"], record["template_sha256"]
+        )
+        or type(record["qualified_at"]) not in numbers
+        or type(record["expires_at"]) not in numbers
+        or not record["qualified_at"] <= timestamp < record["expires_at"]
+        or record["expires_at"] - record["qualified_at"] > QUALIFICATION_DAYS * 86400
+        or not isinstance(record["gates"], dict)
+        or set(record["gates"]) != set(QUALIFICATION_GATES)
+        or any(value is not True for value in record["gates"].values())
+        or record["provenance"] not in {"operator-qualified", "deterministic-fixture"}
+        or not isinstance(evidence, dict)
+        or set(evidence) != evidence_keys
+    ):
+        return False
+    if (
+        evidence["offline_local"] is not True
+        or evidence["workload_repetitions"] != WORKLOAD_REPETITIONS
+        or type(evidence["context_trials"]) is not int
+        or evidence["context_trials"] < 3
+        or type(evidence["latency_samples"]) is not int
+        or evidence["latency_samples"] < 20
+        or type(evidence["cold_seconds"]) not in numbers
+        or not 0 <= evidence["cold_seconds"] <= 180
+        or type(evidence["warm_p95_seconds"]) not in numbers
+        or not 0 <= evidence["warm_p95_seconds"] <= 60
+        or type(evidence["available_ram_bytes"]) is not int
+        or evidence["available_ram_bytes"] <= 0
+        or type(evidence["model_size_bytes"]) is not int
+        or evidence["model_size_bytes"] <= 0
+        or type(evidence["gpu_present"]) is not bool
+        or type(evidence["gpu_vram_bytes"]) is not int
+        or evidence["gpu_vram_bytes"] < 0
+        or (evidence["gpu_present"] and evidence["gpu_vram_bytes"] <= 0)
+        or type(evidence["oom_events"]) is not int
+        or evidence["oom_events"] != 0
+    ):
+        return False
+    if runtime_version is not None and record["runtime_version"] != runtime_version:
+        return False
+    return template_sha256 is None or record["template_sha256"] == template_sha256
 
 
 def validate(route):

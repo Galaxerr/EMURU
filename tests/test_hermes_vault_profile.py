@@ -176,6 +176,21 @@ class NativeProfileTests(ProfileCase):
                 self.audit_native(actual)
             self.assertNotIn("SYNTHETIC_SECRET", str(error.exception))
 
+    def test_native_compression_accepts_pinned_hermes_defaults(self):
+        self.run_profile("--apply")
+        actual = self.nested_config()
+        actual["auxiliary"]["compression"] = {
+            "provider": "custom:emuru",
+            "model": "emuru",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+            "reasoning_effort": "",
+            "no_progress_timeout": None,
+        }
+        self.audit_native(actual)
+
     def test_native_secrets_types_and_registration_fail_closed(self):
         self.run_profile("--apply")
         for model in (

@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import time
 
 import httpx
 import jsonschema
@@ -11,7 +10,7 @@ import litellm
 from litellm import CustomLLM, Router
 from litellm.llms.custom_llm import CustomLLMError
 
-from emuru.models.gateway import read_route, upstream
+from emuru.models.gateway import read_route, upstream, valid_qualification
 
 CLOUD_SECONDS = 60
 LOCAL_SECONDS = 180
@@ -81,58 +80,13 @@ def context_bound(messages, params):
     ) + 256 * (len(messages) + len(params.get("tools", [])) + 1)
 
 
-async def qualified(candidate, messages, params, base):
+async def qualified(primary, candidate, messages, params, base):
     """Qualification is evidence, never synthesized by a successful chat."""
     q = candidate.get("qualification")
-    required = {
-        "schema_version",
-        "model",
-        "digest",
-        "runtime_version",
-        "context_tokens",
-        "output_reserve_tokens",
-        "expires_at",
-        "gates",
-        "counting",
-        "provenance",
-        "counting_evidence",
-        "template_sha256",
-    }
-    if not isinstance(q, dict) or set(q) != required:
-        return False
     if (
-        type(q["schema_version"]) is not int
-        or q["schema_version"] != 1
-        or q["model"] != candidate["model"]
-        or q["digest"] != candidate["digest"]
-        or q["context_tokens"] != candidate["context_tokens"]
-        or q["output_reserve_tokens"] != candidate["output_reserve_tokens"]
-        or type(q["expires_at"]) not in {float, int}
-        or not time.time() < q["expires_at"] <= time.time() + 30 * 86400
-        or q["gates"]
-        != {"tools": True, "context": True, "latency": True, "counting": True}
-        or any(type(value) is not bool for value in q["gates"].values())
-        or q["counting"] != "utf8_bytes_plus_256_per_message_v1"
-        or not isinstance(q["runtime_version"], str)
-        or not q["runtime_version"]
-    ):
-        return False
-    if q["provenance"] not in {"operator-qualified", "deterministic-fixture"}:
-        return False
-    if q["provenance"] == "deterministic-fixture" and not os.environ.get(
-        "EMURU_GATEWAY_TEST_FIXTURE"
-    ):
-        return False
-    evidence = q["counting_evidence"]
-    if not isinstance(evidence, list) or len(evidence) < 3:
-        return False
-    if any(
-        not isinstance(x, dict)
-        or set(x) != {"estimated_tokens", "prompt_eval_count"}
-        or type(x["estimated_tokens"]) is not int
-        or type(x["prompt_eval_count"]) is not int
-        or not 0 < x["prompt_eval_count"] <= x["estimated_tokens"]
-        for x in evidence
+        isinstance(q, dict)
+        and q.get("provenance") == "deterministic-fixture"
+        and not os.environ.get("EMURU_GATEWAY_TEST_FIXTURE")
     ):
         return False
     if any(
@@ -141,7 +95,7 @@ async def qualified(candidate, messages, params, base):
         for m in messages
     ):
         return False
-    # Evidence must prove this upper bound against upstream prompt_eval_count.
+    # Conservative byte admission includes the full request and output reserve.
     size = context_bound(messages, params)
     reserve = candidate["output_reserve_tokens"]
     requested = params.get("max_tokens", reserve)
@@ -164,11 +118,18 @@ async def qualified(candidate, messages, params, base):
                 )
             ).json()
         match = next(x for x in catalog if x["name"] == candidate["model"])
+        template_sha256 = hashlib.sha256(show.get("template", "").encode()).hexdigest()
+        route = {
+            "primary": primary,
+            "fallback": candidate,
+        }
         return (
-            version == q["runtime_version"]
-            and hashlib.sha256(show.get("template", "").encode()).hexdigest()
-            == q["template_sha256"]
-            and match["digest"] == q["digest"]
+            valid_qualification(
+                route,
+                runtime_version=version,
+                template_sha256=template_sha256,
+            )
+            and match["digest"] == candidate["digest"]
             and not show.get("remote_model")
             and not show.get("remote_host")
             and "tools" in show.get("capabilities", [])
@@ -251,10 +212,14 @@ class Guard(CustomLLM):
                             if route["primary"][
                                 "provider"
                             ] != "ollama" or not await qualified(
-                                route["fallback"], messages, params, local_base
+                                route["primary"],
+                                route["fallback"],
+                                messages,
+                                params,
+                                local_base,
                             ):
                                 fail(
-                                    "Local qualification or context admission unavailable",
+                                    "LOCAL_UNQUALIFIED: local qualification or context admission unavailable",
                                     503,
                                 )
                             params["max_tokens"] = params.get(

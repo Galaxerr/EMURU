@@ -103,8 +103,9 @@ def test_container_initializer_creates_private_deployment(tmp_path, monkeypatch)
     monkeypatch.setitem(globals_, "initialize", prepare)
     module["main"]()
     assert len(initialized) == 1
-    assert commands[0][-2:] == ["build", "emuru"]
-    assert commands[1][-3:] == ["up", "-d", "--build"]
+    assert len(commands) == 1
+    assert commands[0][-3:] == ["up", "-d", "--build"]
+    assert all(command[-2:] != ["build", "emuru"] for command in commands)
     assert all(
         command[command.index("--env-file") + 1] == str(env_path)
         for command in commands

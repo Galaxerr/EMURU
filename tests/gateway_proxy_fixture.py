@@ -14,7 +14,13 @@ from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from emuru.models.gateway import render
+from emuru.models.gateway import (
+    QUALIFICATION_GATES,
+    WORKLOAD_POLICY_VERSION,
+    WORKLOAD_REPETITIONS,
+    qualification_fingerprint,
+    render,
+)
 
 counts = {"primary": 0, "local": 0}
 mode = "ok"
@@ -49,14 +55,21 @@ class Upstream(BaseHTTPRequestHandler):
             return
         backend = "primary" if self.server.server_port == 11435 else "local"
         counts[backend] += 1
+        if backend == "primary" and request_mode == "connection-reset":
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.connection.close()
+            return
         if backend == "local":
             assert body["options"]["num_ctx"] == 65536, body
             assert body["options"]["num_predict"] == 4096, body
         if backend == "primary" and request_mode.startswith("error-"):
             self.send(int(request_mode.split("-")[1]), {"error": "controlled failure"})
             return
-        if request_mode == "both-down":
-            self.send(503, {"error": "unavailable"})
+        if request_mode in {"both-down", "local-oom"}:
+            self.send(
+                500 if request_mode == "local-oom" and backend == "local" else 503,
+                {"error": "out of memory" if backend == "local" else "unavailable"},
+            )
             return
         if request_mode in {"slow", "cancel"} and backend == "primary":
             time.sleep(2)
@@ -170,24 +183,40 @@ def main():
             },
         }
         q = {
-            "schema_version": 1,
-            "model": "synthetic-local",
-            "digest": "a" * 64,
-            "runtime_version": "fixture-runtime",
-            "context_tokens": 65536,
-            "output_reserve_tokens": 4096,
-            "expires_at": time.time() + 3600,
-            "gates": {
-                "tools": True,
-                "context": True,
-                "latency": True,
-                "counting": True,
+            "schema_version": 2,
+            "primary": route["primary"],
+            "local": {
+                "provider": "ollama",
+                "model": "synthetic-local",
+                "digest": "a" * 64,
             },
-            "counting": "utf8_bytes_plus_256_per_message_v1",
-            "provenance": "deterministic-fixture",
-            "counting_evidence": [{"estimated_tokens": 1000, "prompt_eval_count": 10}]
-            * 3,
+            "runtime_version": "fixture-runtime",
             "template_sha256": hashlib.sha256(b"fixture").hexdigest(),
+            "effective_context_tokens": 65536,
+            "output_reserve_tokens": 4096,
+            "workload_policy_version": WORKLOAD_POLICY_VERSION,
+            "config_fingerprint": qualification_fingerprint(
+                route,
+                "fixture-runtime",
+                hashlib.sha256(b"fixture").hexdigest(),
+            ),
+            "qualified_at": time.time() - 1,
+            "expires_at": time.time() + 3600,
+            "gates": dict(QUALIFICATION_GATES),
+            "provenance": "deterministic-fixture",
+            "evidence": {
+                "offline_local": True,
+                "workload_repetitions": WORKLOAD_REPETITIONS,
+                "context_trials": 3,
+                "latency_samples": 20,
+                "cold_seconds": 1.0,
+                "warm_p95_seconds": 0.5,
+                "available_ram_bytes": 16 * 1024**3,
+                "model_size_bytes": 4 * 1024**3,
+                "gpu_present": False,
+                "gpu_vram_bytes": 0,
+                "oom_events": 0,
+            },
         }
         route["fallback"]["qualification"] = q
         route_path = path / "route.json"
@@ -287,6 +316,13 @@ def main():
                     "primary": before["primary"] + 1,
                     "local": before["local"] + 1,
                 }
+            mode = "connection-reset"
+            before = dict(counts)
+            assert request()[0] == 200
+            assert counts == {
+                "primary": before["primary"] + 1,
+                "local": before["local"] + 1,
+            }
             for stream_flag in (False, True):
                 mode = "cancel"
                 before = dict(counts)
@@ -375,13 +411,13 @@ def main():
             route["fallback"]["qualification"] = q
             save()
             for field, value in (
-                ("schema_version", 2),
+                ("schema_version", 1),
                 ("schema_version", True),
                 ("expires_at", time.time() - 1),
-                ("digest", "b" * 64),
                 ("runtime_version", "wrong"),
                 ("template_sha256", "b" * 64),
-                ("context_tokens", 32768),
+                ("effective_context_tokens", 32768),
+                ("workload_policy_version", "wrong"),
             ):
                 route["fallback"]["qualification"] = {**q, field: value}
                 save()
@@ -389,6 +425,12 @@ def main():
                 assert request()[0] >= 400, field
                 assert counts["local"] == before["local"], (field, counts)
             route["fallback"]["qualification"] = q
+            route["primary"] = {"provider": "ollama", "model": "changed-cloud"}
+            save()
+            before = dict(counts)
+            assert request()[0] >= 400
+            assert counts["local"] == before["local"], counts
+            route["primary"] = q["primary"]
             save()
             before = dict(counts)
             assert request(content="x" * 70000)[0] >= 400
@@ -408,6 +450,13 @@ def main():
             )
             assert counts["local"] == before["local"]
             mode = "both-down"
+            before = dict(counts)
+            assert request()[0] >= 400
+            assert counts == {
+                "primary": before["primary"] + 1,
+                "local": before["local"] + 1,
+            }
+            mode = "local-oom"
             before = dict(counts)
             assert request()[0] >= 400
             assert counts == {

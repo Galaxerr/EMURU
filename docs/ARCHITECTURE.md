@@ -1,4 +1,4 @@
-# EMURU architecture — v0.3.3
+# EMURU architecture — v0.3.4
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
 vault through five constrained MCP tools. Telegram adds durable owner-only
@@ -115,7 +115,7 @@ uses the installed pinned Hermes/PTB session implementation with synthetic
 HTTP/provider behavior. Hosted CI does not prove live deployment acceptance.
 
 Follow [README](../README.md) for setup and [RUNBOOK](RUNBOOK.md) for migration,
-service lifecycle and recovery. [Release evidence](releases/v0.3.3-report.md)
+service lifecycle and recovery. [Release evidence](releases/v0.3.4-report.md)
 separates container checks from live acceptance.
 
 ## Gateway and containers
@@ -133,10 +133,18 @@ Gemini and OpenAI remain explicitly selected upstream alternatives outside the
 automatic fallback chain.
 
 The gateway owns a bounded primary/local sequence using the pinned LiteLLM
-implementation. Local dispatch requires matching qualification and live model
-identity/runtime checks, plus conservative full-request context admission.
-Missing or stale evidence disables local dispatch. Each new inference starts
-with the primary; completed tools are never replayed as part of failover.
+implementation. `qualify.py` exercises both selected models against a disposable
+synthetic vault. It records five repetitions of retrieval, navigation and unique
+Inbox create/search/readback, prompt-injection and forbidden-access faults, three
+near-context trials, twenty latency samples, hardware headroom and OOM status.
+The real vault is never mounted for automated qualification.
+
+The private v2 record binds cloud/local identity, digest, Ollama runtime and
+template, effective context, output reserve, workload policy and a canonical
+configuration fingerprint. It expires within 30 days. Local dispatch also checks
+live runtime/model identity and full-request context admission. Missing, stale,
+failed or changed evidence produces `LOCAL_UNQUALIFIED`; cloud remains usable.
+Each inference starts with primary. Completed tools are never replayed.
 
 Attempt budgets are 60 seconds cloud and 180 seconds local including loading;
 the routed call is bounded to 245 seconds and an owner turn to 600 seconds.

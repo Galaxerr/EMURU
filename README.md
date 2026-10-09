@@ -4,11 +4,11 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**Version: 0.3.3.** Agent inference uses authenticated local LiteLLM exclusively.
+**Version: 0.3.4.** Agent inference uses authenticated local LiteLLM exclusively.
 The gateway bounds each request to one cloud attempt and at most one qualified
 local attempt. Unqualified local models remain disabled. Follow this guide for
 setup, the [runbook](docs/RUNBOOK.md) for operation, and the
-[release report](docs/releases/v0.3.3-report.md) for verification and acceptance gaps.
+[release report](docs/releases/v0.3.4-report.md) for verification and acceptance gaps.
 
 ## Capabilities and limits
 
@@ -77,15 +77,34 @@ environment with offline, frozen execution and no dependency installation.
 
 Follow [container setup](docs/RUNBOOK.md#container-deployment) to select a private
 cloud/local route, initialize secrets, start infrastructure, apply the profile,
-and launch Telegram. `container.py up` starts Ollama and LiteLLM; the Telegram
-agent requires the explicit Compose `agent` profile. Set `EMURU_VAULT_PATH` in
-`.env` to an absolute Git vault path with `00_Inbox` before initialization.
+and launch Telegram. `container.py up` rebuilds and starts only Ollama and
+LiteLLM; it leaves a running Telegram agent untouched. The agent requires the
+explicit Compose `agent` profile. Update it explicitly with:
+
+```bash
+docker compose --project-name emuru \
+  --env-file infra/docker/deployment.env \
+  -f infra/docker/compose.yaml --profile agent up -d --build emuru
+```
+
+The replaced agent exits gracefully on `SIGTERM`; that shutdown is expected.
+Set `EMURU_VAULT_PATH` in `.env` to an absolute Git vault path with `00_Inbox`
+before initialization.
 
 Private state defaults to `$HOME/.local/state/emuru/container`; `--home` selects
 another directory and `--route-source` selects another owner-only route.
 Initialization rejects missing routes and unsafe permissions. No model weights
 are downloaded automatically. The picker records a local candidate with
 `qualification: null`, so local inference stays disabled until qualified.
+
+```bash
+uv run --frozen python scripts/hermes/qualify.py --live \
+  --route "$HOME/.local/state/emuru/container/route.json"
+```
+
+Qualification uses a temporary synthetic vault. It writes private evidence and
+a redacted report beside the route. Only a complete pass updates the route;
+failure prints `LOCAL_UNQUALIFIED` and preserves it.
 
 All agent profiles use the authenticated `emuru` alias. Legacy
 `infra/hermes/model-selection.json` selections do not configure agent inference.
@@ -169,11 +188,11 @@ These controls require an awake, logged-in PC and do not wake hardware or enable
 login startup. Local queue diagnostics are read-only and expose safe counts and
 health codes. Preserve uncertain receipts; inspect effects before resubmitting.
 
-## Upgrading to v0.3.3
+## Upgrading to v0.3.4
 
 Stop and drain the current poller, back up the stopped profile and vault, and
-preserve queue receipts and history. Follow [the upgrade steps](docs/RUNBOOK.md#upgrade-to-v033)
-to rebuild, regenerate gateway configuration, reinstall policy and reapply the
+preserve queue receipts and history. Follow [the upgrade steps](docs/RUNBOOK.md#upgrade-to-v034)
+to rebuild, requalify local fallback, reinstall policy and reapply the
 profile. Older v0.3.0 installs also need the moved `scripts/hermes/` service paths.
 There is no automatic profile migration or systemd retirement.
 
@@ -189,6 +208,7 @@ uv run --frozen ruff format --check .
 uv run --frozen python scripts/hermes/vault.py check
 uv run --frozen python scripts/hermes/vault-profile.py --offline
 uv run --frozen python scripts/hermes/telegram.py --offline
+uv run --frozen python scripts/hermes/qualify.py --fixture
 scripts/hermes/telegram.sh --runtime-check
 ```
 
@@ -207,10 +227,10 @@ No production state is migrated, and no systemd cutover is included.
 
 `EMURU_CONTAINER_ROUTE` selects a private owner-only upstream route; agent
 inference remains gateway-only even without that variable. The picker records a
-cloud primary and local candidate. A null or invalid qualification prevents local
-dispatch. v0.3.3 supplies enforcement and deterministic fixtures, not production
-qualification or a 64k usability claim. Hardware/model qualification belongs to
-v0.3.4; lifecycle migration and final systemd retirement belong to v0.4.0.
+cloud primary and local candidate. A null, expired, failed, or configuration-mismatched
+qualification prevents local dispatch with `LOCAL_UNQUALIFIED`. v0.3.4 qualifies
+tools, synthetic workloads, context, latency, hardware, faults, identity and
+offline-local routing. Lifecycle migration and systemd retirement remain v0.4.0 work.
 
 After fetching the locked images and building `emuru:latest`, run:
 
@@ -221,3 +241,6 @@ uv run --frozen python scripts/hermes/container-check.py
 This command creates disposable mounts and secrets, tests the pinned proxy against
 a synthetic native Ollama upstream, and stops its containers. It never starts a
 Telegram poller or downloads model weights. Private temporary evidence is retained.
+Manual acceptance still needs one read-only real-vault Telegram retrieval through
+cloud, then the same request during a controlled primary outage through qualified
+local. Confirm no real-vault note changed.

@@ -106,7 +106,9 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
       - name: Gateway routing and profile policy
-        run: uv run --frozen pytest -q tests/test_gateway_integration.py tests/test_ollama_selection.py tests/test_hermes_profile_adapters.py
+        run: uv run --frozen pytest -q tests/test_gateway_integration.py tests/test_qualification.py tests/test_ollama_selection.py tests/test_hermes_profile_adapters.py
+      - name: Deterministic qualification fixture
+        run: uv run --frozen python scripts/hermes/qualify.py --fixture
       - name: Compose validation with disposable secrets
         run: uv run --frozen python scripts/hermes/container-check.py --config-only
       - name: Fetch pinned infrastructure

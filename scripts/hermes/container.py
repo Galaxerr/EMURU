@@ -227,9 +227,6 @@ def compose(
         str(COMPOSE_FILE),
         *arguments,
     ]
-    if arguments[:1] == ("up",):
-        # Build the app explicitly even while its Telegram profile is inactive.
-        subprocess.run(command[: -len(arguments)] + ["build", "emuru"], check=True)
     return subprocess.run(command, check=True).returncode
 
 
@@ -250,7 +247,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init", help="Create private files and Compose environment")
     subparsers.add_parser("config", help="Validate the generated Compose configuration")
-    subparsers.add_parser("up", help="Build and start the isolated deployment")
+    subparsers.add_parser("up", help="Build and start isolated infrastructure")
     subparsers.add_parser("down", help="Stop and remove the isolated deployment")
     subparsers.add_parser("status", help="Show isolated deployment status")
     args = parser.parse_args()
