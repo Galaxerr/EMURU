@@ -108,7 +108,8 @@ def extract_wikilinks(body: str) -> list[str]:
         target = raw.split("|", 1)[0]
         target = target.split("#", 1)[0].strip()
 
-        target = target.removesuffix(".md")
+        if target.lower().endswith(".md"):
+            target = target[:-3]
 
         if target:
             result.add(target.replace("\\", "/"))
@@ -167,7 +168,7 @@ def iter_note_paths(
             ]
 
             for filename in filenames:
-                if not filename.endswith(".md"):
+                if not filename.lower().endswith(".md"):
                     continue
 
                 path = Path(dirpath) / filename
@@ -199,7 +200,7 @@ def _link_aliases(
     note: Note,
 ) -> set[str]:
 
-    relative = note.path.removesuffix(".md")
+    relative = note.path[:-3]
 
     return {
         relative.casefold(),

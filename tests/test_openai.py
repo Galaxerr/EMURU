@@ -11,10 +11,9 @@ class OpenAIProfileTests(ProfileCase):
         self,
     ):
         self.run_profile("--apply")
-        self.assertEqual(self.state["model.provider"], "openai-api")
-        self.assertEqual(self.state["model.default"], "gpt-6-astra")
-        self.assertEqual(self.state["model.base_url"], "https://api.openai.com/v1")
-        self.assertEqual(self.state["model.api_mode"], "codex_responses")
+        self.assertEqual(self.state["model.provider"], "custom:emuru")
+        self.assertEqual(self.state["model.default"], "emuru")
+        self.assertEqual(self.state["model.api_mode"], "chat_completions")
         self.assert_vault_only()
 
 

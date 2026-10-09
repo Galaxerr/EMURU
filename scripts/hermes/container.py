@@ -1,10 +1,11 @@
-"""Initialize and operate the isolated v0.3.2 Docker deployment."""
+"""Initialize and operate the isolated EMURU Docker deployment."""
 
 import argparse
 import json
 import os
 import secrets
 import shlex
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = ROOT / "infra/docker/compose.yaml"
 DEFAULT_HOME = Path.home() / ".local/state/emuru/container"
 DEPLOYMENT_ENV = ROOT / "infra/docker/deployment.env"
+CONTAINER_VAULT_PATH = Path("/state/vault")
 
 
 def deployment_home(value=None):
@@ -26,6 +28,7 @@ def deployment_home(value=None):
 
 
 def _make_private_directory(path):
+    path = private_path(path)
     path.mkdir(parents=True, exist_ok=True)
     path.chmod(0o700)
     if path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o777 != 0o700:
@@ -56,13 +59,50 @@ def _saved_owner_id():
     return ""
 
 
+def _vault_path():
+    raw = os.environ.get("EMURU_VAULT_PATH", "")
+    path = Path(raw)
+    if (
+        not raw
+        or not path.is_absolute()
+        or ".." in path.parts
+        or not path.is_dir()
+        or path.is_symlink()
+        or not (path / ".git").exists()
+        or not (path / "00_Inbox").is_dir()
+    ):
+        raise ValueError("EMURU_VAULT_PATH must be an absolute Git vault with 00_Inbox")
+    return path.resolve()
+
+
 def initialize(
     home=None, route_source=None, telegram_owner_id=None, workspace_env=None
 ):
     """Create one private deployment and return its Compose environment path."""
     if workspace_env is not None:
+        workspace_env = private_path(workspace_env)
         load_env(workspace_env)
-    home = deployment_home(home)
+    home = private_path(deployment_home(home))
+    env_path = private_path(DEPLOYMENT_ENV)
+    # Validate every destination before mkdir/chmod or replacing private state.
+    for relative in (
+        "profiles/emuru/config.yaml",
+        "profiles/emuru/vault-target.json",
+        "profiles/emuru/.env",
+        "state",
+        "runtime",
+        "ollama",
+        "gateway.key",
+        "ollama-api.key",
+        "gemini-api.key",
+        "openai-api.key",
+        "route.json",
+        "litellm.yaml",
+    ):
+        private_path(home / relative)
+    source = private_path(route_source or home / "route.json")
+    vault = _vault_path()
+    route = read_route(source)
     owner_id = str(
         telegram_owner_id
         or os.environ.get("EMURU_TELEGRAM_OWNER_ID", "")
@@ -78,6 +118,10 @@ def initialize(
     _write_if_missing(
         home / "profiles/emuru/config.yaml", "model: {}\nmcp_servers: {}\n"
     )
+    write_private(
+        home / "profiles/emuru/vault-target.json",
+        json.dumps({"mode": "real", "vault_path": str(CONTAINER_VAULT_PATH)}) + "\n",
+    )
 
     key_path = home / "gateway.key"
     gateway_key = os.environ.get("EMURU_GATEWAY_KEY", "")
@@ -89,8 +133,6 @@ def initialize(
     if workspace_env is not None:
         write_env(workspace_env, {"EMURU_GATEWAY_KEY": gateway_key})
 
-    source = private_path(route_source or home / "route.json")
-    route = read_route(source)
     selected_key = {
         "ollama": "OLLAMA_API_KEY",
         "gemini": "GEMINI_API_KEY",
@@ -120,6 +162,7 @@ def initialize(
         "EMURU_PROFILE": home / "profiles/emuru",
         "EMURU_STATE": home / "state",
         "EMURU_RUNTIME": home / "runtime",
+        "EMURU_VAULT": vault,
         "EMURU_ROUTE": route_path,
         "EMURU_GATEWAY_CONFIG": home / "litellm.yaml",
         "EMURU_GATEWAY_KEY_FILE": key_path,
@@ -129,7 +172,6 @@ def initialize(
         "EMURU_OLLAMA_STATE": home / "ollama",
     }
     # Deployment metadata belongs in the repo; its parent need not be private.
-    env_path = private_path(DEPLOYMENT_ENV)
     fd, temporary = tempfile.mkstemp(dir=env_path.parent)
     try:
         with os.fdopen(fd, "w") as stream:
@@ -151,7 +193,29 @@ def initialize(
 def compose(
     home, *arguments, route_source=None, telegram_owner_id=None, workspace_env=None
 ):
-    env_path = initialize(home, route_source, telegram_owner_id, workspace_env)
+    if arguments[:1] in {("down",), ("ps",)}:
+        env_path = private_path(DEPLOYMENT_ENV)
+        info = env_path.stat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise ValueError("Deployment metadata must be owner-owned and mode 0600")
+        if home is not None or os.environ.get("EMURU_CONTAINER_HOME"):
+            expected = str(deployment_home(home) / "profiles/emuru")
+            saved = next(
+                (
+                    line.partition("=")[2]
+                    for line in env_path.read_text().splitlines()
+                    if line.startswith("EMURU_PROFILE=")
+                ),
+                "",
+            )
+            if shlex.split(saved) != [expected]:
+                raise ValueError("Saved deployment does not match the requested home")
+    else:
+        env_path = initialize(home, route_source, telegram_owner_id, workspace_env)
     command = [
         "docker",
         "compose",
@@ -163,6 +227,9 @@ def compose(
         str(COMPOSE_FILE),
         *arguments,
     ]
+    if arguments[:1] == ("up",):
+        # Build the app explicitly even while its Telegram profile is inactive.
+        subprocess.run(command[: -len(arguments)] + ["build", "emuru"], check=True)
     return subprocess.run(command, check=True).returncode
 
 
@@ -189,9 +256,10 @@ def main():
     args = parser.parse_args()
     try:
         workspace_env = ROOT / ".env"
-        load_env(workspace_env)
-        initialize(args.home, args.route_source, args.telegram_owner_id, workspace_env)
         if args.command == "init":
+            initialize(
+                args.home, args.route_source, args.telegram_owner_id, workspace_env
+            )
             home = deployment_home(args.home)
             print(f"Private container deployment initialized: {home}")
             print(
@@ -206,16 +274,6 @@ def main():
             "down": ("down", "--remove-orphans"),
             "status": ("ps",),
         }[args.command]
-        if args.command == "up":
-            # Build the app explicitly even while its Telegram profile is inactive.
-            compose(
-                args.home,
-                "build",
-                "emuru",
-                route_source=args.route_source,
-                telegram_owner_id=args.telegram_owner_id,
-                workspace_env=workspace_env,
-            )
         compose(
             args.home,
             *command,

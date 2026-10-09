@@ -240,6 +240,7 @@ def main():
                 import native_session_case as case
 
                 await case.check(run, adapter, worker, directory)
+                case.check_tools(execution, directory)
                 if len(sent) != 5 or sent[3].replace("\\.", ".") != (
                     "New session started. Previous conversation preserved."
                 ):
@@ -315,6 +316,13 @@ def main():
     queue.recover()
 
     execution = native.NativeTelegram(queue, ROOT, **guard_classes)
+    from agent import tool_executor
+    from run_agent import AIAgent
+
+    from emuru.hermes.inference import install_guard
+
+    install_guard(AIAgent, permitted=execution.inference_permitted)
+    execution.install_tool_guard(tool_executor)
     try:
         sys.argv = ["hermes", "-p", "emuru", "gateway", "run"]
         # Keep the CLI in this process: a supervisor exec would discard the guards.

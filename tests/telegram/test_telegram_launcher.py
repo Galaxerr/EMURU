@@ -13,6 +13,8 @@ from types import SimpleNamespace as NS
 import pytest
 from telegram_helpers import update
 
+from emuru.hermes import launch as native_launch
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -60,7 +62,7 @@ def test_native_bootstrap_keeps_its_interpreter_and_external_bridge(
     def execute(binary, command):
         executed.append((binary, command))
 
-    monkeypatch.setattr(diagnostic.subprocess, "run", run)
+    monkeypatch.setattr(native_launch.subprocess, "run", run)
     monkeypatch.setattr(diagnostic.os, "execv", execute)
     diagnostic.launch("--check")
     assert commands[0][:2] == [str(executable), "--print-runtime-command"]
@@ -81,8 +83,8 @@ def test_offline_never_resolves_hermes_or_private_home(diagnostic, monkeypatch, 
 
     monkeypatch.setattr(diagnostic.profile, "installed_runtime", forbidden)
     monkeypatch.setattr(diagnostic.profile, "profile_home", forbidden)
-    monkeypatch.setattr(diagnostic.subprocess, "run", forbidden)
-    monkeypatch.setattr(diagnostic.subprocess, "check_output", forbidden)
+    monkeypatch.setattr(native_launch.subprocess, "run", forbidden)
+    monkeypatch.setattr(native_launch.subprocess, "check_output", forbidden)
     diagnostic.offline()
     assert "PASS (offline)" in capsys.readouterr().out
 
@@ -284,7 +286,11 @@ def test_native_main_keeps_its_lifecycle_with_guards_and_private_config(
     )
     admission = NS(TelegramApplication=object)
     for name, module in {
-        "agent": NS(system_prompt=NS(STEER_CHANNEL_NOTE="unused steering")),
+        "agent": NS(
+            system_prompt=NS(STEER_CHANNEL_NOTE="unused steering"),
+            tool_executor=NS(_dispatch_authorized_once=lambda *args, **kwargs: None),
+        ),
+        "run_agent": NS(AIAgent=object),
         "gateway": NS(run=run),
         "gateway.platforms.event": NS(MessageType=object),
         "plugins.platforms.telegram": NS(update_admission=admission),
@@ -298,6 +304,9 @@ def test_native_main_keeps_its_lifecycle_with_guards_and_private_config(
     monkeypatch.setattr(runtime, "audit_live_profile", lambda: None)
     monkeypatch.setattr(runtime.native, "verify_functions", lambda *args: None)
     monkeypatch.setattr(runtime.native, "verify_native_contract", lambda *args: None)
+    from emuru.hermes import inference
+
+    monkeypatch.setattr(inference, "install_guard", lambda *args, **kwargs: None)
     native_class = runtime.native.NativeTelegram
 
     def execution_adapter(queue, *args, **kwargs):

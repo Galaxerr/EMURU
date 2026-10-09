@@ -1,4 +1,4 @@
-# EMURU operating runbook — v0.3.2
+# EMURU operating runbook — v0.3.3
 
 ## Requirements
 
@@ -66,6 +66,10 @@ Real mode has exactly `mode` and `vault_path`; the latter is the private absolut
 root of the separate vault Git repository. Synthetic mode has only
 `{"mode":"synthetic"}`. An absent file selects synthetic; an invalid explicit
 target is rejected. The installed real service requires real mode before start.
+Docker requires `EMURU_VAULT_PATH` in the workspace `.env`; initialization
+mounts that validated Git vault at `/state/vault` and writes a real target
+record pointing there. Without this explicit bind, a container must not be
+treated as connected to the owner's vault.
 
 Stop and drain work before changing targets or deploying different code. Do not
 send messages during that switch. `scripts/hermes/vault.py target --require-real` checks
@@ -82,6 +86,14 @@ or power loss. `vault_write` creates new Inbox notes only;
 overwrite/update/delete/merge are unsupported. External vault edits require
 owner-managed indexing/restart. Git synchronization is an owner operation;
 v0.3.1 does not supply automatic synchronization or its monitoring.
+
+If the agent reports an empty vault, first run `scripts/hermes/vault.py target
+--require-real`, then inspect the result of `vault_map` through the configured
+MCP profile. An empty map means the selected vault has no Markdown files under
+the six allowlisted roots; `_index`, `99_System`, `99_Private`, and other roots
+do not count as knowledge sources. Restore or add notes under an allowlisted
+root and restart the MCP session. Do not broaden the allowlist or copy the
+synthetic fixture into the private vault as a workaround.
 
 ## Queue and history
 
@@ -105,8 +117,11 @@ curated vault memory. Vault memory does not train model weights.
 Only start/help/status/new/stop are accepted Telegram commands. Other accounts,
 groups, nontext/media input and unsupported commands cannot start agent work.
 Only the five vault tools are available. Retrieved content is reference data;
-it cannot override tool/security policy. Provider/MCP quota, timeout and
-unavailable errors stop the affected request without retry or provider fallback.
+it cannot override tool/security policy. MCP failures stop the affected request. Eligible inference availability failures
+may use one qualified local attempt through LiteLLM before any result is exposed.
+Authentication/configuration/policy errors never trigger fallback. Once any result
+reaches Hermes, no fallback or replay is allowed. Buffered incomplete or malformed
+responses fail validation before exposure.
 
 Status includes retained historical failure codes; investigate before treating
 them as current outages. Use the private journal and content-free diagnostics.
@@ -123,9 +138,8 @@ current queue receipts during rollback; restoring an old queue can replay
 already attempted effects. Restore notes only after comparing newer genuine
 changes. Correct a failure before running
 `systemctl --user reset-failed emuru-telegram.service` and a manual wake.
-General vault cleanup, automatic synchronization, physical remote wake, provider
-fallback and broader automation are outside this release. Gateway routing is
-limited to the explicit isolated container profile described below.
+General vault cleanup, automatic synchronization, physical remote wake and broader automation are outside this release. All agent
+inference requires the authenticated LiteLLM gateway described below.
 Local lifecycle scripts are owner operations, not model tools.
 
 
@@ -256,3 +270,74 @@ uv run --frozen python scripts/hermes/container-check.py
 * **DB-Free Architecture:** No Redis, database, or spend persistence is used. Missing or invalid keys throw standard 401/400 errors upstream.
 * **Vault Mounts:** Mount the vault root read-only, with writable overlays specifically for `00_Inbox`, `_index`, and `99_System`.
 * **Safety:** Never run concurrent host and container Telegram pollers using the same bot token.
+## v0.3.3 gateway enforcement
+
+This checkout does not migrate the running profile or retire systemd. Stop and
+drain the existing poller before any operator-led upgrade; preserve the profile,
+history, receipts, and vault backups. Rebuild `emuru:latest`, regenerate the private
+configuration with `container.py init`, recreate LiteLLM, then apply and audit the
+profile using the container commands above. Never start a second poller.
+
+CLI and guarded Telegram use only the authenticated `emuru` alias. In the
+container the endpoint is `http://litellm:4000/v1`. For a host CLI, explicitly
+publish the proxy on loopback and set
+`EMURU_GATEWAY_URL=http://127.0.0.1:4000/v1`; arbitrary URLs are rejected. Supply
+`EMURU_GATEWAY_KEY` through the private environment and reapply the profile in
+that same environment. The checked-in Compose file publishes no default ports.
+The Ollama inventory picker and explicit `--smoke` probes remain operator tools.
+
+The default primary uses Ollama Cloud directly. Gemini/OpenAI are explicit
+upstream alternatives, with no automatic local fallback. Local daemon failure
+must not gate cloud startup or successful primary calls. Each inference starts
+with the primary, regardless of previous failures. Only availability failures
+(rate/quota, refused connections, timeout, upstream 5xx) are eligible for one
+local attempt. Authentication, unsupported arguments, configuration, content
+policy, and malformed results fail diagnostically. The gateway buffers upstream
+streams, validates complete results and JSON tool arguments, then exposes one
+model's result. This trades incremental CLI output for a strict validation boundary.
+
+Limits are 60 seconds for cloud, 180 seconds for local including admission and
+loading, 245 seconds per routed inference, and 600 seconds per owner turn.
+Hermes's 250-second request/stale timeout permits the gateway budget. Proxy
+settings `EMURU_CLOUD_SECONDS`, `EMURU_LOCAL_SECONDS`, `EMURU_ROUTED_SECONDS`,
+`EMURU_CLOUD_FIRST_TOKEN_SECONDS` (30), `EMURU_LOCAL_FIRST_TOKEN_SECONDS` (120),
+and `EMURU_INTER_CHUNK_SECONDS` (30) may shorten their respective limits, never
+increase them. Set proxy environment explicitly when changing these settings.
+Cancellation does not guarantee that remote compute or billing stops.
+
+The picker deliberately writes `qualification: null`. A configured context
+number, installed weights, or successful chat does not qualify a local model.
+v0.3.4 owns hardware/model qualification; do not manufacture a production record
+to enable fallback. The v0.3.3 evidence contract requires exact model/digest,
+Ollama runtime, template SHA256, context and output reserve, expiry within 30 days,
+all tool/context/latency/counting gates, and counting evidence against upstream
+`prompt_eval_count`. `utf8_bytes_plus_256_per_message_v1` counts the complete
+request conservatively, including tools/history/results and output reserve.
+Missing, stale, mismatched or oversized evidence disables local dispatch without
+truncation. Synthetic fixture provenance is accepted only by the disposable test
+configuration and never qualifies a production route.
+
+A failed turn is not requeued or replayed. Terminal notices use durable tool
+start facts: proven no-tool turns say the request could not be carried out;
+completed/uncertain effects or missing historical facts warn that actions may
+already have completed. Inspect committed paths and receipts before resubmitting.
+
+Validate the candidate without live inference or profile migration:
+
+```bash
+uv run --frozen pytest -q
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
+uv run --frozen python scripts/hermes/baseline.py
+uv run --frozen python scripts/hermes/vault.py check
+uv run --frozen python scripts/hermes/vault-profile.py --offline
+uv run --frozen python scripts/hermes/telegram.py --offline
+scripts/hermes/telegram.sh --runtime-check
+uv run --frozen python scripts/hermes/container-check.py --config-only
+docker build -t emuru:latest .
+uv run --frozen python scripts/hermes/container-check.py
+git diff --check
+```
+
+The release report separates synthetic acceptance from live-model qualification,
+populated-cache persistence, real-vault permissions and owner Telegram delivery.

@@ -15,22 +15,18 @@ class VaultProfileTests(ProfileCase):
         self.assertEqual(self.writes, before)
 
     def test_offline_check_does_not_preflight(self):
-        with patch.object(profile, "check_provider") as preflight:
+        with patch("emuru.models.ollama.urlopen") as preflight:
             profile.expected_settings(self.root)
         preflight.assert_not_called()
         self.assertEqual(self.writes, [])
 
-    def test_wrong_provider_unknown_fields_and_quoted_model_are_rejected(self):
-        for selection in (
-            {"provider": "custom", "model": "gpt-6-astra"},
-            {"provider": "openai-api", "model": '"gpt-6-astra"'},
-            {"provider": "openai-api", "model": "gpt-6-astra", "api_key": "FAKE"},
-        ):
-            with self.subTest(selection=selection):
-                self.write_json("model-selection.json", selection)
-                with self.assertRaises(profile.ProfileError):
-                    self.run_profile("--apply")
-                self.assertEqual(self.writes, [])
+    def test_legacy_selection_never_changes_agent_route(self):
+        self.write_json(
+            "model-selection.json", {"provider": "custom", "model": "ignored"}
+        )
+        self.run_profile("--apply")
+        self.assertEqual(self.state["model.provider"], "custom:emuru")
+        self.assertEqual(self.state["model.default"], "emuru")
 
     def test_extra_server_is_rejected_before_any_changes(self):
         self.state["mcp_servers"]["unexpected"] = {}
@@ -53,6 +49,7 @@ class VaultProfileTests(ProfileCase):
             ("platform_toolsets.cli", ["mcp-vault", "terminal"]),
             ("tools.tool_search.enabled", "on"),
             ("fallback_providers", [{"provider": "gemini"}]),
+            ("auxiliary.compression", {"provider": "gemini", "model": "other"}),
             ("mcp_servers.other", {}),
         ):
             with self.subTest(key=key):
@@ -120,12 +117,10 @@ class NativeProfileTests(ProfileCase):
         before = deepcopy(actual)
         with (
             patch.object(profile.shutil, "which", return_value="/mock/bin/uv"),
-            patch.object(profile, "check_provider") as preflight,
             patch("emuru.models.ollama.urlopen") as http,
             patch.object(profile.subprocess, "run") as transport,
         ):
             server = profile.audit_native_profile(self.root, actual)
-        preflight.assert_not_called()
         http.assert_not_called()
         transport.assert_not_called()
         self.assertEqual(actual, before)
@@ -148,29 +143,38 @@ class NativeProfileTests(ProfileCase):
                 )
                 self.assertEqual(self.writes, before)
 
-    def test_native_custom_cloud_alias_uses_persisted_route(self):
-        self.select("ollama", "custom-cloud-alias")
+    def test_native_route_and_timeout_overrides_fail_closed(self):
         self.run_profile("--apply")
+        for key, value in (
+            ("base_url", "https://ollama.com/v1"),
+            ("provider", "ollama"),
+            ("default", "other"),
+            ("ollama_num_ctx", 65536),
+        ):
+            actual = self.nested_config()
+            actual["model"][key] = value
+            with self.assertRaises(profile.ProfileError):
+                self.audit_native(actual)
         actual = self.nested_config()
-        actual["model"]["ollama_num_ctx"] = 0
-        actual["providers"]["ollama"].update(
-            request_timeout_seconds=60, stale_timeout_seconds=60
-        )
-        self.audit_native(actual)
-        actual["providers"]["ollama"]["request_timeout_seconds"] = 180
-        with self.assertRaisesRegex(profile.ProfileError, "request_timeout_seconds"):
+        actual["providers"]["emuru"]["request_timeout_seconds"] = 180
+        with self.assertRaisesRegex(profile.ProfileError, "providers.emuru"):
             self.audit_native(actual)
 
-    def test_native_context_requires_reviewed_integer(self):
-        self.select("ollama", "qwen3:4b")
+    def test_native_compression_overrides_fail_closed(self):
         self.run_profile("--apply")
-        for context in (None, False, True, "65536", 42):
-            with self.subTest(context=context):
-                actual = self.nested_config()
-                actual["model"]["ollama_num_ctx"] = context
-                with self.assertRaises(profile.ProfileError) as error:
-                    self.audit_native(actual)
-                self.assertEqual(error.exception.code, "profile_model_route_mismatch")
+        for override in (
+            {"provider": "gemini"},
+            {"model": "other"},
+            {"base_url": "https://other/v1"},
+            {"api_key": "SYNTHETIC_SECRET"},
+        ):
+            actual = self.nested_config()
+            actual["auxiliary"]["compression"].update(override)
+            with self.assertRaisesRegex(
+                profile.ProfileError, "auxiliary.compression"
+            ) as error:
+                self.audit_native(actual)
+            self.assertNotIn("SYNTHETIC_SECRET", str(error.exception))
 
     def test_native_secrets_types_and_registration_fail_closed(self):
         self.run_profile("--apply")

@@ -11,7 +11,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from emuru.models.providers import check_provider, provider_settings
+from emuru.models.gateway import read_route
+from emuru.models.gateway import settings as gateway_settings
 from emuru.telegram.queue import load_telegram_settings
 
 
@@ -66,34 +67,11 @@ def expected_settings(root: Path, *, model: dict | None = None):
     settings = json.loads(
         (root / "infra/hermes/runtime-settings.json").read_text(encoding="utf-8")
     )
-    selection = json.loads(
-        (root / "infra/hermes/model-selection.json").read_text(encoding="utf-8")
-    )
     if not isinstance(settings, dict):
         raise ProfileError("runtime-settings.json must be a settings mapping")
     try:
-        cloud = None
-        if (
-            model is not None
-            and isinstance(selection, dict)
-            and selection.get("provider") == "ollama"
-        ):
-            context = model.get("ollama_num_ctx")
-            if type(context) is not int or context not in (0, 65536):
-                raise ProfileError(
-                    "Invalid Ollama context", code="profile_model_route_mismatch"
-                )
-            # Native audits use the reviewed, persisted route without contacting Ollama.
-            cloud = context == 0
-        if os.environ.get("EMURU_CONTAINER_ROUTE"):
-            from emuru.models.gateway import read_route
-            from emuru.models.gateway import settings as gateway_settings
-
-            route = gateway_settings(read_route(os.environ["EMURU_CONTAINER_ROUTE"]))
-        else:
-            route = provider_settings(selection, cloud=cloud)
-    except ProfileError:
-        raise
+        route_path = os.environ.get("EMURU_CONTAINER_ROUTE")
+        route = gateway_settings(read_route(route_path) if route_path else None)
     except ValueError as error:
         raise ProfileError(str(error)) from error
     if any(
@@ -128,7 +106,9 @@ def expected_settings(root: Path, *, model: dict | None = None):
         if settings.get(key) is not False:
             raise ProfileError(f"Unexpected automatic capability: {key}")
     if (
-        settings.get("fallback_providers") != []
+        settings.get("auxiliary.compression")
+        != {"provider": "custom:emuru", "model": "emuru"}
+        or settings.get("fallback_providers") != []
         or settings.get("security.redact_secrets") is not True
         or settings.get("platform_toolsets.cli") != ["mcp-vault"]
         or settings.get("platform_toolsets.telegram") != ["mcp-vault"]
@@ -149,7 +129,7 @@ def expected_server(root: Path):
     uv = shutil.which("uv")
     if uv is None:
         raise ProfileError("uv is not on PATH")
-    return {
+    server = {
         "command": uv,
         "args": [
             "--directory",
@@ -171,6 +151,7 @@ def expected_server(root: Path):
         "elicitation": {"enabled": False},
         "tools": {"include": TOOLS, "resources": False, "prompts": False},
     }
+    return server
 
 
 def _check_model(model):
@@ -209,10 +190,6 @@ def configure_profile(root: Path, get, set_value=None):
             code="profile_mcp_registration_mismatch",
         )
     _check_model(get("model"))
-    try:
-        check_provider(settings)
-    except (ValueError, RuntimeError) as error:
-        raise ProfileError(str(error)) from error
     if set_value is not None:
         if not (root / ".runtime/vault").is_dir():
             raise ProfileError("Prepare the synthetic runtime vault first")

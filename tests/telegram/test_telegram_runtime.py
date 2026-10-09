@@ -54,8 +54,8 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             return True
 
         async def send_message(self, chat_id, text):
-            if text.startswith("Telegram update "):
-                reports.append(int(text.split()[2]))
+            if text.startswith(("I can’t reach", "I couldn’t finish")):
+                reports.append(1)
             return await self._post("sendMessage", {"chat_id": chat_id, "text": text})
 
     class Updater:
@@ -726,3 +726,58 @@ def test_worker_outcomes_through_execution_seam(
         assert "SYNTHETIC_SECRET" not in caplog.text
     finally:
         queue.close()
+
+
+def test_owner_deadline_stops_turn_and_preserves_pending(boundary):
+    b = boundary
+    b.execution.turn_timeout = 0.01
+
+    async def check():
+        b.queue.stage(7, [raw(1, "wait"), raw(2, "second")])
+        await b.bridge.once()
+        assert b.queue.status() == {"interrupted": 1, "queued": 1}
+        assert b.bridge.retired
+        b.release.set()
+        await asyncio.sleep(0)
+        assert not b.network
+
+    asyncio.run(check())
+
+
+def test_terminal_notices_use_durable_tool_dispatch_facts(boundary):
+    b = boundary
+    b.queue.stage(7, [raw(1, "hello")])
+    b.queue.claim(7)
+    assert b.queue.terminal_notice(7, 1) == (
+        "I can’t reach a model right now, so I couldn’t carry out this request. Please try again later."
+    )
+    b.queue.mark_tools_started(7, 1)
+    b.queue.finish(1, False)
+    assert b.queue.terminal_notice(7, 1) == (
+        "I couldn’t finish this request. Some actions may already have completed; please check before trying again."
+    )
+    assert b.queue.terminal_notice(7, 999).startswith("I couldn’t finish")
+
+
+def test_tool_guard_blocks_late_calls_and_records_before_effect(boundary):
+    b = boundary
+    calls = []
+    executor = NS(
+        _dispatch_authorized_once=lambda agent, state, ref, *, execute: execute({})
+    )
+    b.execution.install_tool_guard(executor)
+    b.queue.stage(7, [raw(1, "hello")])
+    b.queue.claim(7)
+    agent = NS()
+    with b.execution._turn_scope(1) as turn:
+        assert b.execution.inference_permitted(agent)
+        executor._dispatch_authorized_once(
+            agent, None, None, execute=lambda args: calls.append("write")
+        )
+        assert b.queue.terminal_notice(7, 1).startswith("I couldn’t finish")
+        turn.completed = True
+    with pytest.raises(RuntimeError, match="tool execution rejected"):
+        executor._dispatch_authorized_once(
+            agent, None, None, execute=lambda args: calls.append("late write")
+        )
+    assert calls == ["write"]

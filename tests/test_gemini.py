@@ -11,8 +11,8 @@ class GeminiProfileTests(ProfileCase):
         self.run_profile("--apply")
         self.select("gemini", "gemini-3.8-flash")
         self.run_profile("--apply")
-        self.assertEqual(self.state["model.provider"], "gemini")
-        self.assertEqual(self.state["model.base_url"], "")
+        self.assertEqual(self.state["model.provider"], "custom:emuru")
+        self.assertEqual(self.state["model.default"], "emuru")
         self.assertEqual(self.state["model.api_mode"], "chat_completions")
         self.assert_vault_only()
 

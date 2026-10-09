@@ -4,11 +4,11 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**Version: 0.3.2.** Adds an opt-in Docker foundation with a private cloud-primary
-route, an unqualified local candidate, and authenticated primary-only LiteLLM.
-Existing host operation remains supported. Follow this guide for setup, the
-[runbook](docs/RUNBOOK.md) for operation, and the
-[release report](docs/releases/v0.3.2-report.md) for test evidence.
+**Version: 0.3.3.** Agent inference uses authenticated local LiteLLM exclusively.
+The gateway bounds each request to one cloud attempt and at most one qualified
+local attempt. Unqualified local models remain disabled. Follow this guide for
+setup, the [runbook](docs/RUNBOOK.md) for operation, and the
+[release report](docs/releases/v0.3.3-report.md) for verification and acceptance gaps.
 
 ## Capabilities and limits
 
@@ -17,7 +17,8 @@ Existing host operation remains supported. Follow this guide for setup, the
 - Authenticate one numeric Telegram owner in private text-only chats; serialize
   durable work and suppress duplicate dispatch across restart.
 - Preserve native conversation history; `/new` starts a fresh active session.
-- Select Ollama, Gemini or OpenAI explicitly; no automatic provider fallback.
+- Select cloud Ollama, Gemini or OpenAI as a LiteLLM upstream explicitly.
+  Only the default Ollama cloud route may fall back to a qualified local model.
 
 Writes cannot overwrite, update, delete or merge notes. Ambiguous started turns
 are reported without replay. Automatic Git synchronization, general vault cleanup,
@@ -74,27 +75,25 @@ environment with offline, frozen execution and no dependency installation.
 
 ### Model selection and CLI chat
 
-`infra/hermes/model-selection.json` is the legacy host route source of truth. The checked-in
-route is Ollama's local daemon with `gemma4:31b-cloud`; choose an available model
-before applying the profile. No models are downloaded automatically.
+Agent profiles always select the authenticated `emuru` LiteLLM alias. Direct
+provider URLs and inference overrides are rejected. The existing Ollama picker
+remains an operator inventory/diagnostic tool; its legacy host selection file
+no longer configures agent inference. Select the private gateway route using
+the [container setup](docs/RUNBOOK.md#v032-isolated-container-foundation), then
+apply the profile in the deployment's environment.
 
 ```bash
 uv run --frozen python scripts/hermes/ollama.py --list
-uv run --frozen python scripts/hermes/ollama.py --select
-uv run --frozen python scripts/hermes/ollama.py --smoke
-uv run --frozen python scripts/hermes/vault-profile.py --apply
-scripts/hermes/emuru.sh
+uv run --frozen python scripts/hermes/vault-profile.py --offline
 ```
 
-The chooser supports downloaded models and cloud aliases from the daemon catalog.
-`--select MODEL` selects without a prompt; `--model MODEL --smoke` tests without
-changing the saved selection. Cloud inference requires provider authentication.
-The root `.env` supplies `OLLAMA_API_KEY`; the chooser still reads the local
-daemon catalog.
+`--smoke` is an explicit operator inference probe, separate from guarded agent
+inference. No model is downloaded automatically. Profile apply does not require
+a working Ollama daemon; direct-cloud inference does not use that daemon.
 
 ### Isolated Docker deployment
 
-The container route is opt-in and keeps its profile, gateway key, route, proxy
+The container deployment keeps its profile, gateway key, route, proxy
 configuration and Ollama cache under one private directory. If the owner-only
 route at `$HOME/.local/state/emuru/container/route.json` is valid, initialize and start it
 without manually assembling Compose variables:
@@ -110,6 +109,10 @@ private directory or `--route-source` for a different validated route. `up`
 prepares the private directories and writes `infra/docker/deployment.env` before
 building and starting the pinned proxy and Ollama images
 without pulling model weights. Use `status` and `down` for lifecycle operations.
+Set `EMURU_VAULT_PATH` in the root `.env` to the absolute path of the private
+Git vault before running `init`; Docker mounts that vault at `/state/vault` and
+binds the agent to it explicitly. Initialization fails closed if the path is
+missing or is not a Git vault with `00_Inbox`.
 The initializer fails closed if the route is missing or private file permissions
 are unsafe; model-pair selection remains explicit through
 `scripts/hermes/ollama.py`. This starts infrastructure, not the Telegram agent.
@@ -229,7 +232,7 @@ scripts/hermes/telegram.sh --runtime-check
 
 Run one file with `uv run --frozen pytest tests/test_environment.py`. The native
 check requires the pinned Hermes installation but makes no provider calls. The
-last command checks Compose only; full Docker acceptance is below. Live Ollama
+native check uses synthetic execution; full Docker acceptance is below. Live Ollama
 tests are opt-in through `EMURU_TEST_OLLAMA` and `EMURU_TEST_HERMES_OLLAMA` and
 may call providers.
 
@@ -240,12 +243,14 @@ Follow [container setup](docs/RUNBOOK.md#v032-isolated-container-foundation).
 Telegram worker requires the explicit `agent` profile. Use disposable state first.
 No production state is migrated, and no systemd cutover is included.
 
-The private `EMURU_CONTAINER_ROUTE` opt-in selects a separate owner-only route.
-The existing picker selects a cloud primary and installed local candidate together;
-LiteLLM exposes only `emuru`, mapped to the primary. Local qualification remains
-null. No fallback, context admission or 64k usability claim is provided.
+`EMURU_CONTAINER_ROUTE` selects a private owner-only upstream route; agent
+inference remains gateway-only even without that variable. The picker records a
+cloud primary and local candidate. A null or invalid qualification prevents local
+dispatch. v0.3.3 supplies enforcement and deterministic fixtures, not production
+qualification or a 64k usability claim. Hardware/model qualification belongs to
+v0.3.4; lifecycle migration and final systemd retirement belong to v0.4.0.
 
-After fetching the locked images and building `emuru:0.3.2`, run:
+After fetching the locked images and building `emuru:latest`, run:
 
 ```bash
 uv run --frozen python scripts/hermes/container-check.py

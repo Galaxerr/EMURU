@@ -1,4 +1,4 @@
-# EMURU architecture — v0.3.2
+# EMURU architecture — v0.3.3
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
 vault through five constrained MCP tools. Telegram adds durable owner-only
@@ -30,10 +30,10 @@ All module paths below are relative to `src/emuru/`.
 | `vault/mcp.py` | Five-tool exposure, request limits and MCP error translation; no SQL or graph interpretation |
 | `vault/target.py` | Private live-target validation using indexer-owned derived paths and shared profile-home validation |
 | `vault/cli.py`, `vault/server.py` | `emuru-index` and `emuru-vault-mcp` entry points |
-| `hermes/profile.py` | Shared profile policy, provider composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
+| `hermes/profile.py` | Shared profile policy, exclusive gateway composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
 | `environment.py` | Owner-only root `.env` parsing and atomic secret updates |
 | `models/providers.py`, provider modules | Explicit provider selection and provider-specific configuration/preflight |
-| `models/gateway.py` | Private primary route validation, local-candidate metadata, and authenticated primary-only proxy rendering |
+| `models/gateway.py` | Private route validation, qualification contract, and authenticated bounded proxy rendering |
 | `telegram/queue.py` | SQLite durability, seven states, admission/claims/recovery, permissions, receipt error normalization and read-only diagnostics |
 | `telegram/worker.py` | FIFO orchestration, durable outcomes and worker lifecycle through the execution interface |
 | `telegram/native.py` | Pinned Hermes/PTB polling, routing, completion, scoped turn state, scheduling, egress guards, native patches and process health |
@@ -94,8 +94,7 @@ must not be installed into that environment by the launcher.
 - Queue diagnostics never instantiate a live queue, recover, prune or rewrite
   rows. Process `health.json` is a separate diagnostic input, merged with safe
   receipt errors; status exposes no message bodies or identities.
-- Expose only the five vault tools; no generic shell/filesystem/browser tools,
-  automatic retry or provider fallback. Retrieved content grants no authority.
+- Expose only the five vault tools; no generic shell/filesystem/browser tools or Hermes-owned retry/fallback. Retrieved content grants no authority.
 - Operate one poller and one vault writer. Preserve receipts when investigating
   uncertain effects: at-most-once dispatch does not guarantee exactly-once effects.
 
@@ -109,7 +108,7 @@ uses the installed pinned Hermes/PTB session implementation with synthetic
 HTTP/provider behavior. Hosted CI does not prove live deployment acceptance.
 
 Follow [README](../README.md) for setup and [RUNBOOK](RUNBOOK.md) for migration,
-service lifecycle and recovery. [Release evidence](releases/v0.3.2-report.md)
+service lifecycle and recovery. [Release evidence](releases/v0.3.3-report.md)
 separates container foundation checks from pending live acceptance. Historical
 v0.3.1 and v0.3.0 evidence remains archived unchanged.
 
@@ -120,15 +119,25 @@ The immutable checkout retains Git metadata and native source hashes. The guarde
 launcher still owns the lifetime flock and execs the native runtime. Startup is
 offline, with lazy installation disabled. The host installation remains independent.
 
-`models/gateway.py` validates the private route, composes the Hermes named custom
-provider, and renders one authenticated LiteLLM alias. `EMURU_CONTAINER_ROUTE`
-explicitly enables this composition; it does not alter the host selection file.
-Ollama cloud primaries use `https://ollama.com` with the private `OLLAMA_API_KEY`
-secret. Pair selection resolves daemon aliases to their discovered `remote_model`
-before rendering; older alias routes must be reselected. This avoids depending
-on daemon sign-in state inside the proxy.
-The local candidate has a catalog digest and null qualification, and is never
-rendered into the proxy. All retry/fallback settings remain disabled.
+`models/gateway.py` validates the private route and renders the authenticated
+LiteLLM alias. All agent profiles use that alias; direct provider composition is
+reserved for operator inventory and diagnostics. Ollama cloud requests go directly
+to `https://ollama.com` with the upstream key, independently of the local daemon.
+Gemini and OpenAI remain explicitly selected upstream alternatives outside the
+automatic fallback chain.
+
+The gateway owns a bounded primary/local sequence using the pinned LiteLLM
+implementation. Local dispatch requires matching qualification and live model
+identity/runtime checks, plus conservative full-request context admission.
+Missing or stale evidence disables local dispatch. Each new inference starts
+with the primary; completed tools are never replayed as part of failover.
+
+Attempt budgets are 60 seconds cloud and 180 seconds local including loading;
+the routed call is bounded to 245 seconds and an owner turn to 600 seconds.
+Eligible availability failures can fall back only before output reaches Hermes.
+Authentication, configuration, policy and malformed-response failures stop.
+Cancellation suppresses late results and subsequent tool execution; it does not
+guarantee cancellation of remote compute or billing.
 
 Compose uses one ordinary bridge network with outbound connectivity, no default
 published ports, and a separate opt-in `agent` profile. The profile, workspace,

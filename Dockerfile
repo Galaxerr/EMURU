@@ -18,6 +18,7 @@ COPY infra/docker/secret-exec.py ./infra/docker/secret-exec.py
 COPY agents/emuru ./agents/emuru
 COPY tests/fixtures/hermes-vault ./tests/fixtures/hermes-vault
 COPY tests/telegram/native_session_case.py ./tests/telegram/native_session_case.py
+COPY tests/native_inference_case.py ./tests/native_inference_case.py
 RUN chmod -R a+rX /opt/emuru/tests/fixtures
 RUN chmod a+r \
     /opt/emuru/agents/emuru/SOUL.md \

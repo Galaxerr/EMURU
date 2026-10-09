@@ -15,6 +15,15 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/fixtures/hermes-vault"
 RUNTIME = ROOT / ".runtime/vault"
 TOOLS = {"vault_map", "vault_search", "vault_open", "vault_neighbors", "vault_write"}
+CONTAINER_PROFILE = Path("/state/profiles/emuru")
+
+
+def selected_profile_home():
+    if os.environ.get("EMURU_HERMES_PROFILE_HOME") or os.environ.get("HERMES_HOME"):
+        return profile_home()
+    if (CONTAINER_PROFILE / "vault-target.json").is_file():
+        return CONTAINER_PROFILE
+    return profile_home()
 
 
 def backend(vault: Path, *arguments: str):
@@ -23,7 +32,14 @@ def backend(vault: Path, *arguments: str):
         raise RuntimeError("uv is not on PATH")
     env = {
         key: os.environ[key]
-        for key in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+        for key in (
+            "PATH",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "TMPDIR",
+            "EMURU_HERMES_PROFILE_HOME",
+        )
         if key in os.environ
     }
     env["EMURU_VAULT_PATH"] = str(vault.resolve())
@@ -175,7 +191,7 @@ def main():
         print("Synthetic runtime vault prepared")
     elif args.mode in {"serve", "target"}:
         try:
-            kind, vault = load_target(ROOT, profile_home())
+            kind, vault = load_target(ROOT, selected_profile_home())
         except TargetError as error:
             raise SystemExit(f"EMURU vault target: {error}") from None
         if args.require_real and kind != "real":

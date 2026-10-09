@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -13,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 from emuru.environment import load_env
 from emuru.hermes import profile
+from emuru.hermes.launch import launch_native
 from emuru.hermes.profile import HealthError
 from emuru.telegram import queue as queue_module
 
@@ -64,9 +64,6 @@ def launch(mode):
     native = profile.installed_runtime(ROOT)
     os.environ["EMURU_HERMES_ROOT"] = str(native)
     os.environ["HERMES_HOME"] = str(profile.profile_home())
-    # Dependency bootstrapping must not fetch/install anything on the launch path.
-    os.environ["UV_OFFLINE"] = "1"
-    os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     workspace = (
         Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
         / "emuru/workspace"
@@ -76,53 +73,7 @@ def launch(mode):
     arguments = [str(ROOT / "infra/hermes/telegram-runtime.py")]
     if mode != "--launch":
         arguments.append(mode)
-    python = native / ".venv/bin/python"
-    if python.is_file() and os.access(python, os.X_OK):
-        command = [
-            str(python),
-            "-I",
-            "-c",
-            "import sys,runpy; sys.path.insert(0,sys.argv.pop(1)); runpy.run_path(sys.argv.pop(1),run_name='__main__')",
-            str(native),
-            *arguments,
-        ]
-    else:
-        # Current Hermes uses its package manager rather than a checkout .venv.
-        hermes = native / ".hermes/bin/hermes"
-        if not hermes.is_file() or not os.access(hermes, os.X_OK):
-            raise HealthError("runtime_python_missing")
-        result = subprocess.run(
-            [
-                str(hermes),
-                "--print-runtime-command",
-                "--module",
-                "runpy",
-                "--",
-                *arguments,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        command = json.loads(result.stdout)
-        entry = "runpy.run_module('runpy', run_name='__main__', alter_sys=True)"
-        if (
-            not isinstance(command, list)
-            or len(command) < 4
-            or not all(type(x) is str for x in command)
-            or command[1:3] != ["-I", "-c"]
-            or not command[3].endswith(entry)
-            or not Path(command[0]).is_absolute()
-        ):
-            raise HealthError("runtime_launcher_contract_changed")
-        command[3] = (
-            command[3].removesuffix(entry)
-            + "runpy.run_path(sys.argv.pop(1), run_name='__main__')"
-        )
-    # Exec preserves the lifetime lock and delivers shutdown signals directly to Hermes.
-    sys.stdout.flush()
-    os.execv(command[0], command)
+    launch_native(native, arguments)
 
 
 def main():
