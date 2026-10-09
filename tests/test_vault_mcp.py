@@ -99,9 +99,17 @@ async def test_forbidden_reads(tmp_path, path, message):
     assert message in result.content[0].text
 
 
-async def test_write_creates_inbox_note_and_is_immediately_searchable(tmp_path):
+@pytest.mark.parametrize("extension", ["md", "MD", "mD"])
+async def test_write_creates_inbox_note_and_is_immediately_searchable(
+    tmp_path, extension
+):
     vault = create_vault(tmp_path)
-    path = "00_Inbox/new-concept.md"
+    path = f"00_Inbox/new-concept.{extension}"
+    write_note(
+        vault,
+        "10_Projects/reference.MD",
+        f"Links to [[00_Inbox/new-concept.{extension}]].",
+    )
     content = "# New Concept\nBuild something. QuasarOrchid is a unique test phrase."
     async with Client(create_mcp(vault), raise_exceptions=True) as client:
         result = await client.call_tool(
@@ -111,10 +119,20 @@ async def test_write_creates_inbox_note_and_is_immediately_searchable(tmp_path):
         assert (vault / path).is_file()
         assert "Build something." in (vault / path).read_text(encoding="utf-8")
         search = await client.call_tool("vault_search", {"query": "QuasarOrchid"})
+        opened = await client.call_tool("vault_open", {"path": path})
+        neighbors = await client.call_tool("vault_neighbors", {"path": path})
     assert search.is_error is False
     data = search.structured_content
     assert data is not None and data["count"] == 1
     assert data["results"][0]["path"] == path
+    assert (
+        not opened.is_error and "QuasarOrchid" in opened.structured_content["content"]
+    )
+    assert not neighbors.is_error
+    assert (
+        neighbors.structured_content["incoming"][0]["source"]
+        == "10_Projects/reference.MD"
+    )
 
 
 @pytest.mark.parametrize("path", ["10_Projects/hacked.md", "00_Inbox/existing.md"])

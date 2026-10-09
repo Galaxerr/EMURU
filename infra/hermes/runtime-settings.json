@@ -45,6 +45,7 @@
   "memory.user_profile_enabled": false,
   "auxiliary.background_review.enabled": false,
   "auxiliary.title_generation.enabled": false,
+  "auxiliary.compression": {"provider": "custom:emuru", "model": "emuru"},
   "security.redact_secrets": true,
   "display.show_reasoning": false,
   "display.show_commentary": false,

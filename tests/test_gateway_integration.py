@@ -69,18 +69,9 @@ def test_valid_pair_and_primary_only_render():
             == ROUTE
         )
     config = yaml.safe_load(gateway.render(ROUTE))
-    assert config["model_list"] == [
-        {
-            "model_name": "emuru",
-            "litellm_params": {
-                "model": "ollama_chat/upstream",
-                "api_base": "https://ollama.com",
-                "api_key": "os.environ/OLLAMA_API_KEY",
-                "num_retries": 0,
-                "max_retries": 0,
-            },
-        }
-    ]
+    assert config["model_list"][0]["litellm_params"]["model"] == "emuru_guard/emuru"
+    assert config["litellm_settings"]["drop_params"] is True
+    assert gateway.upstream(ROUTE["primary"])["api_base"] == "https://ollama.com"
     assert "local" not in gateway.render(ROUTE)
     assert config["router_settings"]["fallbacks"] == []
     assert gateway.render(ROUTE) == gateway.render(copy.deepcopy(ROUTE))
@@ -135,7 +126,7 @@ def test_invalid_remote_model_preserves_selection(tmp_path):
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("qualification", {}),
+        ("qualification", "invalid"),
         ("digest", "bad"),
         ("context_tokens", True),
         ("output_reserve_tokens", 65536),
@@ -186,7 +177,7 @@ def test_profile_opt_in_and_secret_free_mcp(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="0600"):
         gateway.read_route(path)
     monkeypatch.delenv("EMURU_CONTAINER_ROUTE")
-    assert profile.expected_settings(ROOT)["model.provider"] == "ollama"
+    assert profile.expected_settings(ROOT)["model.provider"] == "custom:emuru"
 
 
 @pytest.mark.parametrize(
@@ -199,7 +190,7 @@ def test_profile_opt_in_and_secret_free_mcp(tmp_path, monkeypatch):
 def test_optional_upstream(provider, model, prefix, key):
     route = copy.deepcopy(ROUTE)
     route["primary"] = {"provider": provider, "model": model}
-    params = yaml.safe_load(gateway.render(route))["model_list"][0]["litellm_params"]
+    params = gateway.upstream(route["primary"])
     assert params["model"] == prefix + "/" + model
     assert params["api_key"] == "os.environ/" + key
 

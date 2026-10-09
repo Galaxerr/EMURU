@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _Turn:
     uid: int
+    deadline: float = float("inf")
+    agent: object = None
     session_key: str | None = None
     notice: bool = False
     open: bool = True
@@ -101,8 +103,10 @@ def verify_functions(root, run, gateway_cli):
     for qualified, expected in contract["functions"].items():
         if qualified.startswith("gateway.run."):
             module = run
-        elif qualified.startswith("agent.system_prompt."):
-            from agent import system_prompt as module
+        elif qualified.startswith("agent."):
+            import importlib
+
+            module = importlib.import_module(qualified.rsplit(".", 1)[0])
         else:
             module = gateway_cli
         function = getattr(module, qualified.rsplit(".", 1)[1])
@@ -145,7 +149,10 @@ def vault_tools_ready():
 class NativeTelegram:
     """Own native guards, turn scopes, task completion, routing and process health."""
 
-    def __init__(self, queue, root, *, app=None, **classes):
+    def __init__(self, queue, root, *, app=None, turn_timeout=600, **classes):
+        if not 0 < turn_timeout <= 600:
+            raise ValueError("Owner turn timeout must be positive and at most 600s")
+        self.turn_timeout = turn_timeout
         self.queue, self.root = queue, root
         self._app, self._runner = None, None
         self._current = contextvars.ContextVar("emuru_native_turn", default=None)
@@ -188,13 +195,24 @@ class NativeTelegram:
 
     @contextmanager
     def _turn_scope(self, uid, session_key=None, *, notice=False):
-        turn = _Turn(uid, session_key, notice)
+        turn = _Turn(
+            uid,
+            session_key=session_key,
+            notice=notice,
+            deadline=time.monotonic() + self.turn_timeout,
+        )
         token = self._current.set(turn)
         try:
             yield turn
         finally:
             # Detached tasks inherit this object. Closing it prevents late egress.
             turn.open = False
+            if turn.agent is not None and (
+                not turn.completed or turn.failed or time.monotonic() >= turn.deadline
+            ):
+                from agent.interrupt_compat import request_hard_interrupt
+
+                request_hard_interrupt(turn.agent, "Owner turn ended")
             self._current.reset(token)
 
     async def execute(self, payload, session_key):
@@ -204,15 +222,18 @@ class NativeTelegram:
                 self._receipts._load_receipts(adapter, app.bot.id)
                 if f"{app.bot.id}:{payload['update_id']}" in adapter._seen_update_ids:
                     return TurnResult(True)
-                await app.process_update(self._update.de_json(payload, app.bot))
-                # One durable input cannot merge with a second native text batch.
-                batches = list(adapter._pending_text_batch_tasks.values())
-                if batches:
-                    await asyncio.gather(*batches)
+                async with asyncio.timeout_at(turn.deadline):
+                    await app.process_update(self._update.de_json(payload, app.bot))
+                    # One durable input cannot merge with a second native text batch.
+                    batches = list(adapter._pending_text_batch_tasks.values())
+                    if batches:
+                        await asyncio.gather(*batches)
                 if not turn.completed:
                     raise RuntimeError(
                         "Native Telegram handler did not complete a turn"
                     )
+            except TimeoutError:
+                return TurnResult(False, "turn_timeout", interrupted=True)
             except Exception as error:
                 if "--runtime-check" in sys.argv:
                     frame = traceback.extract_tb(error.__traceback__)[-1]
@@ -231,13 +252,37 @@ class NativeTelegram:
         text = (
             ("EMURU Telegram: " + json.dumps(status, sort_keys=True))
             if status is not None
-            else (
-                f"Telegram update {uid} failed or was interrupted. Its effects may be uncertain; "
-                "it was not replayed. Check the vault before sending it again."
-            )
+            else self.queue.terminal_notice(self.identity()[0], uid)
         )
         with self._turn_scope(uid, notice=True):
             await self._app.bot.send_message(chat_id=self.queue.owner_id, text=text)
+
+    def inference_permitted(self, agent):
+        turn = self._current.get()
+        if turn is None or not turn.open or time.monotonic() >= turn.deadline:
+            return False
+        turn.agent = agent
+        agent._emuru_telegram_turn = turn
+        return True
+
+    def install_tool_guard(self, tool_executor):
+        """Pinned shared dispatch seam: guard every actual tool, even within a batch."""
+        dispatch = tool_executor._dispatch_authorized_once
+
+        def guarded(agent, state, ref, *, execute, **kwargs):
+            turn = getattr(agent, "_emuru_telegram_turn", None)
+
+            def checked(args):
+                if turn is None or not turn.open or time.monotonic() >= turn.deadline:
+                    raise RuntimeError("Owner turn ended; tool execution rejected")
+                self.queue.mark_tools_started(self.identity()[0], turn.uid)
+                if not turn.open or time.monotonic() >= turn.deadline:
+                    raise RuntimeError("Owner turn ended; tool execution rejected")
+                return execute(args)
+
+            return dispatch(agent, state, ref, execute=checked, **kwargs)
+
+        tool_executor._dispatch_authorized_once = guarded
 
     def _health(self, code):
         path = self.queue.path.parent / "health.json"
@@ -472,6 +517,7 @@ class NativeTelegram:
             # Native auth and command access checks run before this handler. The
             # durable FIFO already waits for active work; retain native reset/cache
             # cleanup, but skip its callback confirmation on this text-only surface.
+            self.queue.mark_tools_started(self.identity()[0], turn.uid)
             await native_reset(runner, event)
             new = runner.session_store._entries.get(key)
             if new is None or new.session_id == old_id:
@@ -485,6 +531,13 @@ class NativeTelegram:
         async def checked_result(runner, *args, **kwargs):
             turn = turn_for()
             result = await native_run_agent(runner, *args, **kwargs)
+            if isinstance(result, dict) and any(
+                isinstance(message, dict) and message.get("role") == "tool"
+                for message in result.get("messages", [])[
+                    result.get("history_offset", 0) :
+                ]
+            ):
+                self.queue.mark_tools_started(self.identity()[0], turn.uid)
             if (
                 not isinstance(result, dict)
                 or result.get("failed")
@@ -561,6 +614,7 @@ class NativeTelegram:
                     or str(data.get("chat_id")) != str(owner)
                     or not turn
                     or not turn.open
+                    or time.monotonic() >= turn.deadline
                     or turn.failed
                 ):
                     raise RuntimeError("Telegram egress rejected")

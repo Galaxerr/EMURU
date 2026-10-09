@@ -3,20 +3,23 @@ title: EMURU
 type: project
 project: EMURU
 tags: [emuru, agent]
-updated: 2026-10-07
-summary: EMURU v0.3.1 consolidates vault, profile and Telegram modules.
+updated: 2026-10-09
+summary: EMURU v0.3.3 enforces gateway routing and qualified local fallback.
 ---
 
 # EMURU
 
-EMURU v0.3.0 delivered the first usable conversational EMURU. It connects Telegram text messages to Hermes and the vault MCP for note retrieval and constrained Inbox writes.
+EMURU connects owner-only Telegram text to Hermes and the vault MCP for
+retrieval and create-only Inbox writes. Durable queued work resumes after
+restart; ambiguous started turns are reported without replay.
 
-v0.3.1 centralizes profile policy, queue diagnostics and vault index queries,
-separates the durable Telegram worker from the native adapter, and groups files
-by domain. Failed write refreshes roll back new notes where possible; blocked
-cleanup reports the committed path. Owner-only access, restart recovery and
-duplicate-message handling remain required. Automatic provider fallback is not
-part of this release. This note is synthetic release context, not live evidence.
+v0.3.3 routes CLI and guarded Telegram inference exclusively through authenticated
+LiteLLM: one cloud attempt and at most one qualified local attempt after an
+eligible Ollama Cloud availability failure. Unqualified local candidates remain
+disabled. Gemini/OpenAI are explicit alternatives without local fallback.
+Streams and tool arguments are validated before exposure; deadlines bound calls
+and owner turns. This note is synthetic release context, not live acceptance or
+model qualification evidence.
 
 Synthetic source marker: PHASE2_PROJECT_SOURCE_742.
 

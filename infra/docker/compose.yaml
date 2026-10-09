@@ -4,7 +4,7 @@ services:
     profiles: [agent]
     build:
       context: ../..
-    image: emuru:0.3.2
+    image: emuru:latest
     user: "${EMURU_UID:?}:${EMURU_GID:?}"
     restart: "no"
     stop_grace_period: 120s
@@ -30,6 +30,10 @@ services:
         target: /opt/emuru/.runtime
         bind: {create_host_path: false}
       - type: bind
+        source: ${EMURU_VAULT:?}
+        target: /state/vault
+        bind: {create_host_path: false}
+      - type: bind
         source: ${EMURU_ROUTE:?}
         target: /run/emuru/route.json
         read_only: true
@@ -43,10 +47,22 @@ services:
     entrypoint: [python, /opt/emuru/secret-exec.py]
     command: [litellm, --config, /run/emuru/litellm.yaml, --port, "4000"]
     environment:
+      EMURU_CONTAINER_ROUTE: /run/emuru/route.json
+      PYTHONPATH: /opt/emuru/src
       LITELLM_LOG: ERROR
       HOME: /tmp
     secrets: [emuru_gateway_key, ollama_api_key, gemini_api_key, openai_api_key]
     volumes:
+      - type: bind
+        source: ../../src
+        target: /opt/emuru/src
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${EMURU_ROUTE:?}
+        target: /run/emuru/route.json
+        read_only: true
+        bind: {create_host_path: false}
       - type: bind
         source: ./secret-exec.py
         target: /opt/emuru/secret-exec.py
@@ -62,8 +78,6 @@ services:
       interval: 10s
       timeout: 6s
       retries: 12
-    depends_on:
-      ollama: {condition: service_healthy}
   ollama:
     image: ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
     restart: "no"

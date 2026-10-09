@@ -340,6 +340,9 @@ class TelegramQueue:
             with self.transaction():
                 self.db.execute(_SCHEMA)
                 self.db.execute(
+                    "CREATE TABLE IF NOT EXISTS turn_effects (sequence INTEGER PRIMARY KEY, tools_started INTEGER NOT NULL)"
+                )
+                self.db.execute(
                     "CREATE INDEX IF NOT EXISTS pending_updates ON updates(bot_id,state,sequence)"
                 )
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -368,6 +371,9 @@ class TelegramQueue:
             """DELETE FROM updates WHERE state NOT IN ('queued','started')
             AND finished_at < ?""",
             (now - 7 * 86400,),
+        )
+        self.db.execute(
+            "DELETE FROM turn_effects WHERE sequence NOT IN (SELECT sequence FROM updates)"
         )
 
     def stage(self, bot, updates, bot_username=""):
@@ -518,7 +524,32 @@ class TelegramQueue:
                     "UPDATE updates SET state='started',session_key=? WHERE sequence=? AND state='queued'",
                     (route, row["sequence"]),
                 )
+                self.db.execute(
+                    "INSERT INTO turn_effects(sequence,tools_started) VALUES(?,0)",
+                    (row["sequence"],),
+                )
                 return {**dict(row), "state": "started", "session_key": route}
+
+    def mark_tools_started(self, bot, uid):
+        """Commit before dispatch, including executor threads; unknown effects stay unsafe."""
+        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute(
+                "UPDATE turn_effects SET tools_started=1 WHERE sequence IN "
+                "(SELECT sequence FROM updates WHERE bot_id=? AND update_id=? AND state='started')",
+                (bot, uid),
+            )
+            db.commit()
+
+    def terminal_notice(self, bot, uid):
+        row = self.db.execute(
+            "SELECT tools_started FROM turn_effects JOIN updates USING(sequence) "
+            "WHERE bot_id=? AND update_id=?",
+            (bot, uid),
+        ).fetchone()
+        if row is not None and row["tools_started"] == 0:
+            return "I can’t reach a model right now, so I couldn’t carry out this request. Please try again later."
+        return "I couldn’t finish this request. Some actions may already have completed; please check before trying again."
 
     def finish(self, sequence, success, error_code=None):
         state = "completed" if success else "failed"

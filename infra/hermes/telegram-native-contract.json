@@ -110,6 +110,14 @@
     "agent.system_prompt._guidance_parts": [
       false,
       "(agent)"
+    ],
+    "agent.tool_executor._dispatch_authorized_once": [
+      false,
+      "(agent, state, ref, *, execute, scope_block, display_index, begin_execution, authorization_gate)"
+    ],
+    "agent.interrupt_compat.request_hard_interrupt": [
+      false,
+      "(agent, message=None, *, tool_reason=None)"
     ]
   },
   "source_sha256": {
@@ -131,6 +139,15 @@
     "gateway/run_busy.py": "e4baf0d89c3d035660be743543fc0504348619d17d7df2ddb28dfe066b666ddb",
     "agent/system_prompt.py": "ed20750a13d2a797a1ca0d55006522204a95dd4bd1a1a071aeccdbb4285bc173",
     "agent/prompt_builder.py": "d109f9c08441dcc03cc3d7eb52e489cc0de7a68b25007ec2bcb460b0506f95dd",
-    "gateway/run_turn_runner.py": "0d3c581cdb61bd2da8faedfa798f2419b7c8e59dfcc105ce5b259442db50e11e"
+    "gateway/run_turn_runner.py": "0d3c581cdb61bd2da8faedfa798f2419b7c8e59dfcc105ce5b259442db50e11e",
+    "agent/tool_executor.py": "c2c65ba2d5d0847f968321e0438f2dd3c87973cb2680acb5cd52192f48b602ab",
+    "agent/interrupt_compat.py": "3ce061954cf52505feb69013372bcef37141699761a05dfff334cb3eaa09f25c",
+    "agent/agent_init.py": "6c94abccb46c52b6e92123c01e1fda32c69f946d2923785f05106c3ca78d8195",
+    "agent/client_lifecycle.py": "5333b2dd5c96427996f060e9c01f6ca86d882cb89a59f60482e2281de8b66d5f",
+    "agent/agent_runtime_helpers.py": "735612c07ffb2d28e5d1ab555578c961e34e7e70fd53404fec574e61954e805a",
+    "agent/chat_completion_helpers.py": "15c2aa0e7863495546ad1bbaf8ad9c67de12fdbc65f10b91c7f51a210d0a5214",
+    "agent/conversation_loop.py": "8b8768c965579121d836d736134661433b1e672f352971fe72b950986d9baca7",
+    "agent/turn_api_error.py": "4290cb91411abec9aa804e5bc8e5454caf6fca5f0eaea86ba2b2c332db3198ec",
+    "agent/interrupt_control.py": "c21bd388750d5677af0dbfa5abdf9a2a24515238d73039cdad7f97610bc79e7b"
   }
 }

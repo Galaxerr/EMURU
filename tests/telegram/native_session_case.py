@@ -134,3 +134,82 @@ async def check(run, adapter, bridge, directory):
         assert not await bridge.once() and len(transitions) == 1
     finally:
         db.close()
+
+
+def check_tools(execution, directory):
+    """Actual pinned dispatch callback; synthetic effect survives failure without replay."""
+    from agent import tool_executor
+
+    queue = execution.queue
+    bot, username = execution.identity()
+    now = int(queue.now())
+    payload = {
+        "update_id": 90,
+        "message": {
+            "message_id": 90,
+            "date": now,
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 42, "is_bot": False},
+            "text": "synthetic effect",
+        },
+    }
+    queue.stage(bot, [payload], username)
+    row = queue.claim(bot, username)
+    assert row["update_id"] == 90
+    execution.install_tool_guard(tool_executor)
+    agent = NS(_tool_guardrails=NS(before_call=lambda *args: NS(allows_execution=True)))
+    state = NS(args={})
+    ref = NS(name="mcp__vault__vault_write", args={})
+    inbox = Path(directory) / "synthetic-vault" / "00_Inbox"
+    inbox.mkdir(parents=True)
+    note = inbox / "one.md"
+
+    def write(args):
+        with note.open("x") as file:
+            file.write("# Synthetic committed effect\n")
+        return "created"
+
+    with (
+        patch.object(tool_executor, "_pre_tool_block", return_value=(None, {})),
+        patch.object(tool_executor, "_begin_tool_execution"),
+        patch.object(
+            tool_executor,
+            "_run_with_activity_heartbeat",
+            side_effect=lambda agent, name, callback: callback(),
+        ),
+        patch("agent.terminal_approval_batch.prepare_current_terminal"),
+    ):
+        with execution._turn_scope(90) as turn:
+            assert execution.inference_permitted(agent)
+            result = tool_executor._dispatch_authorized_once(
+                agent,
+                state,
+                ref,
+                execute=write,
+                scope_block=None,
+                display_index=None,
+                begin_execution=None,
+                authorization_gate=None,
+            )
+            assert result == "created"
+            turn.completed = True
+        try:
+            tool_executor._dispatch_authorized_once(
+                agent,
+                state,
+                ref,
+                execute=write,
+                scope_block=None,
+                display_index=None,
+                begin_execution=None,
+                authorization_gate=None,
+            )
+        except RuntimeError as error:
+            assert str(error) == "Owner turn ended; tool execution rejected"
+        else:
+            raise AssertionError("Late tool dispatch was allowed")
+    queue.finish(row["sequence"], False, "provider_failed")
+    assert note.exists() and len(list(inbox.glob("*.md"))) == 1
+    assert queue.terminal_notice(bot, 90).startswith("I couldn’t finish")
+    assert queue.stage(bot, [payload], username) == ["failed"]
+    assert queue.claim(bot, username) is None

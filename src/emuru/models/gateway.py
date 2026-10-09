@@ -1,4 +1,4 @@
-"""Private container routing. Local candidates are metadata, never fallback routes."""
+"""Private gateway routing and fail-closed local qualification contract."""
 
 import json
 import os
@@ -37,8 +37,12 @@ def validate(route):
     }:
         raise ValueError("Invalid local candidate shape")
     model_id(candidate["model"])
-    if candidate["provider"] != "ollama" or candidate["qualification"] is not None:
-        raise ValueError("Local candidate must remain unqualified Ollama metadata")
+    if candidate["provider"] != "ollama":
+        raise ValueError("Local candidate must use Ollama")
+    if candidate["qualification"] is not None and not isinstance(
+        candidate["qualification"], dict
+    ):
+        raise ValueError("Invalid qualification")
     if not isinstance(candidate["digest"], str) or not re.fullmatch(
         r"(?:sha256:)?[0-9a-f]{64}", candidate["digest"]
     ):
@@ -142,34 +146,30 @@ def select_pair(
     )
 
 
-def settings(route):
-    validate(route)
+def settings(route=None):
+    if route is not None:
+        validate(route)
+    endpoint = os.environ.get("EMURU_GATEWAY_URL", ENDPOINT)
+    if endpoint not in {ENDPOINT, "http://127.0.0.1:4000/v1"}:
+        raise ValueError("Gateway must use the authenticated local LiteLLM endpoint")
     return {
         "model.provider": "custom:emuru",
         "model.default": "emuru",
-        "model.base_url": ENDPOINT,
+        "model.base_url": endpoint,
         "model.api_mode": "chat_completions",
         "model.ollama_num_ctx": 0,
         "agent.reasoning_effort": False,
         "providers.emuru": {
-            "base_url": ENDPOINT,
+            "base_url": endpoint,
             "api_mode": "chat_completions",
             "key_env": "EMURU_GATEWAY_KEY",
-            "request_timeout_seconds": 180,
-            "stale_timeout_seconds": 180,
+            "request_timeout_seconds": 250,
+            "stale_timeout_seconds": 250,
         },
     }
 
 
-def render(route=None):
-    # Imported only by the operator renderer; profile composition stays stdlib-only.
-    import yaml
-
-    primary = (
-        validate(route)["primary"]
-        if route is not None
-        else {"provider": "ollama", "model": "unselected"}
-    )
+def upstream(primary):
     provider = primary["provider"]
     params = {
         "model": {"ollama": "ollama_chat", "gemini": "gemini", "openai-api": "openai"}[
@@ -188,17 +188,44 @@ def render(route=None):
             "os.environ/"
             + {"gemini": "GEMINI_API_KEY", "openai-api": "OPENAI_API_KEY"}[provider]
         )
+    return params
+
+
+def render(route=None):
+    # Imported only by the operator renderer; profile composition stays stdlib-only.
+    import yaml
+
+    if route is not None:
+        validate(route)
     return yaml.safe_dump(
         {
-            "model_list": [{"model_name": "emuru", "litellm_params": params}]
+            "model_list": [
+                {
+                    "model_name": "emuru",
+                    "litellm_params": {
+                        "model": "emuru_guard/emuru",
+                        "num_retries": 0,
+                        "max_retries": 0,
+                        "timeout": 245,
+                    },
+                }
+            ]
             if route is not None
             else [],
             "general_settings": {
                 "master_key": "os.environ/EMURU_GATEWAY_KEY",
                 "disable_spend_logs": True,
+                "cancel_on_disconnect": True,
             },
             "litellm_settings": {
                 "num_retries": 0,
+                "drop_params": True,
+                "custom_provider_map": [
+                    {
+                        "provider": "emuru_guard",
+                        "custom_handler": "emuru.models.gateway_guard.guard",
+                    }
+                ],
                 "fallbacks": [],
                 "success_callback": [],
                 "failure_callback": [],
@@ -207,6 +234,7 @@ def render(route=None):
             "router_settings": {
                 "num_retries": 0,
                 "max_fallbacks": 0,
+                "disable_cooldowns": True,
                 "fallbacks": [],
                 "context_window_fallbacks": [],
                 "content_policy_fallbacks": [],

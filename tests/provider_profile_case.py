@@ -65,7 +65,6 @@ class ProfileCase(unittest.TestCase):
     def run_profile(self, *arguments):
         with (
             patch.object(profile.shutil, "which", return_value="/mock/bin/uv"),
-            patch.object(profile, "check_provider"),
         ):
             if "--offline" in arguments:
                 return profile.expected_settings(self.root)

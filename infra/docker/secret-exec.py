@@ -14,12 +14,14 @@ for name in (
     path = Path("/run/secrets") / name.lower()
     if path.exists():
         info = path.stat()
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_uid != os.getuid()
-        ):
-            raise SystemExit("Secret file must be owner-owned and mode 0600")
+        private_mount = (
+            info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600
+        )
+        compose_mount = info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o444
+        if not stat.S_ISREG(info.st_mode) or not (private_mount or compose_mount):
+            raise SystemExit(
+                "Secret file must be a private file or Docker-managed secret"
+            )
         value = path.read_text().strip()
         if "\n" in value:
             raise SystemExit("Invalid secret file")
