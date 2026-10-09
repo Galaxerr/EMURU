@@ -12,12 +12,17 @@ Owner Telegram message
   scripts/hermes/telegram.sh → scripts/hermes/telegram.py
   infra/hermes/telegram-runtime.py (Hermes interpreter)
   telegram/native.py ↔ telegram/worker.py ↔ telegram/queue.py
-  Hermes sessions, model inference and tool execution
+  Hermes sessions → authenticated LiteLLM emuru alias
+  one cloud attempt → at most one qualified local attempt
+  validated result → Hermes tool execution
   stdio → scripts/hermes/vault.py serve → emuru-vault-mcp
   vault/mcp.py → vault/indexer.py → separate vault
 ```
 
-CLI chat uses `scripts/hermes/emuru.sh` and the same configured MCP backend.
+CLI chat uses `scripts/hermes/emuru.sh` → `infra/hermes/cli-runtime.py` and the
+same gateway and MCP backend. The shared inference guard also covers context
+compression, stale results and tool dispatch; TUI and inference overrides are
+rejected.
 It does not supply Telegram's durable admission guards.
 
 ## Ownership and seams
@@ -33,6 +38,8 @@ All module paths below are relative to `src/emuru/`.
 | `hermes/profile.py` | Shared profile policy, exclusive gateway composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
 | `environment.py` | Owner-only root `.env` parsing and atomic secret updates |
 | `models/providers.py`, provider modules | Explicit provider selection and provider-specific configuration/preflight |
+| `hermes/inference.py` | Shared CLI/Telegram SDK, owner deadline, compression and tool dispatch guards |
+| `models/gateway_guard.py` | Bounded upstream attempts, stream validation and qualified local admission |
 | `models/gateway.py` | Private route validation, qualification contract, and authenticated bounded proxy rendering |
 | `telegram/queue.py` | SQLite durability, seven states, admission/claims/recovery, permissions, receipt error normalization and read-only diagnostics |
 | `telegram/worker.py` | FIFO orchestration, durable outcomes and worker lifecycle through the execution interface |
@@ -60,7 +67,7 @@ separate copies for the app and LiteLLM. The MCP child receives none of these ke
 
 | Location | Purpose |
 | --- | --- |
-| `infra/hermes/runtime-settings.json`, `model-selection.json` | Public shared policy and explicit provider/model route |
+| `infra/hermes/runtime-settings.json`, `model-selection.json` | Public runtime policy and legacy operator model selection |
 | `infra/hermes/telegram-settings.json` | Public transport/admission limits |
 | `infra/hermes/runtime-lock.json`, `telegram-native-contract.json` | Installed Hermes identity and required native contract pins |
 | `infra/hermes/settings.json` | Original tools-disabled Gemini baseline |
@@ -109,10 +116,9 @@ HTTP/provider behavior. Hosted CI does not prove live deployment acceptance.
 
 Follow [README](../README.md) for setup and [RUNBOOK](RUNBOOK.md) for migration,
 service lifecycle and recovery. [Release evidence](releases/v0.3.3-report.md)
-separates container foundation checks from pending live acceptance. Historical
-v0.3.1 and v0.3.0 evidence remains archived unchanged.
+separates container checks from live acceptance.
 
-## Opt-in container foundation
+## Gateway and containers
 
 The application image contains separate EMURU and pinned Hermes environments.
 The immutable checkout retains Git metadata and native source hashes. The guarded
@@ -141,7 +147,8 @@ guarantee cancellation of remote compute or billing.
 
 Compose uses one ordinary bridge network with outbound connectivity, no default
 published ports, and a separate opt-in `agent` profile. The profile, workspace,
-synthetic runtime and Ollama cache have explicit persistent bind sources. Missing
+synthetic runtime, real vault and Ollama cache have explicit persistent bind sources.
+The vault is mounted read-write; MCP enforces create-only Inbox writes. Missing
 sources fail rather than becoming empty state. Credentials use file secrets;
 only the application and proxy receive the gateway key; only LiteLLM receives
 selected upstream provider keys. The existing MCP child environment allowlist

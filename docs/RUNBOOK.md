@@ -55,7 +55,8 @@ scripts/hermes/telegram.sh --runtime-check
 
 Run one file with `uv run --frozen pytest tests/test_environment.py`. The
 runtime check requires the pinned Hermes installation but makes no provider
-calls. Run `uv run --frozen python scripts/hermes/container-check.py` for Docker
+calls. `container-check.py --config-only` validates disposable Compose configuration.
+Run `uv run --frozen python scripts/hermes/container-check.py` for Docker
 acceptance. It needs Docker and pinned images, uses disposable keys and a
 synthetic upstream, and starts no Telegram poller.
 
@@ -85,7 +86,7 @@ repeating the write. This rollback does not guarantee atomicity during SIGKILL
 or power loss. `vault_write` creates new Inbox notes only;
 overwrite/update/delete/merge are unsupported. External vault edits require
 owner-managed indexing/restart. Git synchronization is an owner operation;
-v0.3.1 does not supply automatic synchronization or its monitoring.
+v0.3.3 does not supply automatic synchronization or its monitoring.
 
 If the agent reports an empty vault, first run `scripts/hermes/vault.py target
 --require-real`, then inspect the result of `vault_map` through the configured
@@ -117,7 +118,8 @@ curated vault memory. Vault memory does not train model weights.
 Only start/help/status/new/stop are accepted Telegram commands. Other accounts,
 groups, nontext/media input and unsupported commands cannot start agent work.
 Only the five vault tools are available. Retrieved content is reference data;
-it cannot override tool/security policy. MCP failures stop the affected request. Eligible inference availability failures
+it cannot override tool/security policy. MCP failures stop the affected request.
+Eligible inference availability failures
 may use one qualified local attempt through LiteLLM before any result is exposed.
 Authentication/configuration/policy errors never trigger fallback. Once any result
 reaches Hermes, no fallback or replay is allowed. Buffered incomplete or malformed
@@ -138,31 +140,27 @@ current queue receipts during rollback; restoring an old queue can replay
 already attempted effects. Restore notes only after comparing newer genuine
 changes. Correct a failure before running
 `systemctl --user reset-failed emuru-telegram.service` and a manual wake.
-General vault cleanup, automatic synchronization, physical remote wake and broader automation are outside this release. All agent
-inference requires the authenticated LiteLLM gateway described below.
+General vault cleanup, automatic synchronization, physical remote wake and
+broader automation are outside this release. All agent inference requires the
+authenticated LiteLLM gateway described below.
 Local lifecycle scripts are owner operations, not model tools.
 
+## Upgrade to v0.3.3
 
-## Upgrade to v0.3.1
+1. Drain and stop the current poller; back up the stopped profile and vault.
+   Preserve queue receipts and history. Never run host and container pollers together.
+2. Update the checkout and run `uv sync --locked`. For Docker, run
+   `container.py up` to rebuild the application and initialize private configuration,
+   then recreate LiteLLM as shown below.
+3. Reinstall `SOUL.md`, apply the gateway profile and run the preflight commands
+   in [container deployment](#container-deployment). A host profile needs the
+   loopback gateway settings described under [gateway policy](#gateway-policy).
+4. Start the chosen poller and wait for READY. No automatic state migration or
+   systemd retirement is included; do not delete the queue to repair uncertainty.
 
-1. Stop accepting new work, allow the active turn to finish, and stop the service.
-   Back up the stopped private profile and vault. Preserve queued work and receipts.
-2. Update the checkout and run `uv sync --locked`. Source modules now live under
-   `vault/`, `telegram/`, `hermes/` and `models/`; operator scripts moved to
-   `scripts/hermes/` and `scripts/service/`. No old-path compatibility shims exist.
-3. Install `agents/emuru/SOUL.md` into the private profile, then run
-   `uv run --frozen python scripts/hermes/vault-profile.py --offline` and
-   `uv run --frozen python scripts/hermes/vault-profile.py --apply`.
-   Apply updates the persisted MCP command path and audits the profile.
-4. Review the service template's checkout, Hermes and profile paths, install the
-   updated unit, and reload systemd as shown below. Do not enable login startup.
-5. Run `scripts/hermes/telegram.sh --runtime-check`, check the real target with
-   `uv run --frozen python scripts/hermes/vault.py target --require-real`, then
-   run `scripts/service/wake.sh`. Wait for READY and inspect service/status output.
-
-Do not run these deployment steps during an active turn or delete queue storage
-to repair uncertainty. Reapplying configuration or changing Markdown in this
-repository does not automatically update an already installed service or policy.
+For v0.3.0 installations, persisted MCP/service paths moved to `scripts/hermes/`.
+Reapply the profile and reinstall the user service template before a host restart.
+Editing repository policy does not update an installed profile or service.
 
 ## Install the manual user service
 
@@ -183,31 +181,39 @@ lock prevents a second poller on this PC, not on another machine using the token
 The unit does not install Hermes, models or credentials.
 
 See [architecture](ARCHITECTURE.md) for module ownership and
-[release evidence](releases/v0.3.1-report.md) for measured checks and limitations.
+[release evidence](releases/v0.3.3-report.md) for measured checks and limitations.
 
-## v0.3.2 Isolated Container Foundation
+## Container deployment
 
-Pins are locked in `infra/docker/deployment-lock.json`. Uses Hermes (Python 3.14 with `telegram` and `mcp` extras) in an isolated `.venv`. Host deployment remains operational.
+Pins are in `infra/docker/deployment-lock.json`. The image uses Hermes Python
+3.14 with `telegram` and `mcp` extras in a separate environment. Host state stays
+independent; this procedure does not migrate it.
 
-### 1. Select Route
+### 1. Select a route
 
 ```bash
 install -d -m 700 "$HOME/.local/state/emuru/container"
 uv run --frozen python scripts/hermes/ollama.py --list
 uv run --frozen python scripts/hermes/ollama.py \
   --route "$HOME/.local/state/emuru/container/route.json" \
-  --primary <CLOUD_ID> --local-candidate <LOCAL_ID>
-
+  --primary CLOUD_ID --local-candidate LOCAL_ID
 ```
 
-### 2. Initialize Deployment & Configure
+Replace the model placeholders with installed inventory IDs. Pair selection needs
+a reachable Ollama daemon and existing local weights; it never downloads models.
+Use `--provider gemini` with a `gemini-*` primary or `--provider openai-api`
+with a `gpt-*` primary for an explicit alternative. The candidate remains
+unqualified regardless of the selected provider.
 
-Set API keys (`OLLAMA_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `EMURU_TELEGRAM_OWNER_ID`) in root `.env` first, then run:
+### 2. Initialize and configure
+
+Set the selected provider key (`OLLAMA_API_KEY`, `GEMINI_API_KEY` or
+`OPENAI_API_KEY`), `TELEGRAM_BOT_TOKEN`, `EMURU_TELEGRAM_OWNER_ID` and
+`EMURU_VAULT_PATH` in root `.env`, then run:
 
 ```bash
 uv run --frozen python scripts/hermes/container.py init
 uv run --frozen python scripts/hermes/container.py config
-
 ```
 
 *Note: Recreate LiteLLM if keys or routes change:*
@@ -216,18 +222,16 @@ uv run --frozen python scripts/hermes/container.py config
 docker compose --project-name emuru \
   --env-file infra/docker/deployment.env \
   -f infra/docker/compose.yaml up -d --force-recreate litellm
-
 ```
 
-### 3. Start Containers
+### 3. Start infrastructure
 
 ```bash
 uv run --frozen python scripts/hermes/container.py up
 uv run --frozen python scripts/hermes/container.py status
-
 ```
 
-### 4. Install SOUL & Preflight Checks
+### 4. Install policy and check the profile
 
 ```bash
 docker compose --project-name emuru \
@@ -244,10 +248,9 @@ docker compose --project-name emuru \
   --env-file infra/docker/deployment.env \
   -f infra/docker/compose.yaml run --rm --no-deps emuru \
   scripts/hermes/telegram.sh --check
-
 ```
 
-### 5. Start Telegram Agent
+### 5. Start Telegram
 
 Stop any active host poller, then start the containerized agent:
 
@@ -255,28 +258,23 @@ Stop any active host poller, then start the containerized agent:
 docker compose --project-name emuru \
   --env-file infra/docker/deployment.env \
   -f infra/docker/compose.yaml --profile agent up -d emuru
-
 ```
 
-### 6. Run Acceptance Tests
+### 6. Run disposable acceptance
 
 ```bash
 uv run --frozen python scripts/hermes/container-check.py
-
 ```
 
-### Key Operational Rules
+### Operational limits
 
-* **DB-Free Architecture:** No Redis, database, or spend persistence is used. Missing or invalid keys throw standard 401/400 errors upstream.
-* **Vault Mounts:** Mount the vault root read-only, with writable overlays specifically for `00_Inbox`, `_index`, and `99_System`.
-* **Safety:** Never run concurrent host and container Telegram pollers using the same bot token.
-## v0.3.3 gateway enforcement
+- LiteLLM uses no Redis, database or spend persistence. Telegram receipts use SQLite.
+- Compose mounts the real vault read-write at `/state/vault`; MCP enforces the
+  allowlisted reads and create-only Inbox writes. No writable overlays are configured.
+- Run only one poller per bot token. `container.py down` stops containers while
+  retaining private state.
 
-This checkout does not migrate the running profile or retire systemd. Stop and
-drain the existing poller before any operator-led upgrade; preserve the profile,
-history, receipts, and vault backups. Rebuild `emuru:latest`, regenerate the private
-configuration with `container.py init`, recreate LiteLLM, then apply and audit the
-profile using the container commands above. Never start a second poller.
+## Gateway policy
 
 CLI and guarded Telegram use only the authenticated `emuru` alias. In the
 container the endpoint is `http://litellm:4000/v1`. For a host CLI, explicitly
@@ -322,22 +320,6 @@ start facts: proven no-tool turns say the request could not be carried out;
 completed/uncertain effects or missing historical facts warn that actions may
 already have completed. Inspect committed paths and receipts before resubmitting.
 
-Validate the candidate without live inference or profile migration:
-
-```bash
-uv run --frozen pytest -q
-uv run --frozen ruff check .
-uv run --frozen ruff format --check .
-uv run --frozen python scripts/hermes/baseline.py
-uv run --frozen python scripts/hermes/vault.py check
-uv run --frozen python scripts/hermes/vault-profile.py --offline
-uv run --frozen python scripts/hermes/telegram.py --offline
-scripts/hermes/telegram.sh --runtime-check
-uv run --frozen python scripts/hermes/container-check.py --config-only
-docker build -t emuru:latest .
-uv run --frozen python scripts/hermes/container-check.py
-git diff --check
-```
-
-The release report separates synthetic acceptance from live-model qualification,
-populated-cache persistence, real-vault permissions and owner Telegram delivery.
+Use [the test commands](#run-tests) for offline checks and the disposable checker
+for pinned-proxy acceptance. The [release report](releases/v0.3.3-report.md)
+records existing evidence and live-model, real-vault and Telegram checks.
