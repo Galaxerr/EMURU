@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from emuru.models.gateway import valid_qualification, write_private
+from emuru.models.gateway import (
+    qualification_record,
+    valid_qualification,
+    write_private,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 QUALIFY = runpy.run_path(str(ROOT / "scripts/hermes/qualify.py"))
@@ -16,7 +20,7 @@ QUALIFY = runpy.run_path(str(ROOT / "scripts/hermes/qualify.py"))
 
 def qualified_route(now=100):
     route = QUALIFY["fixture_route"]()
-    record = QUALIFY["qualification_record"](
+    record = qualification_record(
         route,
         "fixture-runtime",
         hashlib.sha256(b"fixture").hexdigest(),
@@ -26,6 +30,82 @@ def qualified_route(now=100):
     record["provenance"] = "deterministic-fixture"
     route["fallback"]["qualification"] = record
     return route
+
+
+def test_qualification_record_preserves_v2_policy():
+    route = qualified_route()
+    record = route["fallback"]["qualification"]
+    assert set(record) == {
+        "schema_version",
+        "primary",
+        "local",
+        "runtime_version",
+        "template_sha256",
+        "effective_context_tokens",
+        "output_reserve_tokens",
+        "workload_policy_version",
+        "config_fingerprint",
+        "qualified_at",
+        "expires_at",
+        "gates",
+        "provenance",
+        "evidence",
+    }
+    assert record["schema_version"] == 2
+    assert record["qualified_at"] == 100
+    assert record["expires_at"] == 100 + 30 * 86400
+    assert record["gates"] == {
+        "tools": True,
+        "context": True,
+        "latency": True,
+        "hardware": True,
+        "fault": True,
+        "workload": True,
+    }
+    assert record["config_fingerprint"] == (
+        "786b055a81b6068863037f651916a744d2a544b54e9e8f761948746f6fce6c10"
+    )
+    assert (
+        qualification_record(
+            route, "fixture-runtime", hashlib.sha256(b"fixture").hexdigest(), {}, 100
+        )["provenance"]
+        == "operator-qualified"
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "extra", "version", "provenance", "expiry"]
+)
+def test_malformed_qualification_fails_closed(change):
+    route = qualified_route()
+    record = route["fallback"]["qualification"]
+    if change == "missing":
+        del record["gates"]
+    elif change == "extra":
+        record["unexpected"] = True
+    elif change == "version":
+        record["schema_version"] = 1
+    elif change == "provenance":
+        record["provenance"] = "untrusted"
+    else:
+        record["expires_at"] += 1
+    assert not valid_qualification(route, now=101)
+
+
+@pytest.mark.parametrize("now", [99, 100 + 30 * 86400])
+def test_qualification_time_window_fails_closed(now):
+    assert not valid_qualification(qualified_route(), now=now)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"runtime_version": "changed-runtime"},
+        {"template_sha256": "b" * 64},
+    ],
+)
+def test_qualification_live_identity_mismatch_fails_closed(identity):
+    assert not valid_qualification(qualified_route(), now=101, **identity)
 
 
 def test_fixture_qualification_and_canonical_invalidation():

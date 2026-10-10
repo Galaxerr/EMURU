@@ -15,10 +15,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from emuru.models.gateway import (
-    QUALIFICATION_GATES,
-    WORKLOAD_POLICY_VERSION,
     WORKLOAD_REPETITIONS,
-    qualification_fingerprint,
+    qualification_record,
     render,
 )
 
@@ -182,29 +180,11 @@ def main():
                 "qualification": None,
             },
         }
-        q = {
-            "schema_version": 2,
-            "primary": route["primary"],
-            "local": {
-                "provider": "ollama",
-                "model": "synthetic-local",
-                "digest": "a" * 64,
-            },
-            "runtime_version": "fixture-runtime",
-            "template_sha256": hashlib.sha256(b"fixture").hexdigest(),
-            "effective_context_tokens": 65536,
-            "output_reserve_tokens": 4096,
-            "workload_policy_version": WORKLOAD_POLICY_VERSION,
-            "config_fingerprint": qualification_fingerprint(
-                route,
-                "fixture-runtime",
-                hashlib.sha256(b"fixture").hexdigest(),
-            ),
-            "qualified_at": time.time() - 1,
-            "expires_at": time.time() + 3600,
-            "gates": dict(QUALIFICATION_GATES),
-            "provenance": "deterministic-fixture",
-            "evidence": {
+        q = qualification_record(
+            route,
+            "fixture-runtime",
+            hashlib.sha256(b"fixture").hexdigest(),
+            {
                 "offline_local": True,
                 "workload_repetitions": WORKLOAD_REPETITIONS,
                 "context_trials": 3,
@@ -217,7 +197,10 @@ def main():
                 "gpu_vram_bytes": 0,
                 "oom_events": 0,
             },
-        }
+            time.time() - 1,
+        )
+        q["expires_at"] = time.time() + 3600
+        q["provenance"] = "deterministic-fixture"
         route["fallback"]["qualification"] = q
         route_path = path / "route.json"
 

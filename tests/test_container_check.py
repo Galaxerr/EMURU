@@ -42,6 +42,46 @@ def test_disposable_mounts_live_in_shared_workspace(tmp_path, monkeypatch):
         "__file__",
         str(tmp_path / "scripts/hermes/container-check.py"),
     )
+    production = tmp_path / "infra/docker/deployment.env"
+    production.parent.mkdir(parents=True)
+    production.write_text("production metadata")
+    workspace_env = tmp_path / ".env"
+    workspace_env.write_text("production credentials")
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in (production, workspace_env)
+    }
+    monkeypatch.setenv("OLLAMA_API_KEY", "must-not-leak")
+    load = runpy.run_path
+    prepared = []
+
+    def load_deployment(path):
+        deployment = load(path)
+        globals_ = deployment["prepare_deployment"].__globals__
+        globals_["DEPLOYMENT_ENV"] = production
+        globals_["ROOT"] = tmp_path
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("Disposable preparation touched production state")
+
+        for name in (
+            "initialize",
+            "load_env",
+            "write_env",
+            "_vault_path",
+            "_saved_owner_id",
+        ):
+            globals_[name] = forbidden
+        prepare = deployment["prepare_deployment"]
+
+        def tracked(*args):
+            prepared.append(args)
+            return prepare(*args)
+
+        deployment["prepare_deployment"] = tracked
+        return deployment
+
+    monkeypatch.setattr(runpy, "run_path", load_deployment)
     commands = []
 
     def run(command, **kwargs):
@@ -63,5 +103,13 @@ def test_disposable_mounts_live_in_shared_workspace(tmp_path, monkeypatch):
         module["verify"](config_only=True)
     finally:
         os.umask(previous)
+    assert len(prepared) == 1
     assert len(commands) == 1
+    private = prepared[0][0]
+    assert (private / "ollama-api.key").read_text() == "synthetic-ollama-key"
+    assert (private / "gemini-api.key").read_text() == ""
+    assert (private / "openai-api.key").read_text() == ""
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before
+    } == before
     assert commands[0][-2:] == ["config", "--quiet"]

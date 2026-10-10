@@ -307,3 +307,54 @@ def test_container_initializer_copies_main_env_keys_to_private_runtime(
     assert (home / "gateway.key").read_text().strip() == read_env(env_file)[
         "EMURU_GATEWAY_KEY"
     ]
+
+
+def test_shared_preparation_owns_layout_without_credentials(tmp_path, monkeypatch):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    home = tmp_path / "deployment"
+    vault = tmp_path / "synthetic-vault"
+    monkeypatch.setenv("EMURU_GATEWAY_KEY", "must-not-leak")
+    values = module["prepare_deployment"](home, vault, 42)
+    assert values == {
+        "EMURU_UID": os.getuid(),
+        "EMURU_GID": os.getgid(),
+        "EMURU_TELEGRAM_OWNER_ID": 42,
+        "EMURU_VAULT": vault,
+        "EMURU_PROFILE": home / "profiles/emuru",
+        "EMURU_STATE": home / "state",
+        "EMURU_RUNTIME": home / "runtime",
+        "EMURU_OLLAMA_STATE": home / "ollama",
+        "EMURU_ROUTE": home / "route.json",
+        "EMURU_GATEWAY_CONFIG": home / "litellm.yaml",
+        "EMURU_GATEWAY_KEY_FILE": home / "gateway.key",
+        "EMURU_OLLAMA_API_KEY_FILE": home / "ollama-api.key",
+        "EMURU_GEMINI_API_KEY_FILE": home / "gemini-api.key",
+        "EMURU_OPENAI_API_KEY_FILE": home / "openai-api.key",
+    }
+    for key in ("EMURU_PROFILE", "EMURU_STATE", "EMURU_RUNTIME", "EMURU_OLLAMA_STATE"):
+        assert values[key].stat().st_mode & 0o777 == 0o700
+    assert not any(path.is_file() for path in home.rglob("*"))
+    history = values["EMURU_PROFILE"] / "history.txt"
+    history.write_text("saved conversation")
+    assert module["prepare_deployment"](home, vault, 42) == values
+    assert history.read_text() == "saved conversation"
+
+
+@pytest.mark.parametrize(
+    "linked", ["state", "ollama-api.key", "profiles/emuru/config.yaml"]
+)
+def test_shared_preparation_rejects_symlinks_before_mutation(tmp_path, linked):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    home = tmp_path / "deployment"
+    home.mkdir(mode=0o755)
+    target = tmp_path / "target"
+    target.write_text("unchanged")
+    path = home / linked
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+    before = home.stat().st_mode
+    with pytest.raises(ValueError, match="symlinks"):
+        module["prepare_deployment"](home, tmp_path / "vault", 42)
+    assert home.stat().st_mode == before
+    assert target.read_text() == "unchanged"
+    assert not (home / "runtime").exists()

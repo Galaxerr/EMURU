@@ -13,11 +13,9 @@ import uuid
 from pathlib import Path
 
 from emuru.models.gateway import (
-    QUALIFICATION_DAYS,
-    QUALIFICATION_GATES,
     WORKLOAD_POLICY_VERSION,
     WORKLOAD_REPETITIONS,
-    qualification_fingerprint,
+    qualification_record,
     read_route,
     valid_qualification,
     write_private,
@@ -27,29 +25,6 @@ from emuru.vault import indexer
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/fixtures/hermes-vault"
-
-
-def qualification_record(route, runtime_version, template_sha256, evidence, now=None):
-    now = time.time() if now is None else now
-    candidate = route["fallback"]
-    return {
-        "schema_version": 2,
-        "primary": route["primary"],
-        "local": {key: candidate[key] for key in ("provider", "model", "digest")},
-        "runtime_version": runtime_version,
-        "template_sha256": template_sha256,
-        "effective_context_tokens": candidate["context_tokens"],
-        "output_reserve_tokens": candidate["output_reserve_tokens"],
-        "workload_policy_version": WORKLOAD_POLICY_VERSION,
-        "config_fingerprint": qualification_fingerprint(
-            route, runtime_version, template_sha256
-        ),
-        "qualified_at": now,
-        "expires_at": now + QUALIFICATION_DAYS * 86400,
-        "gates": dict(QUALIFICATION_GATES),
-        "provenance": "operator-qualified",
-        "evidence": evidence,
-    }
 
 
 def redacted_report(record, status="PASS", error=None):

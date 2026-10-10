@@ -48,6 +48,29 @@ def qualification_fingerprint(route, runtime_version, template_sha256):
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def qualification_record(route, runtime_version, template_sha256, evidence, now=None):
+    now = time.time() if now is None else now
+    candidate = route["fallback"]
+    return {
+        "schema_version": 2,
+        "primary": route["primary"],
+        "local": {key: candidate[key] for key in ("provider", "model", "digest")},
+        "runtime_version": runtime_version,
+        "template_sha256": template_sha256,
+        "effective_context_tokens": candidate["context_tokens"],
+        "output_reserve_tokens": candidate["output_reserve_tokens"],
+        "workload_policy_version": WORKLOAD_POLICY_VERSION,
+        "config_fingerprint": qualification_fingerprint(
+            route, runtime_version, template_sha256
+        ),
+        "qualified_at": now,
+        "expires_at": now + QUALIFICATION_DAYS * 86400,
+        "gates": dict(QUALIFICATION_GATES),
+        "provenance": "operator-qualified",
+        "evidence": evidence,
+    }
+
+
 def valid_qualification(route, *, runtime_version=None, template_sha256=None, now=None):
     """Validate v2 evidence without trusting it to repair or widen the route."""
     candidate = route["fallback"]

@@ -19,6 +19,31 @@ DEFAULT_HOME = Path.home() / ".local/state/emuru/container"
 DEPLOYMENT_ENV = ROOT / "infra/docker/deployment.env"
 CONTAINER_VAULT_PATH = Path("/state/vault")
 
+UPSTREAM_KEYS = {
+    "ollama": "OLLAMA_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openai-api": "OPENAI_API_KEY",
+}
+DEPLOYMENT_PATHS = {
+    "EMURU_PROFILE": "profiles/emuru",
+    "EMURU_STATE": "state",
+    "EMURU_RUNTIME": "runtime",
+    "EMURU_ROUTE": "route.json",
+    "EMURU_GATEWAY_CONFIG": "litellm.yaml",
+    "EMURU_GATEWAY_KEY_FILE": "gateway.key",
+    "EMURU_OLLAMA_STATE": "ollama",
+    **{
+        f"EMURU_{name}_FILE": name.removesuffix("_API_KEY").lower() + "-api.key"
+        for name in UPSTREAM_KEYS.values()
+    },
+}
+PRIVATE_DIRECTORIES = (
+    "EMURU_PROFILE",
+    "EMURU_STATE",
+    "EMURU_RUNTIME",
+    "EMURU_OLLAMA_STATE",
+)
+
 
 def deployment_home(value=None):
     path = Path(value or os.environ.get("EMURU_CONTAINER_HOME", DEFAULT_HOME))
@@ -46,6 +71,31 @@ def _write_if_missing(path, value):
             raise ValueError(f"Private file must be owner-owned and mode 0600: {path}")
         return
     write_private(path, value)
+
+
+def _deployment_paths(home):
+    home = private_path(home)
+    paths = {
+        key: private_path(home / relative) for key, relative in DEPLOYMENT_PATHS.items()
+    }
+    for name in ("config.yaml", "vault-target.json", ".env"):
+        private_path(paths["EMURU_PROFILE"] / name)
+    return paths
+
+
+def prepare_deployment(home, vault, owner_id):
+    """Prepare private directories and Compose values without reading live state."""
+    paths = _deployment_paths(home)
+    _make_private_directory(home)
+    for key in PRIVATE_DIRECTORIES:
+        _make_private_directory(paths[key])
+    return {
+        "EMURU_UID": os.getuid(),
+        "EMURU_GID": os.getgid(),
+        "EMURU_TELEGRAM_OWNER_ID": owner_id,
+        "EMURU_VAULT": vault,
+        **paths,
+    }
 
 
 def _saved_owner_id():
@@ -85,21 +135,7 @@ def initialize(
     home = private_path(deployment_home(home))
     env_path = private_path(DEPLOYMENT_ENV)
     # Validate every destination before mkdir/chmod or replacing private state.
-    for relative in (
-        "profiles/emuru/config.yaml",
-        "profiles/emuru/vault-target.json",
-        "profiles/emuru/.env",
-        "state",
-        "runtime",
-        "ollama",
-        "gateway.key",
-        "ollama-api.key",
-        "gemini-api.key",
-        "openai-api.key",
-        "route.json",
-        "litellm.yaml",
-    ):
-        private_path(home / relative)
+    _deployment_paths(home)
     source = private_path(route_source or home / "route.json")
     vault = _vault_path()
     route = read_route(source)
@@ -112,9 +148,7 @@ def initialize(
         raise ValueError(
             "A positive Telegram owner ID is required; pass --telegram-owner-id"
         )
-    _make_private_directory(home)
-    for relative in ("profiles/emuru", "state", "runtime", "ollama"):
-        _make_private_directory(home / relative)
+    values = prepare_deployment(home, vault, owner_id)
     _write_if_missing(
         home / "profiles/emuru/config.yaml", "model: {}\nmcp_servers: {}\n"
     )
@@ -123,7 +157,7 @@ def initialize(
         json.dumps({"mode": "real", "vault_path": str(CONTAINER_VAULT_PATH)}) + "\n",
     )
 
-    key_path = home / "gateway.key"
+    key_path = values["EMURU_GATEWAY_KEY_FILE"]
     gateway_key = os.environ.get("EMURU_GATEWAY_KEY", "")
     if not gateway_key and key_path.exists():
         _write_if_missing(key_path, "")
@@ -133,44 +167,22 @@ def initialize(
     if workspace_env is not None:
         write_env(workspace_env, {"EMURU_GATEWAY_KEY": gateway_key})
 
-    selected_key = {
-        "ollama": "OLLAMA_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "openai-api": "OPENAI_API_KEY",
-    }[route["primary"]["provider"]]
-    secret_paths = {}
-    for name in ("OLLAMA_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
-        secret_path = home / (name.removesuffix("_API_KEY").lower() + "-api.key")
+    selected_key = UPSTREAM_KEYS[route["primary"]["provider"]]
+    for name in UPSTREAM_KEYS.values():
+        secret_path = values[f"EMURU_{name}_FILE"]
         value = os.environ.get(name, "") if name == selected_key else ""
         if name == "GEMINI_API_KEY" and not value and name == selected_key:
             value = os.environ.get("GOOGLE_API_KEY", "")
         write_private(secret_path, value + "\n")
-        secret_paths[name] = secret_path
     telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     write_private(
         home / "profiles/emuru/.env",
         f"TELEGRAM_BOT_TOKEN={shlex.quote(telegram_token)}\n",
     )
-    route_path = home / "route.json"
+    route_path = values["EMURU_ROUTE"]
     write_private(route_path, json.dumps(route, indent=2) + "\n")
-    write_private(home / "litellm.yaml", render(route))
+    write_private(values["EMURU_GATEWAY_CONFIG"], render(route))
 
-    values = {
-        "EMURU_UID": os.getuid(),
-        "EMURU_GID": os.getgid(),
-        "EMURU_TELEGRAM_OWNER_ID": owner_id,
-        "EMURU_PROFILE": home / "profiles/emuru",
-        "EMURU_STATE": home / "state",
-        "EMURU_RUNTIME": home / "runtime",
-        "EMURU_VAULT": vault,
-        "EMURU_ROUTE": route_path,
-        "EMURU_GATEWAY_CONFIG": home / "litellm.yaml",
-        "EMURU_GATEWAY_KEY_FILE": key_path,
-        "EMURU_OLLAMA_API_KEY_FILE": secret_paths["OLLAMA_API_KEY"],
-        "EMURU_GEMINI_API_KEY_FILE": secret_paths["GEMINI_API_KEY"],
-        "EMURU_OPENAI_API_KEY_FILE": secret_paths["OPENAI_API_KEY"],
-        "EMURU_OLLAMA_STATE": home / "ollama",
-    }
     # Deployment metadata belongs in the repo; its parent need not be private.
     fd, temporary = tempfile.mkstemp(dir=env_path.parent)
     try:
