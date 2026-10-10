@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -20,6 +21,37 @@ def subprocess_detail(error):
     output = (error.stderr or error.stdout or "").strip()
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     return "\n".join(lines[-3:])
+
+
+def docker_workspace(root):
+    if os.environ.get("ACT") != "true":
+        return root
+    # Host networking shares hostnames; Docker's hostname mount identifies the runner.
+    fields = (
+        line.split() for line in Path("/proc/self/mountinfo").read_text().splitlines()
+    )
+    container = next(
+        (Path(parts[3]).parent.name for parts in fields if parts[4] == "/etc/hostname"),
+        "",
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", container):
+        raise RuntimeError("Cannot identify act runner from its Docker hostname mount")
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{json .Mounts}}", container],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    mounts = sorted(
+        json.loads(result.stdout),
+        key=lambda mount: len(mount["Destination"]),
+        reverse=True,
+    )
+    for mount in mounts:
+        destination = Path(mount["Destination"])
+        if root.is_relative_to(destination):
+            return Path(mount["Source"]) / root.relative_to(destination)
+    raise RuntimeError("act workspace is not backed by a Docker mount")
 
 
 def fixture():
@@ -254,7 +286,10 @@ def verify(config_only=False):
     from emuru.models.gateway import render, write_private
 
     root = Path(__file__).resolve().parents[2]
-    private = Path(tempfile.mkdtemp(prefix="emuru-container-"))
+    # Keep disposable state in the workspace mount for daemon path translation.
+    runtime = root / ".runtime"
+    runtime.mkdir(mode=0o700, exist_ok=True)
+    private = Path(tempfile.mkdtemp(prefix="emuru-container-", dir=runtime))
     os.umask(0o077)
     for folder in ("profiles/emuru", "state", "runtime", "ollama"):
         (private / folder).mkdir(parents=True, mode=0o700)
@@ -322,6 +357,21 @@ def verify(config_only=False):
     print("Compose private-path configuration: PASS", flush=True)
     if config_only:
         return
+    daemon_root = docker_workspace(root)
+
+    def daemon_path(path):
+        return str(daemon_root / Path(path).relative_to(root))
+
+    if daemon_root != root:
+        config = json.loads(compose("--profile", "agent", "config", "--format", "json"))
+        for service in config["services"].values():
+            for volume in service.get("volumes", []):
+                if volume["type"] == "bind":
+                    volume["source"] = daemon_path(volume["source"])
+        for secret in config["secrets"].values():
+            secret["file"] = daemon_path(secret["file"])
+        write_private(private / "compose.json", json.dumps(config))
+        command[-1] = str(private / "compose.json")
     subprocess.run(
         [
             "docker",
@@ -330,9 +380,9 @@ def verify(config_only=False):
             "--network",
             "none",
             "-v",
-            str(root / "src") + ":/work/src:ro",
+            daemon_path(root / "src") + ":/work/src:ro",
             "-v",
-            str(root / "tests/gateway_proxy_fixture.py")
+            daemon_path(root / "tests/gateway_proxy_fixture.py")
             + ":/work/tests/gateway_proxy_fixture.py:ro",
             "-e",
             "PYTHONPATH=/work/src",
@@ -350,7 +400,7 @@ def verify(config_only=False):
     print("Gateway proxy fixture: PASS", flush=True)
     mount = {
         "type": "bind",
-        "source": str(Path(__file__).resolve()),
+        "source": daemon_path(Path(__file__).resolve()),
         "target": "/check.py",
         "read_only": True,
         "bind": {"create_host_path": False},

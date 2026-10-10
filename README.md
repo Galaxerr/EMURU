@@ -241,6 +241,11 @@ uv run --frozen python scripts/hermes/container-check.py
 This command creates disposable mounts and secrets, tests the pinned proxy against
 a synthetic native Ollama upstream, and stops its containers. It never starts a
 Telegram poller or downloads model weights. Private temporary evidence is retained.
+Disposable state lives under the ignored `.runtime/` directory. Under `act`, the
+checker translates bind sources to the runner workspace mount's daemon-host paths;
+the default copied workspace works without `--bind`. Run `act` for all jobs or
+`act -j container-foundation` for gateway acceptance. Repository `.actrc` excludes
+owner environment and secret files and reuses an installed runner image.
 Manual acceptance still needs one read-only real-vault Telegram retrieval through
 cloud, then the same request during a controlled primary outage through qualified
 local. Confirm no real-vault note changed.
