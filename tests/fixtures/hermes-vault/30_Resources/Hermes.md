@@ -9,7 +9,7 @@ summary: Hermes connects a model to conversational tool use.
 
 # Hermes
 
-Hermes owns conversation history and tool execution. In v0.3.3, EMURU guards
+Hermes owns conversation history and tool execution. In v0.3.4, EMURU guards
 CLI and Telegram inference through the authenticated LiteLLM `emuru` alias;
 upstreams come from a private route, not legacy public model selection.
 LiteLLM owns bounded qualified fallback, while Hermes retries and provider

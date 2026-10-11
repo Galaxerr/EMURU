@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import runpy
 import shutil
 import sqlite3
 import subprocess
@@ -15,11 +17,44 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+DEPLOYMENT_SCRIPT = Path(__file__).with_name("container.py")
+
 
 def subprocess_detail(error):
     output = (error.stderr or error.stdout or "").strip()
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     return "\n".join(lines[-3:])
+
+
+def docker_workspace(root):
+    if os.environ.get("ACT") != "true":
+        return root
+    # Host networking shares hostnames; Docker's hostname mount identifies the runner.
+    fields = (
+        line.split() for line in Path("/proc/self/mountinfo").read_text().splitlines()
+    )
+    container = next(
+        (Path(parts[3]).parent.name for parts in fields if parts[4] == "/etc/hostname"),
+        "",
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", container):
+        raise RuntimeError("Cannot identify act runner from its Docker hostname mount")
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{json .Mounts}}", container],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    mounts = sorted(
+        json.loads(result.stdout),
+        key=lambda mount: len(mount["Destination"]),
+        reverse=True,
+    )
+    for mount in mounts:
+        destination = Path(mount["Destination"])
+        if root.is_relative_to(destination):
+            return Path(mount["Source"]) / root.relative_to(destination)
+    raise RuntimeError("act workspace is not backed by a Docker mount")
 
 
 def fixture():
@@ -254,18 +289,21 @@ def verify(config_only=False):
     from emuru.models.gateway import render, write_private
 
     root = Path(__file__).resolve().parents[2]
-    private = Path(tempfile.mkdtemp(prefix="emuru-container-"))
+    # Keep disposable state in the workspace mount for daemon path translation.
+    runtime = root / ".runtime"
+    runtime.mkdir(mode=0o700, exist_ok=True)
+    private = Path(tempfile.mkdtemp(prefix="emuru-container-", dir=runtime))
     os.umask(0o077)
-    for folder in ("profiles/emuru", "state", "runtime", "ollama"):
-        (private / folder).mkdir(parents=True, mode=0o700)
     vault = private / "vault"
     (vault / "00_Inbox").mkdir(parents=True, mode=0o700)
     (vault / ".git").mkdir(mode=0o700)
+    deployment = runpy.run_path(str(DEPLOYMENT_SCRIPT))
+    values = deployment["prepare_deployment"](private, vault, 42)
     key = "sk-" + os.urandom(24).hex()
-    write_private(private / "gateway.key", key)
-    write_private(private / "ollama-api.key", "synthetic-ollama-key")
-    write_private(private / "gemini-api.key", "")
-    write_private(private / "openai-api.key", "")
+    write_private(values["EMURU_GATEWAY_KEY_FILE"], key)
+    for name in deployment["UPSTREAM_KEYS"].values():
+        value = "synthetic-ollama-key" if name == "OLLAMA_API_KEY" else ""
+        write_private(values[f"EMURU_{name}_FILE"], value)
     route = {
         "schema_version": 1,
         "primary": {"provider": "ollama", "model": "synthetic-cloud"},
@@ -278,25 +316,11 @@ def verify(config_only=False):
             "qualification": None,
         },
     }
-    write_private(private / "route.json", json.dumps(route))
+    write_private(values["EMURU_ROUTE"], json.dumps(route))
     config = yaml.safe_load(render(route))
-    write_private(private / "litellm.yaml", yaml.safe_dump(config, sort_keys=True))
-    values = {
-        "EMURU_UID": os.getuid(),
-        "EMURU_GID": os.getgid(),
-        "EMURU_TELEGRAM_OWNER_ID": 42,
-        "EMURU_PROFILE": private / "profiles/emuru",
-        "EMURU_STATE": private / "state",
-        "EMURU_RUNTIME": private / "runtime",
-        "EMURU_VAULT": vault,
-        "EMURU_ROUTE": private / "route.json",
-        "EMURU_GATEWAY_CONFIG": private / "litellm.yaml",
-        "EMURU_GATEWAY_KEY_FILE": private / "gateway.key",
-        "EMURU_OLLAMA_API_KEY_FILE": private / "ollama-api.key",
-        "EMURU_GEMINI_API_KEY_FILE": private / "gemini-api.key",
-        "EMURU_OPENAI_API_KEY_FILE": private / "openai-api.key",
-        "EMURU_OLLAMA_STATE": private / "ollama",
-    }
+    write_private(
+        values["EMURU_GATEWAY_CONFIG"], yaml.safe_dump(config, sort_keys=True)
+    )
     write_private(
         private / "deployment.env",
         "".join(f"{key}={value}\n" for key, value in values.items()),
@@ -322,6 +346,21 @@ def verify(config_only=False):
     print("Compose private-path configuration: PASS", flush=True)
     if config_only:
         return
+    daemon_root = docker_workspace(root)
+
+    def daemon_path(path):
+        return str(daemon_root / Path(path).relative_to(root))
+
+    if daemon_root != root:
+        config = json.loads(compose("--profile", "agent", "config", "--format", "json"))
+        for service in config["services"].values():
+            for volume in service.get("volumes", []):
+                if volume["type"] == "bind":
+                    volume["source"] = daemon_path(volume["source"])
+        for secret in config["secrets"].values():
+            secret["file"] = daemon_path(secret["file"])
+        write_private(private / "compose.json", json.dumps(config))
+        command[-1] = str(private / "compose.json")
     subprocess.run(
         [
             "docker",
@@ -330,9 +369,9 @@ def verify(config_only=False):
             "--network",
             "none",
             "-v",
-            str(root / "src") + ":/work/src:ro",
+            daemon_path(root / "src") + ":/work/src:ro",
             "-v",
-            str(root / "tests/gateway_proxy_fixture.py")
+            daemon_path(root / "tests/gateway_proxy_fixture.py")
             + ":/work/tests/gateway_proxy_fixture.py:ro",
             "-e",
             "PYTHONPATH=/work/src",
@@ -350,7 +389,7 @@ def verify(config_only=False):
     print("Gateway proxy fixture: PASS", flush=True)
     mount = {
         "type": "bind",
-        "source": str(Path(__file__).resolve()),
+        "source": daemon_path(Path(__file__).resolve()),
         "target": "/check.py",
         "read_only": True,
         "bind": {"create_host_path": False},
