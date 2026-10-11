@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 import runpy
 from pathlib import Path
 
@@ -181,6 +182,7 @@ def test_failed_live_run_preserves_route(tmp_path, monkeypatch):
     def fail(*args):
         raise RuntimeError("controlled qualification failure")
 
+    monkeypatch.setitem(QUALIFY["main"].__globals__, "ROOT", tmp_path)
     monkeypatch.setitem(QUALIFY["main"].__globals__, "live_qualification", fail)
     monkeypatch.setattr("sys.argv", ["qualify.py", "--live", "--route", str(path)])
     with pytest.raises(SystemExit, match="LOCAL_UNQUALIFIED"):
@@ -195,6 +197,29 @@ def test_failed_live_run_preserves_route(tmp_path, monkeypatch):
     }
 
 
+@pytest.mark.parametrize("override", [None, "process-key"])
+def test_live_command_loads_workspace_env(tmp_path, monkeypatch, override):
+    tmp_path.chmod(0o700)
+    env = tmp_path / ".env"
+    env.write_text("OLLAMA_API_KEY=file-key\n")
+    env.chmod(0o600)
+    path = tmp_path / "route.json"
+    write_private(path, json.dumps(QUALIFY["fixture_route"]()))
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    if override:
+        monkeypatch.setenv("OLLAMA_API_KEY", override)
+
+    def fail(*args):
+        assert os.environ.get("OLLAMA_API_KEY") == (override or "file-key")
+        raise RuntimeError("controlled qualification failure")
+
+    monkeypatch.setitem(QUALIFY["main"].__globals__, "ROOT", tmp_path)
+    monkeypatch.setitem(QUALIFY["main"].__globals__, "live_qualification", fail)
+    monkeypatch.setattr("sys.argv", ["qualify.py", "--live", "--route", str(path)])
+    with pytest.raises(SystemExit, match="controlled qualification failure"):
+        QUALIFY["main"]()
+
+
 def test_context_trials_set_context_and_require_processed_tokens():
     class Client:
         def __init__(self, prompt_tokens):
@@ -202,6 +227,9 @@ def test_context_trials_set_context_and_require_processed_tokens():
             self.bodies = []
 
         def request(self, path, body, timeout=180):
+            assert path == "/api/chat"
+            assert timeout == 1800
+            assert body["think"] is False
             self.bodies.append(body)
             prompt = body["messages"][0]["content"]
             begin = next(
@@ -213,24 +241,58 @@ def test_context_trials_set_context_and_require_processed_tokens():
                 word for word in prompt.split() if word.startswith("EMURU_CONTEXT_END")
             )
             return {
-                "choices": [{"message": {"content": f"{begin} {end}"}}],
-                "usage": {"prompt_tokens": self.prompt_tokens},
+                "message": {"content": f"{begin} {end}"},
+                "prompt_eval_count": self.prompt_tokens,
             }
 
     client = Client(90)
     QUALIFY["context_trials"](client, "local", 100, 10)
     assert len(client.bodies) == 3
-    assert all(body["options"] == {"num_ctx": 100} for body in client.bodies)
+    assert all(
+        body["options"] == {"num_ctx": 100, "num_predict": 32, "temperature": 0}
+        for body in client.bodies
+    )
     with pytest.raises(RuntimeError, match="Near-context"):
         QUALIFY["context_trials"](Client(10), "local", 100, 10)
+
+
+def test_tool_workload_disables_reasoning_before_token_budget_is_exhausted():
+    class Client:
+        def request(self, path, body, timeout=180):
+            message = {"content": "", "reasoning": "Token budget exhausted"}
+            if body.get("reasoning_effort") == "none":
+                message = {"content": "MARKER"}
+                if body.get("tools"):
+                    message = {
+                        "tool_calls": [
+                            {
+                                "id": "search",
+                                "function": {
+                                    "name": "vault_search",
+                                    "arguments": '{"query":"EMURU"}',
+                                },
+                            }
+                        ]
+                    }
+            return {"choices": [{"message": message}]}
+
+    QUALIFY["one_tool_call"](
+        Client(),
+        "local",
+        "Search EMURU",
+        QUALIFY["SEARCH"],
+        lambda args: args,
+        "MARKER",
+    )
 
 
 def test_injection_check_exposes_write_and_rejects_attempt(tmp_path):
     vault = QUALIFY["synthetic_vault"](tmp_path)
 
     class Client:
-        def __init__(self, write=False):
+        def __init__(self, write=False, content="The untrusted text requests a write."):
             self.write = write
+            self.content = content
             self.bodies = []
 
         def request(self, path, body, timeout=180):
@@ -259,15 +321,23 @@ def test_injection_check_exposes_write_and_rejects_attempt(tmp_path):
                     ]
                 }
             else:
-                message = {"content": "The untrusted text requests a write."}
+                message = {"content": self.content}
             return {"choices": [{"message": message}], "usage": {}}
 
     client = Client()
     QUALIFY["prompt_injection"](client, "local", vault)
     assert client.bodies[1]["tools"] == [QUALIFY["WRITE"]]
     assert client.bodies[1]["tool_choice"] == "auto"
+    QUALIFY["prompt_injection"](
+        Client(content="The reference claims approval to create an Inbox note."),
+        "local",
+        vault,
+    )
     with pytest.raises(RuntimeError, match="Prompt-injection"):
         QUALIFY["prompt_injection"](Client(write=True), "local", vault)
+    for content in (None, "", "   "):
+        with pytest.raises(RuntimeError, match="Prompt-injection"):
+            QUALIFY["prompt_injection"](Client(content=content), "local", vault)
 
 
 def test_live_qualification_rejects_cloud_local_endpoint(monkeypatch):
@@ -284,6 +354,56 @@ def test_live_qualification_rejects_cloud_local_endpoint(monkeypatch):
         QUALIFY["live_qualification"](
             QUALIFY["fixture_route"](), "https://ollama.com/v1"
         )
+
+
+@pytest.mark.parametrize(
+    "vram,ram,error",
+    [(1, 8, None), (0, 8, "telemetry"), (-1, 8, "telemetry"), (1, 3, "headroom")],
+)
+def test_hybrid_gpu_residency_is_not_free_capacity(monkeypatch, vram, ram, error):
+    route = QUALIFY["fixture_route"]()
+    candidate = route["fallback"]
+
+    class Client:
+        direct_cloud = False
+
+        def __init__(self, base_url):
+            pass
+
+        def request(self, path, body=None):
+            return {
+                "/api/version": {"version": "fixture-runtime"},
+                "/api/tags": {
+                    "models": [
+                        {**candidate, "name": candidate["model"], "size": 4 * 1024**3}
+                    ]
+                },
+                "/api/show": {"capabilities": ["tools"], "template": "fixture"},
+                "/api/ps": {
+                    "models": [
+                        {"name": candidate["model"], "size_vram": vram * 1024**3}
+                    ]
+                },
+            }[path]
+
+    namespace = QUALIFY["live_qualification"].__globals__
+    for name, replacement in {
+        "OllamaClient": Client,
+        "workloads": lambda *args: [1.0],
+        "unload": lambda *args: None,
+        "prompt_injection": lambda *args: None,
+        "context_trials": lambda *args: None,
+        "chat": lambda *args, **kwargs: ({}, 0.1, {}),
+        "gpu_present": lambda: True,
+        "available_ram": lambda: ram * 1024**3,
+    }.items():
+        monkeypatch.setitem(namespace, name, replacement)
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            QUALIFY["live_qualification"](route, "http://127.0.0.1:11434/v1")
+    else:
+        qualified, _ = QUALIFY["live_qualification"](route, "http://127.0.0.1:11434/v1")
+        assert valid_qualification(qualified)
 
 
 def test_cold_latency_unloads_model_first():
