@@ -92,6 +92,14 @@
     "GatewayRunner._hmwa_first_contact_notes": [
       true,
       "(self, source, history, turn_sidecar_notes)"
+    ],
+    "GatewayRunner.stop": [
+      true,
+      "(self, *, restart=False, detached_restart=False, service_restart=False)"
+    ],
+    "Updater.stop": [
+      true,
+      "(self)"
     ]
   },
   "functions": {

@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -398,7 +399,21 @@ def verify(config_only=False):
     }
     override = {
         "services": {
-            "emuru": {"volumes": [mount]},
+            "emuru": {
+                "volumes": [
+                    mount,
+                    *[
+                        {
+                            "type": "bind",
+                            "source": daemon_path(root / path),
+                            "target": "/opt/emuru/" + path,
+                            "read_only": True,
+                            "bind": {"create_host_path": False},
+                        }
+                        for path in ("src", "infra/hermes", "tests")
+                    ],
+                ]
+            },
             "litellm": {"ports": ["127.0.0.1::4000"]},
         }
     }
@@ -523,6 +538,13 @@ def verify(config_only=False):
         )
         print("Pinned Hermes native inference: PASS", flush=True)
         print(
+            app(
+                "/opt/emuru/.venv/bin/python",
+                "/opt/emuru/tests/telegram_shutdown_fixture.py",
+            ),
+            flush=True,
+        )
+        print(
             app("/opt/hermes/.venv/bin/python", "/check.py", "profile-lifecycle"),
             flush=True,
         )
@@ -622,6 +644,56 @@ def verify(config_only=False):
         assert key not in compose("logs", "--no-color", extra=extra)
         print(
             "Gateway auth / alias rejection / one attempt per request / secret-free logs: PASS",
+            flush=True,
+        )
+        # Exercise the operator interfaces against this disposable project only.
+        lifecycle = deployment["status"].__globals__
+        lifecycle["DEPLOYMENT_ENV"] = private / "deployment.env"
+        lifecycle["PROJECT_NAME"] = private.name
+        lifecycle["docker_compose"] = lambda *args: compose(*args, extra=extra)
+        report = deployment["status"](private)
+        assert report["state"] == "UNAVAILABLE", report
+        assert report["last_used"] and report["last_used"]["route"] == "primary", report
+        override["services"]["emuru"]["command"] = [
+            "/opt/emuru/.venv/bin/python",
+            "/opt/emuru/tests/telegram_shutdown_fixture.py",
+            "--child",
+            "/state/shutdown-check",
+            "timeout",
+        ]
+        write_private(private / "check.yaml", yaml.safe_dump(override))
+        compose(
+            "--profile",
+            "agent",
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "emuru",
+            extra=extra,
+        )
+        for _ in range(50):
+            if "TURN_STARTED" in compose("logs", "--no-color", "emuru", extra=extra):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("Synthetic worker did not start")
+        report = deployment["status"](private)
+        assert report["state"] == "UNKNOWN", (
+            report
+        )  # Process health is not guarded readiness.
+        assert report["last_used"]["route"] == "primary"
+        for _ in range(2):
+            deployment["sleep"](private)
+            assert deployment["status"](private)["state"] == "STOPPED"
+        from emuru.telegram.queue import diagnostics
+
+        assert diagnostics(private / "state/shutdown-check/queue.sqlite3")["queue"] == {
+            "interrupted": 1,
+            "queued": 1,
+        }
+        print(
+            "Docker status / ordered repeated sleep / interrupted receipts: PASS",
             flush=True,
         )
     finally:

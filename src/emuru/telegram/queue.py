@@ -5,8 +5,10 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import stat
+import tempfile
 import time
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -123,7 +125,10 @@ def diagnostics(path: Path, *, process_health=(), health_file: Path | None = Non
         for candidate in _private_files(path):
             if candidate.exists() or candidate.is_symlink():
                 _check_private_file(candidate)
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        with (
+            _diagnostic_snapshot(path) as snapshot,
+            closing(sqlite3.connect(snapshot.as_uri() + "?mode=ro", uri=True)) as db,
+        ):
             if not _schema_supported(db):
                 raise QueueDiagnosticsError("queue_schema_unsupported")
             counts = dict(
@@ -150,6 +155,36 @@ def diagnostics(path: Path, *, process_health=(), health_file: Path | None = Non
         raise
     except (sqlite3.Error, OSError, ValueError, KeyError, TypeError):
         raise QueueDiagnosticsError("queue_unavailable") from None
+
+
+@contextmanager
+def _diagnostic_snapshot(path):
+    # Even mode=ro creates/mutates WAL sidecars; SQLite must open only scratch files.
+    sources = (path, Path(str(path) + "-wal"))
+
+    def versions():
+        result = []
+        for source in sources:
+            if source.exists():
+                info = source.stat()
+                result.append(
+                    (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                )
+            else:
+                result.append(None)
+        return result
+
+    before = versions()
+    with tempfile.TemporaryDirectory(prefix="emuru-status-") as directory:
+        snapshot = Path(directory) / path.name
+        for source, info in zip(sources, before, strict=True):
+            if info is not None:
+                target = Path(directory) / source.name
+                shutil.copyfile(source, target)
+                target.chmod(0o600)
+        if versions() != before:
+            raise QueueDiagnosticsError("queue_unavailable")
+        yield snapshot
 
 
 def load_telegram_settings(path: Path) -> dict:

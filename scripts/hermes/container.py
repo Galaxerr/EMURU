@@ -10,18 +10,27 @@ import stat
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from emuru.environment import load_env, write_env
-from emuru.models.gateway import private_path, read_route, render, write_private
+from emuru.models import observations
+from emuru.models.gateway import (
+    private_path,
+    read_route,
+    render,
+    valid_qualification,
+    write_private,
+)
+from emuru.telegram.queue import QueueDiagnosticsError, diagnostics
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = ROOT / "infra/docker/compose.yaml"
 DEFAULT_HOME = Path.home() / ".local/state/emuru/container"
 DEPLOYMENT_ENV = ROOT / "infra/docker/deployment.env"
 CONTAINER_VAULT_PATH = Path("/state/vault")
+PROJECT_NAME = "emuru"
 
 UPSTREAM_KEYS = {
     "ollama": "OLLAMA_API_KEY",
@@ -261,7 +270,7 @@ def compose(home, *arguments):
         "docker",
         "compose",
         "--project-name",
-        "emuru",
+        PROJECT_NAME,
         "--env-file",
         str(env_path),
         "-f",
@@ -271,8 +280,8 @@ def compose(home, *arguments):
     return subprocess.run(command, check=True).returncode
 
 
-def saved_deployment(home=None):
-    """Read the initialized deployment without changing private files."""
+def deployment_metadata(home=None):
+    """Read bindings even when the vault or runtime services are unavailable."""
     env_path = private_path(DEPLOYMENT_ENV)
     info = env_path.stat()
     if (
@@ -321,9 +330,21 @@ def saved_deployment(home=None):
         raise ValueError("Invalid deployment profile path")
     saved_home = profile.parents[1]
     if profile != saved_home / "profiles/emuru" or (
-        home is not None and saved_home != deployment_home(home)
+        (home is not None or os.environ.get("EMURU_CONTAINER_HOME"))
+        and saved_home != deployment_home(home)
     ):
         raise ValueError("Saved deployment does not match the requested home")
+    for key, relative in DEPLOYMENT_PATHS.items():
+        if private_path(values[key]) != saved_home / relative:
+            raise ValueError("Deployment path mismatch")
+    return values
+
+
+def saved_deployment(home=None):
+    """Read the initialized deployment without changing private files."""
+    values = deployment_metadata(home)
+    profile = Path(values["EMURU_PROFILE"])
+    saved_home = profile.parents[1]
     home_info = saved_home.stat()
     if home_info.st_uid != os.getuid() or stat.S_IMODE(home_info.st_mode) != 0o700:
         raise ValueError("Deployment home permissions mismatch")
@@ -386,7 +407,7 @@ def wake(home=None):
             "docker",
             "compose",
             "--project-name",
-            "emuru",
+            PROJECT_NAME,
             "--env-file",
             str(DEPLOYMENT_ENV),
             "-f",
@@ -504,6 +525,203 @@ def wake(home=None):
         print("EMURU READY")
 
 
+READY_CHECKPOINT = "EMURU Telegram checkpoint: required guards and five MCP tools READY"
+SERVICES = ("emuru", "litellm", "ollama")
+STOPPED_STATES = {"exited", "created", "dead"}
+
+
+def docker_compose(*arguments):
+    return subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--project-name",
+            PROJECT_NAME,
+            "--env-file",
+            str(DEPLOYMENT_ENV),
+            "-f",
+            str(COMPOSE_FILE),
+            *arguments,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def containers():
+    identifiers = docker_compose("ps", "--all", "--quiet").split()
+    if not identifiers:
+        return {}
+    # Request only runtime metadata; never inspect environment or mount paths.
+    template = (
+        '{"id":{{json .Id}},"instance":{{json .Config.Hostname}},'
+        '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
+        '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+        '"oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}},'
+        '"status":{{json .State.Status}},"started":{{json .State.StartedAt}},'
+        '"health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}}}'
+    )
+    result = subprocess.run(
+        ["docker", "inspect", "--format", template, *identifiers],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    found = {}
+    for line in result.stdout.splitlines():
+        item = json.loads(line)
+        name = item["service"]
+        if item["oneoff"] == "True":
+            continue
+        if item["project"] != PROJECT_NAME or name not in SERVICES or name in found:
+            raise ValueError("Unexpected deployment containers")
+        if item["status"] not in STOPPED_STATES | {
+            "running",
+            "restarting",
+            "paused",
+            "removing",
+        }:
+            raise ValueError("Unknown container state")
+        found[name] = item
+    if not found:
+        raise ValueError("Deployment observation inconclusive")
+    return found
+
+
+def sleep(home=None, *, remove=False):
+    with lifecycle_lock():
+        deployment_metadata(home)
+        docker_compose("stop", "--timeout", "660", "emuru")
+        worker = containers().get("emuru")
+        if worker and worker["status"] not in STOPPED_STATES:
+            raise ValueError("Worker stop not confirmed; inference retained")
+        docker_compose("stop", "litellm", "ollama")
+        if any(item["status"] not in STOPPED_STATES for item in containers().values()):
+            raise ValueError("Inference stop not confirmed")
+        if remove:
+            docker_compose("down", "--remove-orphans")
+    print("EMURU STOPPED")
+
+
+def status(home=None):
+    """Observe only: no lifecycle lock, queue recovery, exec, or model requests."""
+    report = {
+        "state": "UNKNOWN",
+        "services": {},
+        "observed_at": None,
+        "last_used": None,
+    }
+    try:
+        values = deployment_metadata(home)
+        queue = private_path(
+            Path(values["EMURU_PROFILE"]) / "emuru-telegram/queue.sqlite3"
+        )
+        try:
+            report.update(diagnostics(queue))
+        except QueueDiagnosticsError as error:
+            report.update(queue="unavailable", health=[str(error)])
+        current = containers()
+        report["services"] = {name: item["status"] for name, item in current.items()}
+        worker, gateway = current.get("emuru"), current.get("litellm")
+        route = None
+        invalid_route = False
+        if gateway:
+            try:
+                route = read_route(values["EMURU_ROUTE"])
+            except ValueError:
+                invalid_route = True
+            except OSError:
+                pass
+        if gateway and route:
+            try:
+                logs = subprocess.run(
+                    ["docker", "logs", gateway["id"]],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                report.update(
+                    observations.read(
+                        logs.stdout + "\n" + logs.stderr,
+                        route,
+                        gateway["instance"],
+                        datetime.fromisoformat(gateway["started"]).timestamp(),
+                    )
+                )
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                report["state"] = "UNKNOWN"
+        if all(item["status"] in STOPPED_STATES for item in current.values()):
+            report["state"] = "STOPPED"
+        elif any(
+            name not in current
+            or current[name]["status"] != "running"
+            or current[name]["health"] == "unhealthy"
+            for name in ("emuru", "litellm")
+        ):
+            report["state"] = "UNAVAILABLE"
+        else:
+            worker_logs = subprocess.run(
+                ["docker", "logs", "--since", worker["started"], worker["id"]],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            worker_lines = (worker_logs.stdout + "\n" + worker_logs.stderr).splitlines()
+            if READY_CHECKPOINT not in worker_lines:
+                report["state"] = "UNKNOWN"
+            if "EMURU Telegram checkpoint: intake STOPPED" in worker_lines:
+                report["state"] = "UNAVAILABLE"
+            health = queue.parent / "health.json"
+            if (
+                health.exists()
+                and health.stat().st_mtime
+                >= datetime.fromisoformat(worker["started"]).timestamp()
+            ):
+                report.update(diagnostics(queue, health_file=health))
+                report["state"] = "UNAVAILABLE"
+            if not isinstance(report["queue"], dict):
+                report["state"] = "UNKNOWN"
+            if invalid_route:
+                report["state"] = "UNAVAILABLE"
+            if report["state"] in {
+                "READY",
+                "DEGRADED_PRIMARY",
+            }:
+                local = current.get("ollama")
+                if (
+                    not valid_qualification(route)
+                    or not local
+                    or local["status"] != "running"
+                    or local["health"] == "unhealthy"
+                ):
+                    report["state"] = (
+                        "LOCAL_UNQUALIFIED"
+                        if report["state"] == "READY"
+                        else "UNAVAILABLE"
+                    )
+                elif (
+                    report["state"] == "DEGRADED_PRIMARY"
+                    and report["observed_at"]
+                    < datetime.fromisoformat(local["started"]).timestamp()
+                ):
+                    report["state"] = "UNKNOWN"
+        # A restart or stop during observation invalidates the assembled snapshot.
+        if containers() != current:
+            report["state"] = "UNKNOWN"
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.CalledProcessError,
+        QueueDiagnosticsError,
+    ):
+        report["state"] = "UNKNOWN"
+        report["diagnostic"] = "observation_unavailable"
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -523,7 +741,8 @@ def main():
     subparsers.add_parser("config", help="Validate the generated Compose configuration")
     subparsers.add_parser("up", help="Start with guarded readiness checks")
     subparsers.add_parser("down", help="Stop and remove the isolated deployment")
-    subparsers.add_parser("status", help="Show isolated deployment status")
+    subparsers.add_parser("status", help="Show read-only redacted deployment status")
+    subparsers.add_parser("sleep", help="Drain worker, then stop inference services")
     subparsers.add_parser(
         "wake", help="Start infrastructure and guarded worker after readiness checks"
     )
@@ -571,19 +790,22 @@ def main():
                 raise ValueError("Route and owner selection belong to initialization")
             wake(args.home)
             return
-        command = {
-            "config": ("config", "--quiet"),
-            "down": ("down", "--remove-orphans"),
-            "status": ("ps",),
-        }[args.command]
-        with lifecycle_lock() if args.command == "down" else nullcontext():
-            compose(args.home, *command)
+        if args.command == "status":
+            print(json.dumps(status(args.home), sort_keys=True))
+        elif args.command in {"sleep", "down"}:
+            sleep(args.home, remove=args.command == "down")
+        else:
+            compose(args.home, "config", "--quiet")
     except (
         OSError,
         ValueError,
         BlockingIOError,
         subprocess.CalledProcessError,
     ) as error:
+        if args.command in {"sleep", "down", "status"}:
+            raise SystemExit(
+                "EMURU lifecycle operation failed; state unconfirmed"
+            ) from None
         raise SystemExit(str(error)) from None
 
 

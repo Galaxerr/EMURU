@@ -343,7 +343,10 @@ def test_diagnostics_never_constructs_recovers_prunes_or_rewrites_rows(
         assert diagnostics(q.path)["queue"] == {
             state: 1 for state in queue_module.QUEUE_STATES
         }
-    connect.assert_called_once_with(q.path.as_uri() + "?mode=ro", uri=True)
+    connect.assert_called_once()
+    assert connect.call_args.kwargs == {"uri": True}
+    assert connect.call_args.args[0].endswith("/queue.sqlite3?mode=ro")
+    assert connect.call_args.args[0] != q.path.as_uri() + "?mode=ro"
     assert list(q.db.iterdump()) == before
     assert {path: path.read_bytes() for path in files} == files
     assert not (q.path.parent / "instance.lock").exists()
@@ -457,3 +460,37 @@ def test_diagnostics_corrupt_database_error_is_redacted(tmp_path):
     path.chmod(0o600)
     with pytest.raises(QueueDiagnosticsError, match="^queue_unavailable$"):
         diagnostics(path)
+
+
+def test_diagnostics_closed_wal_database_creates_no_sidecars(diagnostic_queue):
+    q = diagnostic_queue
+    q.close()
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in q.path.parent.iterdir()
+        if path.is_file()
+    }
+    assert not Path(str(q.path) + "-wal").exists()
+    assert diagnostics(q.path)["queue"] == {
+        state: 1 for state in queue_module.QUEUE_STATES
+    }
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in q.path.parent.iterdir()
+        if path.is_file()
+    } == before
+
+
+def test_diagnostics_active_wal_does_not_modify_shared_memory(diagnostic_queue):
+    q = diagnostic_queue
+    files = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in q.path.parent.iterdir()
+        if path.is_file()
+    }
+    assert diagnostics(q.path)["queue"] == {
+        state: 1 for state in queue_module.QUEUE_STATES
+    }
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in files
+    } == files

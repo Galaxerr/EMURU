@@ -7,7 +7,7 @@ services:
     image: emuru:latest
     user: "${EMURU_UID:?}:${EMURU_GID:?}"
     restart: "no"
-    stop_grace_period: 120s
+    stop_grace_period: 660s
     read_only: true
     tmpfs: [/tmp]
     environment:

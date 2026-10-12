@@ -106,6 +106,9 @@ def test_readiness_fails_closed_and_hard_exit_closes_queue(
     calls = []
 
     class Runner:
+        async def stop(self, **kwargs):
+            pass
+
         async def start(self):
             calls.append("native_start")
             return True
@@ -269,6 +272,9 @@ def test_native_main_keeps_its_lifecycle_with_guards_and_private_config(
         asyncio.run(run.start_gateway(config=None))
 
     class Runner:
+        async def stop(self, **kwargs):
+            pass
+
         def _create_adapter(self, platform, config):
             pass
 
@@ -353,3 +359,9 @@ def test_status_adapter_formats_diagnostic_failure(
         )
     ]
     assert json.loads(capsys.readouterr().out) == {"queue": {}, "health": [code]}
+
+
+def test_signals_preserve_pending_and_uncertain_receipts():
+    from telegram_shutdown_fixture import check
+
+    check()

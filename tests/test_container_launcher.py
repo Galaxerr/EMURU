@@ -308,7 +308,12 @@ def test_init_prepares_profile_before_manual_wake(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "command,arguments", [("down", ["down", "--remove-orphans"]), ("status", ["ps"])]
+    "command,arguments",
+    [
+        ("down", ["down", "--remove-orphans"]),
+        ("status", ["ps", "--all", "--quiet"]),
+        ("sleep", ["ps", "--all", "--quiet"]),
+    ],
 )
 def test_saved_deployment_operates_without_vault_or_initialization(
     tmp_path, monkeypatch, command, arguments
@@ -318,9 +323,14 @@ def test_saved_deployment_operates_without_vault_or_initialization(
     home = tmp_path / "custom-deployment"
     home.mkdir()
     metadata = tmp_path / "deployment.env"
-    metadata.write_text(
-        f"EMURU_PROFILE={home}/profiles/emuru\nEMURU_VAULT={tmp_path}/missing-vault\n"
+    values = {key: str(home / path) for key, path in module["DEPLOYMENT_PATHS"].items()}
+    values.update(
+        EMURU_VAULT=str(tmp_path / "missing-vault"),
+        EMURU_UID=str(os.getuid()),
+        EMURU_GID=str(os.getgid()),
+        EMURU_TELEGRAM_OWNER_ID="42",
     )
+    metadata.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
     metadata.chmod(0o600)
     secret = home / "gateway.key"
     secret.write_text("saved-key")
@@ -346,11 +356,12 @@ def test_saved_deployment_operates_without_vault_or_initialization(
         module["subprocess"],
         "run",
         lambda command, **kwargs: (
-            executed.append(command) or SimpleNamespace(returncode=0)
+            executed.append(command) or SimpleNamespace(returncode=0, stdout="")
         ),
     )
     module["main"]()
-    assert len(executed) == 1 and executed[0][-len(arguments) :] == arguments
+    assert executed[-1][-len(arguments) :] == arguments
+    assert all("systemctl" not in call for call in executed)
     assert executed[0][executed[0].index("--env-file") + 1] == str(metadata)
     assert {
         path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)

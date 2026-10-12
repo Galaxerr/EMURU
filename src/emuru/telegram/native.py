@@ -359,10 +359,7 @@ class NativeTelegram:
             await asyncio.sleep(max(0, poll_after - time.monotonic()))
             # ponytail: one synchronous FULL SQLite commit per <=100-update poll batch;
             # move this connection to a dedicated thread only if fsync latency matters.
-            if self.worker.intake_failed:
-                raise RuntimeError(
-                    "Telegram intake stopped after a durable queue failure"
-                )
+            self.worker.ensure_accepting()
             try:
                 token = polling_request.set(True)
                 try:
@@ -372,6 +369,8 @@ class NativeTelegram:
             except Exception:
                 poll_after = time.monotonic() + policy["reconnect_delay_seconds"]
                 raise
+            if self.worker._stopping:
+                return []  # Unstaged updates remain unacknowledged at Telegram.
             try:
                 self.worker.stage(
                     bot.id,
@@ -453,7 +452,7 @@ class NativeTelegram:
                 return result
 
             async def guarded_disconnect(adapter, *args, **kwargs):
-                await self.worker.stop()
+                await self.shutdown()
                 return await disconnect(adapter, *args, **kwargs)
 
             async def awaited_handle(adapter, event):
@@ -575,7 +574,9 @@ class NativeTelegram:
         async def guarded_post(bot, endpoint, data=None, *args, **kwargs):
             data = data or {}
             if endpoint == "getUpdates" and (
-                not polling_request.get() or self.worker.intake_failed
+                not polling_request.get()
+                or self.worker.intake_failed
+                or self.worker._stopping
             ):
                 raise RuntimeError("Telegram polling must pass through durable staging")
             safe_global = {
@@ -675,10 +676,30 @@ class NativeTelegram:
         Runner._hm_cmd_new = control_new
         Runner._hmwa_first_contact_notes = no_onboarding
 
+    async def shutdown(self):
+        """Quiesce intake before native teardown can interrupt an owner turn."""
+        self.worker.stop_admission()
+
+        async def drain():
+            updater = getattr(self._app, "updater", None)
+            try:
+                if updater is not None and updater.running:
+                    async with asyncio.timeout(10):
+                        await updater.stop()
+            except Exception:  # noqa: BLE001 -- admission is already closed
+                logger.warning("EMURU polling shutdown did not complete")
+            await self.worker.stop(grace=self.turn_timeout)
+
+        if getattr(self, "_shutdown_task", None) is None:
+            print("EMURU Telegram checkpoint: intake STOPPED", flush=True)
+            self._shutdown_task = asyncio.create_task(drain())
+        await asyncio.shield(self._shutdown_task)
+
     def install_launch_guards(self, run, gateway_cli, config):
         """Native discovery is best-effort; the required MCP gate must fail closed."""
         native_start, native_exit = run.start_gateway, run._exit_after_graceful_shutdown
         runner_start = run.GatewayRunner.start
+        runner_stop = run.GatewayRunner.stop
         native_attach = gateway_cli._attach_to_host_gateway_or_guard
 
         def refuse_host():
@@ -720,8 +741,13 @@ class NativeTelegram:
             finally:
                 native_exit(code)
 
+        async def drained_stop(runner, **kwargs):
+            await self.shutdown()
+            return await runner_stop(runner, **kwargs)
+
         run._host_attach_or_none = guarded_host
         gateway_cli._attach_to_host_gateway_or_guard = guarded_attach
         run.start_gateway = guarded_start
         run.GatewayRunner.start = ready_start
+        run.GatewayRunner.stop = drained_stop
         run._exit_after_graceful_shutdown = closed_exit

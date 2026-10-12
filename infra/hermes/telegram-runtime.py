@@ -239,7 +239,9 @@ def main():
                 sys.path.insert(0, str(ROOT / "tests/telegram"))
                 import native_session_case as case
 
-                await case.check(run, adapter, worker, directory)
+                # A stopped consumer cannot claim again, including in this offline fixture.
+                execution.worker = native.TelegramWorker(queue, execution)
+                await case.check(run, adapter, execution.worker, directory)
                 case.check_tools(execution, directory)
                 if len(sent) != 5 or sent[3].replace("\\.", ".") != (
                     "New session started. Previous conversation preserved."
