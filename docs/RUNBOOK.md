@@ -84,6 +84,16 @@ Run `uv run --frozen python scripts/hermes/container-check.py` for Docker
 acceptance. It needs Docker and pinned images, uses disposable keys and a
 synthetic upstream, and starts no Telegram poller.
 
+MCP integration tests require local socketpair writes for asyncio/AnyIO thread
+wakeups, even when transport uses stdio and no network service is contacted. A
+restricted execution sandbox can allow socket creation but deny writes with
+`EPERM`, causing initialization timeouts or stalled synchronous tool calls. The
+shared `mcp_environment` fixture fails before those tests start when this capability
+is unavailable. Classify this execution restriction as BLOCKED and rerun the same
+command with approved local socket IPC permissions (on the host or CI runner).
+Changing `UV_CACHE_DIR` only changes uv's cache location; it does not establish
+these permissions. Do not raise timeouts or skip the integration tests.
+
 ## Vault target and indexing
 
 `~/.hermes/profiles/emuru/vault-target.json` is owner-only, mode 0600.

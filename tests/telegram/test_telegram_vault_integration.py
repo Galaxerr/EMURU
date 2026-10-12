@@ -14,7 +14,7 @@ from emuru.telegram.worker import TelegramWorker, TurnResult
 
 
 def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
-    tmp_path, policy
+    tmp_path, policy, mcp_environment
 ):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
