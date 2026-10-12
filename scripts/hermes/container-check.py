@@ -96,10 +96,12 @@ def fixture():
                 assert body["tools"][0]["function"]["name"] == "connection_probe"
                 message["tool_calls"] = [
                     {
+                        "id": "call_synthetic_1",
+                        "type": "function",
                         "function": {
                             "name": "connection_probe",
                             "arguments": {"message": "ping"},
-                        }
+                        },
                     }
                 ]
             self.send_response(200)
@@ -557,6 +559,19 @@ def verify(config_only=False):
             extra=extra,
         )
         address = "http://" + compose("port", "litellm", "4000", extra=extra)
+        compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "litellm",
+            "python",
+            "-m",
+            "emuru.models.startup",
+            extra=extra,
+        )
+        print(
+            "Selected primary / authenticated gateway startup probe: PASS", flush=True
+        )
 
         def attempts():
             return json.loads(
@@ -570,6 +585,8 @@ def verify(config_only=False):
                     extra=extra,
                 )
             )["attempts"]
+
+        assert attempts() == 2
 
         def request(token, model="emuru", content="fail"):
             headers = {"Content-Type": "application/json"}
@@ -597,11 +614,11 @@ def verify(config_only=False):
         # This pinned DB-free proxy rejects non-master keys with HTTP 400 (no_db_connection).
         assert request("sk-wrong") in (400, 401, 403)
         assert request(key, model="unknown") in (400, 404)
-        assert attempts() == 0
-        print(app("/opt/hermes/.venv/bin/python", "/check.py", "native"), flush=True)
         assert attempts() == 2
+        print(app("/opt/hermes/.venv/bin/python", "/check.py", "native"), flush=True)
+        assert attempts() == 4
         assert request(key) >= 400
-        assert attempts() == 3
+        assert attempts() == 5
         assert key not in compose("logs", "--no-color", extra=extra)
         print(
             "Gateway auth / alias rejection / one attempt per request / secret-free logs: PASS",

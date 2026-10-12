@@ -23,6 +23,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Graphify
+/graphify-out/
+
 # Real vaults must never enter EMURU
 EMURU-vault/
 vault/
@@ -44,3 +47,4 @@ vault-target.json
 
 # Generated Docker deployment paths (private state lives outside the checkout)
 infra/docker/deployment.env
+infra/docker/deployment.lock
