@@ -4,11 +4,12 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**Version: 0.3.4.** Agent inference uses authenticated local LiteLLM exclusively.
+**v0.4.0 release** Agent inference uses
+authenticated local LiteLLM exclusively.
 The gateway bounds each request to one cloud attempt and at most one qualified
 local attempt. Unqualified local models remain disabled. Follow this guide for
 setup, the [runbook](docs/RUNBOOK.md) for operation, and the
-[release report](docs/releases/v0.3.4-report.md) for verification and acceptance gaps.
+[release report](docs/releases/v0.4.0-report.md) for verification and acceptance gaps.
 
 ## Capabilities and limits
 
@@ -35,7 +36,7 @@ physical remote wake and broader automation are outside this release.
 | `src/emuru/environment.py` | Private workspace `.env` loading and update |
 | `scripts/hermes/` | Launchers, profile audits, vault adapter and Ollama chooser |
 | `scripts/service/` | Manual start, stop and status controls |
-| `infra/hermes/`, `infra/systemd/` | Public configuration, native contract pins and service template |
+| `infra/hermes/`, `infra/docker/` | Public configuration, native contract pins and Compose deployment |
 | `agents/emuru/SOUL.md` | Policy to install in the private Hermes profile |
 | `tests/` | Synthetic vaults, interface tests and installed-native session checks |
 
@@ -47,8 +48,10 @@ See [architecture](docs/ARCHITECTURE.md) for module ownership and invariants.
 
 ## Setup
 
-Requirements: Linux, Python 3.12+, uv, an independently installed Hermes checkout
-matching `infra/hermes/runtime-lock.json`, and an available tool-capable model.
+Requirements: Linux, Python 3.12+, uv, Docker Engine with Compose v2, and an
+available tool-capable model. The application image installs the pinned Hermes
+runtime separately. Host CLI operation additionally needs the installed checkout
+matching `infra/hermes/runtime-lock.json`.
 Put provider keys, the Telegram token, and your numeric Telegram owner ID in the
 workspace root `.env`. The app loads this file from its launch tools. It must be
 owned by you and mode `0600`; never commit it. Container initialization creates
@@ -65,6 +68,7 @@ uv run --frozen python scripts/hermes/vault-profile.py --offline
 
 Install `agents/emuru/SOUL.md` as the private Hermes profile's `SOUL.md`; setup
 does not copy it automatically. The default profile is
+`$HOME/.local/state/emuru/container/profiles/emuru` for Compose; host CLI uses
 `~/.hermes/profiles/emuru`.
 
 `prepare` copies fixtures to ignored `.runtime/vault` only if absent, preserving
@@ -75,43 +79,32 @@ environment with offline, frozen execution and no dependency installation.
 
 ### Gateway deployment and CLI chat
 
-Follow [container setup](docs/RUNBOOK.md#container-deployment) to select a private
-cloud/local route, initialize secrets, start infrastructure, apply the profile,
-and launch Telegram. `container.py up` rebuilds and starts only Ollama and
-LiteLLM; it leaves a running Telegram agent untouched. The agent requires the
-explicit Compose `agent` profile. Update it explicitly with:
+Follow [container setup](docs/RUNBOOK.md#container-deployment) for a new deployment.
+For an existing installation, follow [migration](docs/RUNBOOK.md#systemd-to-compose-migration)
+first. Inspect existing state before initialization; never replace an existing queue
+with an older profile. `init` changes private files, fetches pinned infrastructure
+images and builds the application. It is not a dry run and does not start polling.
+Repeated initialization reuses saved configuration; it does not rotate credentials
+or update routes. `wake` never initializes, builds or downloads models.
 
 ```bash
-docker compose --project-name emuru \
-  --env-file infra/docker/deployment.env \
-  -f infra/docker/compose.yaml --profile agent up -d --build emuru
+scripts/service/status.sh
+scripts/service/wake.sh
+scripts/service/sleep.sh
 ```
 
-The replaced agent exits gracefully on `SIGTERM`; that shutdown is expected.
-Set `EMURU_VAULT_PATH` in `.env` to an absolute Git vault path with `00_Inbox`
-before initialization.
+Wake validates saved bindings, rejects an active systemd poller, starts infrastructure,
+checks authenticated routing and guarded Telegram readiness, then starts the worker.
+Sleep stops intake and new claims, drains the active turn, stops the worker, then
+inference. All Compose services use `restart: "no"`; restart after reboot is explicit.
+Status is read-only and may return `UNKNOWN` when evidence is stale or incomplete.
 
-Private state defaults to `$HOME/.local/state/emuru/container`; `--home` selects
-another directory and `--route-source` selects another owner-only route.
-Initialization rejects missing routes and unsafe permissions. No model weights
-are downloaded automatically. The picker records a local candidate with
-`qualification: null`, so local inference stays disabled until qualified.
-
-```bash
-uv run --frozen python scripts/hermes/qualify.py --live \
-  --route "$HOME/.local/state/emuru/container/route.json"
-```
-
-Qualification uses a temporary synthetic vault. It writes private evidence and
-a redacted report beside the route. Only a complete pass updates the route;
-failure prints `LOCAL_UNQUALIFIED` and preserves it.
-
-All agent profiles use the authenticated `emuru` alias. Legacy
-`infra/hermes/model-selection.json` selections do not configure agent inference.
-Ollama Cloud uses `OLLAMA_API_KEY` directly, independently of daemon sign-in or
-availability. Gemini/OpenAI are explicit alternatives without local fallback.
-After changing keys or routes, initialize again and recreate LiteLLM as shown
-in the runbook.
+Private state defaults to `$HOME/.local/state/emuru/container`. For a custom saved
+home, pass `--home /absolute/path` before the command, or to each service script.
+Set `EMURU_VAULT_PATH` in `.env` before first initialization. Select routes and qualify
+local fallback explicitly, as described in the runbook. No weights download automatically.
+All agent profiles use the authenticated `emuru` alias. Unqualified local inference
+stays disabled; cloud-only startup does not prove qualified-local release acceptance.
 
 For host CLI chat, [configure a loopback gateway](docs/RUNBOOK.md#gateway-policy)
 and apply the profile in that environment, then run:
@@ -157,44 +150,21 @@ model; review the allowlisted notes before connecting a real vault.
 
 ## Telegram and service operation
 
-Install the required native Telegram extra through Hermes's package manager.
-The guarded launcher verifies native source and contract pins before polling,
-using Hermes's interpreter without startup downloads. It loads the root `.env`
-for Hermes. The MCP child uses an explicit environment allowlist. Install the
-host service template by following [the runbook](docs/RUNBOOK.md).
+Compose is the normal operator workflow. Use the lifecycle scripts above; wait for
+`EMURU READY` from a fresh wake before sending work. An already-running worker is
+not revalidated by repeated wake. Consult current status and private checkpoint evidence.
+Only the guarded launcher provides durable admission. Plain `hermes gateway` bypasses it.
 
-```bash
-uv run --frozen python scripts/hermes/telegram.py --offline
-uv run --frozen python scripts/hermes/telegram.py --check
-scripts/hermes/telegram.sh
-```
+For host diagnostics, `scripts/hermes/telegram.py --check` verifies bot identity and
+webhook without polling or inference. It makes Telegram API requests, so it is not
+an offline dry run.
 
-`--check` reads live configuration and performs bot identity/webhook requests,
-without polling, inference or note writes. Wait for
-`EMURU Telegram checkpoint: required guards and five MCP tools READY`.
-Only the guarded launcher provides durable Telegram admission; launching plain
-`hermes gateway` bypasses that seam. Stop with Ctrl-C.
+## Upgrading to v0.4.0
 
-For a manually started user service, follow [the runbook](docs/RUNBOOK.md) to
-install the template with your local paths. Then use:
-
-```bash
-scripts/service/wake.sh
-scripts/service/status.sh
-scripts/service/sleep.sh
-```
-
-These controls require an awake, logged-in PC and do not wake hardware or enable
-login startup. Local queue diagnostics are read-only and expose safe counts and
-health codes. Preserve uncertain receipts; inspect effects before resubmitting.
-
-## Upgrading to v0.3.4
-
-Stop and drain the current poller, back up the stopped profile and vault, and
-preserve queue receipts and history. Follow [the upgrade steps](docs/RUNBOOK.md#upgrade-to-v034)
-to rebuild, requalify local fallback, reinstall policy and reapply the
-profile. Older v0.3.0 installs also need the moved `scripts/hermes/` service paths.
-There is no automatic profile migration or systemd retirement.
+Follow the ordered [migration and rollback procedure](docs/RUNBOOK.md#systemd-to-compose-migration).
+It separates read-only discovery and disposable checks from operator-only production
+changes. Existing container state may already contain newer effects: do not copy,
+reset, delete receipts or rerun setup to repair uncertainty.
 
 ## Validation
 
@@ -228,9 +198,9 @@ No production state is migrated, and no systemd cutover is included.
 `EMURU_CONTAINER_ROUTE` selects a private owner-only upstream route; agent
 inference remains gateway-only even without that variable. The picker records a
 cloud primary and local candidate. A null, expired, failed, or configuration-mismatched
-qualification prevents local dispatch with `LOCAL_UNQUALIFIED`. v0.3.4 qualifies
+qualification prevents local dispatch with `LOCAL_UNQUALIFIED`. The qualification contract covers
 tools, synthetic workloads, context, latency, hardware, faults, identity and
-offline-local routing. Lifecycle migration and systemd retirement remain v0.4.0 work.
+offline-local routing. Live migration and systemd retirement remain pending operator acceptance.
 
 After fetching the locked images and building `emuru:latest`, run:
 
@@ -246,6 +216,3 @@ checker translates bind sources to the runner workspace mount's daemon-host path
 the default copied workspace works without `--bind`. Run `act` for all jobs or
 `act -j container-foundation` for gateway acceptance. Repository `.actrc` excludes
 owner environment and secret files and reuses an installed runner image.
-Manual acceptance still needs one read-only real-vault Telegram retrieval through
-cloud, then the same request during a controlled primary outage through qualified
-local. Confirm no real-vault note changed.
