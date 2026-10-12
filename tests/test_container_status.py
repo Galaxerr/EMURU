@@ -269,6 +269,103 @@ def test_repeated_sleep_orders_worker_before_inference(deployment, absent):
     assert d.module["status"](d.home)["state"] == "STOPPED"
 
 
+def test_stopped_wake_sleep_and_simulated_reboot_preserve_state(
+    deployment, monkeypatch, capsys
+):
+    from telegram_helpers import update
+
+    d = deployment
+    monkeypatch.setitem(d.globals, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(d.globals, "valid_qualification", lambda route: True)
+    d.record["state"] = "READY"
+    for item in d.items.values():
+        item["status"] = "exited"
+    for relative in ("profiles/emuru/history.json", "ollama/cache-identity"):
+        write_private(d.home / relative, "synthetic-persistent-state")
+    d.queue.clock = lambda: 100000
+    d.queue.stage(7, [update(1), update(2), update(3)])
+    completed = d.queue.claim(7)
+    d.queue.finish(completed["sequence"], True)
+    d.queue.claim(7)
+    d.queue.mark_tools_started(7, 2)
+    d.queue.close()
+    before = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode)
+        for p in d.home.rglob("*")
+        if p.is_file()
+    }
+    run = d.module["subprocess"].run
+    starts = []
+
+    def lifecycle(command, **kwargs):
+        if command[0] == "systemctl":
+            return NS(returncode=3, stdout="inactive\n")
+        if "ps" in command and "--services" in command:
+            return NS(
+                stdout="emuru\n" if d.items["emuru"]["status"] == "running" else ""
+            )
+        if "up" in command:
+            services = [
+                name for name in d.items if name in command[command.index("up") + 1 :]
+            ]
+            starts.append(services)
+            for name in services:
+                assert name != "emuru" or all(
+                    d.items[upstream]["status"] == "running"
+                    for upstream in ("ollama", "litellm")
+                )
+                d.items[name]["status"] = "running"
+            return NS(returncode=0)
+        if "run" in command:
+            assert d.items["emuru"]["status"] == "exited"
+            return NS(returncode=0)
+        if "logs" in command and command[0:2] == ["docker", "compose"]:
+            assert "--since" in command
+            return NS(stdout=d.module["READY_CHECKPOINT"])
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(d.module["subprocess"], "run", lifecycle)
+    for cycle in range(3):
+        assert d.module["status"](d.home)["state"] == "STOPPED"
+        d.module["wake"](d.home)
+        assert "EMURU READY" in capsys.readouterr().out
+        assert d.module["status"](d.home)["state"] == "READY"
+        d.module["wake"](d.home)
+        assert len(starts) == 2 * (cycle + 1)
+        d.module["sleep"](d.home)
+        if cycle == 1:
+            # Simulate host restart: new process/module, same stopped disk state.
+            fresh = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+            fresh["wake"].__globals__.update(
+                {
+                    key: d.globals[key]
+                    for key in (
+                        "DEPLOYMENT_ENV",
+                        "saved_deployment",
+                        "valid_qualification",
+                    )
+                }
+            )
+            d.module, d.globals = fresh, fresh["wake"].__globals__
+    assert starts == [["litellm", "ollama"], ["emuru"]] * 3
+    assert {
+        p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in before
+    } == before
+    queue = TelegramQueue(d.queue.path, d.queue.settings, 42, clock=lambda: 100000)
+    try:
+        queue.recover()
+        assert queue.stage(7, [update(1), update(2), update(3)]) == [
+            "completed",
+            "interrupted",
+            "queued",
+        ]
+        assert queue.claim(7)["update_id"] == 3
+        assert queue.claim(7) is None
+        assert "Some actions may already have completed" in queue.terminal_notice(7, 2)
+    finally:
+        queue.close()
+
+
 def test_unconfirmed_worker_stop_keeps_inference(deployment, monkeypatch):
     d = deployment
 

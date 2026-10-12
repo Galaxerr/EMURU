@@ -37,6 +37,10 @@ async def child(directory, mode):
 
     async def execute(payload):
         queue.mark_tools_started(7, payload["update_id"])
+        note = directory / "synthetic-vault" / "00_Inbox" / f"{payload['update_id']}.md"
+        note.parent.mkdir(parents=True, exist_ok=True)
+        with note.open("x") as stream:
+            stream.write("# Synthetic committed tool effect\n")
         events.append("tool_started")
         print("TURN_STARTED", flush=True)
         if mode == "complete":
@@ -121,6 +125,11 @@ def check():
                 queue = queue_at(directory)
                 try:
                     queue.recover()
+                    from telegram_helpers import update
+
+                    assert queue.stage(7, [update(1, "tool")]) == [
+                        "completed" if mode == "complete" else "interrupted"
+                    ]
                     assert queue.status() == {
                         "completed" if mode == "complete" else "interrupted": 1,
                         "queued": 1,
@@ -132,6 +141,9 @@ def check():
                         )
                     assert queue.claim(7)["update_id"] == 2
                     assert queue.claim(7) is None
+                    notes = list((directory / "synthetic-vault/00_Inbox").glob("*.md"))
+                    assert len(notes) == 1 and notes[0].name == "1.md"
+                    assert notes[0].read_text() == "# Synthetic committed tool effect\n"
                 finally:
                     queue.close()
             finally:

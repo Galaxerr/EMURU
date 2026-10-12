@@ -198,7 +198,10 @@ def test_wake_gates_worker_on_checks_and_fresh_ready(tmp_path, monkeypatch):
     assert commands[-1][-1] == "emuru"
 
 
-def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "failed_probe", ["emuru.models.startup", "--check", "--require-real"]
+)
+def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch, failed_probe):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     globals_ = module["wake"].__globals__
     home = tmp_path / "deployment"
@@ -217,7 +220,7 @@ def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch):
             return SimpleNamespace(returncode=3, stdout="inactive\n")
         if "ps" in command:
             return SimpleNamespace(returncode=0, stdout="")
-        if "emuru.models.startup" in command:
+        if failed_probe in command:
             raise __import__("subprocess").CalledProcessError(1, command)
         return SimpleNamespace(returncode=0, stdout="")
 
@@ -225,6 +228,58 @@ def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch):
     with pytest.raises(__import__("subprocess").CalledProcessError):
         module["wake"](home)
     assert not any("--profile" in command for command in calls)
+
+
+@pytest.mark.parametrize("failure", ["no_ready", "exited_after_ready", "logs_failed"])
+def test_failed_current_readiness_stops_worker(tmp_path, monkeypatch, failure, capsys):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(globals_, "time", SimpleNamespace(sleep=lambda _: None))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "systemctl":
+            return SimpleNamespace(returncode=3, stdout="inactive\n")
+        if "ps" in command:
+            return SimpleNamespace(returncode=0, stdout="")
+        if "logs" in command:
+            assert "--since" in command  # Old READY logs cannot satisfy startup.
+            if failure == "logs_failed":
+                raise __import__("subprocess").CalledProcessError(1, command)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="" if failure == "no_ready" else module["READY_CHECKPOINT"],
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    with pytest.raises((ValueError, __import__("subprocess").CalledProcessError)):
+        module["wake"]()
+    assert calls[-1][-2:] == ["stop", "emuru"]
+    assert "EMURU READY" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "code,output", [(1, "unknown"), (0, "activating"), (3, ""), (1, "inactive")]
+)
+def test_uncertain_systemd_state_blocks_docker(tmp_path, monkeypatch, code, output):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=code, stdout=output)
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    with pytest.raises(ValueError, match="Cannot establish systemd poller state"):
+        module["wake"]()
+    assert len(calls) == 1 and calls[0][0] == "systemctl"
 
 
 def test_wake_reuses_running_worker_without_restarting(tmp_path, monkeypatch):

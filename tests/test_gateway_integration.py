@@ -187,12 +187,62 @@ def test_profile_opt_in_and_secret_free_mcp(tmp_path, monkeypatch):
         ("openai-api", "gpt-synthetic", "openai", "OPENAI_API_KEY"),
     ],
 )
-def test_optional_upstream(provider, model, prefix, key):
+def test_optional_upstream(tmp_path, monkeypatch, provider, model, prefix, key):
     route = copy.deepcopy(ROUTE)
     route["primary"] = {"provider": provider, "model": model}
     params = gateway.upstream(route["primary"])
     assert params["model"] == prefix + "/" + model
     assert params["api_key"] == "os.environ/" + key
+    path = tmp_path / "route.json"
+    gateway.write_private(path, json.dumps(route))
+    monkeypatch.setenv("EMURU_CONTAINER_ROUTE", str(path))
+    settings = profile.expected_settings(ROOT)
+    assert settings["model.provider"] == "custom:emuru"
+    assert settings["model.default"] == "emuru"
+    assert settings["model.base_url"] == "http://litellm:4000/v1"
+    assert settings["fallback_providers"] == []
+    assert settings["agent.api_max_retries"] == 0
+    config = yaml.safe_load(gateway.render(route))
+    assert len(config["model_list"]) == 1
+    assert config["model_list"][0]["litellm_params"]["model"] == "emuru_guard/emuru"
+    assert config["router_settings"]["fallbacks"] == []
+
+
+def test_compose_preserves_pins_private_network_and_secret_isolation():
+    import re
+
+    lock = json.loads((ROOT / "infra/docker/deployment-lock.json").read_text())
+    runtime = json.loads((ROOT / "infra/hermes/runtime-lock.json").read_text())
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    assert re.fullmatch(r"[0-9a-f]{40}", runtime["commit"])
+    assert re.fullmatch(r"[0-9a-f]{64}", runtime["installer_sha256"])
+    assert f"git fetch --depth=1 origin {runtime['commit']} " in dockerfile
+    for name in ("python", "uv"):
+        assert lock[name] in dockerfile
+    services = yaml.safe_load((ROOT / "infra/docker/compose.yaml").read_text())[
+        "services"
+    ]
+    for name, service in services.items():
+        assert service["restart"] == "no"
+        assert not service.get("ports") and not service.get("network_mode")
+        assert not service.get("privileged")
+        assert not service.get("env_file")
+        assert not any("KEY" in key for key in service.get("environment", {}))
+        if name in {"litellm", "ollama"}:
+            assert service["image"] == lock[name]
+            assert re.search(r"@sha256:[0-9a-f]{64}$", service["image"])
+        assert all(
+            volume["bind"]["create_host_path"] is False
+            for volume in service.get("volumes", [])
+        )
+    assert services["emuru"]["secrets"] == ["emuru_gateway_key"]
+    assert set(services["litellm"]["secrets"]) == {
+        "emuru_gateway_key",
+        "ollama_api_key",
+        "gemini_api_key",
+        "openai_api_key",
+    }
+    assert not services["ollama"].get("secrets")
 
 
 def test_service_url_requires_explicit_container_opt_in(monkeypatch):

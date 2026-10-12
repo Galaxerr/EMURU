@@ -25,6 +25,7 @@ Thumbs.db
 
 # Graphify
 /graphify-out/
+.codex/
 
 # Real vaults must never enter EMURU
 EMURU-vault/
