@@ -1,3 +1,5 @@
+# Legacy rollback reference only; Compose is the v0.4.0 operator workflow.
+# Keep the installed unit until live cutover acceptance. See docs/RUNBOOK.md.
 [Unit]
 Description=EMURU owner-only Telegram knowledge assistant
 StartLimitIntervalSec=120

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Compose sleep; pass --home /absolute/private/home before the implicit command.
 set -euo pipefail
-systemctl --user stop emuru-telegram.service
-systemctl --user show emuru-telegram.service -p ActiveState -p SubState
+emuru_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+exec "$emuru_root/.venv/bin/python" "$emuru_root/scripts/hermes/container.py" "$@" sleep

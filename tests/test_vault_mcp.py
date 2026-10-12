@@ -6,7 +6,7 @@ from vault_helpers import create_vault, write_note
 
 from emuru.vault.mcp import create_mcp
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("mcp_environment")]
 
 
 @pytest.fixture

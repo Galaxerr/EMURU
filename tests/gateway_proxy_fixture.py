@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from emuru.models import observations
 from emuru.models.gateway import (
     WORKLOAD_REPETITIONS,
     qualification_record,
@@ -267,9 +268,17 @@ def main():
                 except HTTPError as error:
                     return error.code, error.read().decode()
 
+            def observed():
+                logs = os.pread(
+                    log.fileno(), os.fstat(log.fileno()).st_size, 0
+                ).decode()
+                return observations.read(logs, route, socket.gethostname(), 0)
+
             status, body = request()
             assert status == 200 and "primary-answer" in body, (status, body)
             assert counts == {"primary": 1, "local": 0}, counts
+            assert observed()["state"] == "READY", observed()
+            assert observed()["last_used"]["route"] == "primary"
             mode = "local-daemon-down"
             before = dict(counts)
             status, body = request()
@@ -282,11 +291,14 @@ def main():
             status, body = request(True)
             assert status == 200 and "local-answer" in body, (status, body)
             assert counts == {"primary": 3, "local": 1}, counts
+            assert observed()["state"] == "DEGRADED_PRIMARY", observed()
+            assert observed()["last_used"]["route"] == "local"
             for code in (401, 400, 403):
                 mode = "error-" + str(code)
                 before = dict(counts)
                 status, body = request()
                 assert status >= 400, (status, body)
+                assert observed()["state"] == "UNAVAILABLE", observed()
                 assert counts == {
                     "primary": before["primary"] + 1,
                     "local": before["local"],
@@ -385,9 +397,12 @@ def main():
                 "primary": before["primary"] + 1,
                 "local": before["local"],
             }
-            mode = "error-503"
+            assert observed()["state"] == "READY", observed()
             route["fallback"]["qualification"] = None
             save()
+            assert request()[0] == 200
+            assert observed()["state"] == "LOCAL_UNQUALIFIED", observed()
+            mode = "error-503"
             before = dict(counts)
             assert request()[0] >= 400
             assert counts["local"] == before["local"]
@@ -446,6 +461,7 @@ def main():
                 "primary": before["primary"] + 1,
                 "local": before["local"] + 1,
             }
+            assert observed()["state"] == "UNAVAILABLE", observed()
             print(
                 "Pinned proxy HTTP/SSE bounded fallback, retries, eligibility, deadlines, qualification, context, primary recovery: PASS"
             )

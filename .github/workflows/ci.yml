@@ -30,13 +30,13 @@ jobs:
         run: uv sync --locked
 
       - name: Format with Ruff
-        run: uv run ruff format --check .
+        run: uv run --frozen ruff format --check .
 
       - name: Verify lint
-        run: uv run ruff check .
+        run: uv run --frozen ruff check .
 
       - name: Run tests
-        run: uv run pytest -q
+        run: uv run --frozen pytest -q
 
   hermes-baseline:
     name: Hermes baseline contract
@@ -91,10 +91,13 @@ jobs:
               raise SystemExit("Invalid Hermes commit")
           if not re.fullmatch(r"[0-9a-f]{64}", record.get("installer_sha256", "")):
               raise SystemExit("Invalid installer checksum")
-          if record.get("provider") != "gemini":
-              raise SystemExit("Unexpected provider")
-          if record.get("model") != "gemini-3.8-flash":
-              raise SystemExit("Unexpected model")
+          dockerfile = Path("Dockerfile").read_text()
+          if f"git fetch --depth=1 origin {record['commit']} " not in dockerfile:
+              raise SystemExit("Docker Hermes commit differs from runtime lock")
+          pins = json.loads(Path("infra/docker/deployment-lock.json").read_text())
+          for name in ("python", "uv"):
+              if pins[name] not in dockerfile:
+                  raise SystemExit(f"Docker {name} identity differs from deployment lock")
           print("Runtime identity: PASS")
           PY
 
@@ -105,8 +108,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
+      - name: Lifecycle, status and offline native regressions
+        run: >-
+          uv run --frozen pytest -q
+          tests/test_container_launcher.py tests/test_container_startup.py
+          tests/test_container_status.py tests/test_container_check.py
+          tests/test_native_launch.py tests/test_cli_runtime.py
+          tests/telegram
       - name: Gateway routing and profile policy
-        run: uv run --frozen pytest -q tests/test_gateway_integration.py tests/test_qualification.py tests/test_ollama_selection.py tests/test_hermes_profile_adapters.py
+        run: uv run --frozen pytest -q tests/test_gateway_integration.py tests/test_inference_guard.py tests/test_qualification.py tests/test_ollama_selection.py tests/test_hermes_profile_adapters.py
       - name: Deterministic qualification fixture
         run: uv run --frozen python scripts/hermes/qualify.py --fixture
       - name: Compose validation with disposable secrets

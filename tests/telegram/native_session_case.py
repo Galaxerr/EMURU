@@ -132,6 +132,29 @@ async def check(run, adapter, bridge, directory):
         assert marker in json.dumps(store.load_transcript(old))
         bridge.queue.stage(bot.id, [updates[1]], bot.username)
         assert not await bridge.once() and len(transitions) == 1
+        histories = {sid: store.load_transcript(sid) for sid in (old, new)}
+        db.close()
+        db = SessionDB(root / "state.db")
+        recreated = IsolatedStore(config.sessions_dir, config)
+        recreated._db = db
+        assert {sid: recreated.load_transcript(sid) for sid in (old, new)} == histories
+
+        if adapter._update_receipt_flush is not None:
+            await adapter._update_receipt_flush
+        receipts = bridge.execution._receipts
+        replacement = NS(
+            _update_receipt_dir=adapter._update_receipt_dir,
+            _update_receipts_loaded=set(),
+            _seen_update_ids={},
+        )
+        receipts._load_receipts(replacement, bot.id)
+        assert {f"{bot.id}:{uid}" for uid in (1, 2, 31, 32, 33)}.issubset(
+            replacement._seen_update_ids
+        )
+        receipt_path = receipts._receipt_path(adapter, bot.id)
+        before = receipt_path.read_bytes(), receipt_path.stat().st_mtime_ns
+        receipts._load_receipts(replacement, bot.id)
+        assert (receipt_path.read_bytes(), receipt_path.stat().st_mtime_ns) == before
     finally:
         db.close()
 

@@ -41,7 +41,7 @@ def test_backend_keeps_environment_isolated(tmp_path, monkeypatch):
     }
 
 
-def test_hermes_real_stdio_contract():
+def test_hermes_real_stdio_contract(mcp_environment):
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [sys.executable, str(root / "scripts/hermes/vault.py"), "check"],

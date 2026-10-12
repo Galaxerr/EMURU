@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -96,10 +97,12 @@ def fixture():
                 assert body["tools"][0]["function"]["name"] == "connection_probe"
                 message["tool_calls"] = [
                     {
+                        "id": "call_synthetic_1",
+                        "type": "function",
                         "function": {
                             "name": "connection_probe",
                             "arguments": {"message": "ping"},
-                        }
+                        },
                     }
                 ]
             self.send_response(200)
@@ -180,8 +183,13 @@ def seed():
                 "text": "disposable persistence check",
             },
         }
-        assert queue.stage(7, [update]) == ["queued"]
-        assert queue.status() == {"queued": 1}
+        updates = [{**update, "update_id": uid} for uid in (1, 2, 3)]
+        assert queue.stage(7, updates) == ["queued"] * 3
+        completed = queue.claim(7)
+        queue.finish(completed["sequence"], True)
+        queue.claim(7)
+        queue.mark_tools_started(7, 2)
+        assert queue.status() == {"completed": 1, "started": 1, "queued": 1}
     finally:
         queue.close()
 
@@ -193,13 +201,16 @@ def snapshot():
     database = home / "emuru-telegram/queue.sqlite3"
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
         rows = db.execute("SELECT * FROM updates ORDER BY sequence").fetchall()
-    assert rows and len(rows) == 1
+    assert len(rows) == 3
     payload = {
         "receipts": rows,
         "files": {
             name: hashlib.sha256((home / name).read_bytes()).hexdigest()
             for name in ("synthetic-history.json", "config.yaml", "SOUL.md")
         },
+        "route": hashlib.sha256(
+            Path(os.environ["EMURU_CONTAINER_ROUTE"]).read_bytes()
+        ).hexdigest(),
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     print(digest)
@@ -233,7 +244,7 @@ def profile_lifecycle():
     first = snapshot()
     assert snapshot() == first
     print(
-        "Profile/history and queued receipt survive application recreation: PASS",
+        "Profile/history, route and completed/uncertain/pending receipts survive application recreation: PASS",
         flush=True,
     )
     subprocess.run(["scripts/hermes/telegram.sh", "--status"], check=True)
@@ -396,7 +407,21 @@ def verify(config_only=False):
     }
     override = {
         "services": {
-            "emuru": {"volumes": [mount]},
+            "emuru": {
+                "volumes": [
+                    mount,
+                    *[
+                        {
+                            "type": "bind",
+                            "source": daemon_path(root / path),
+                            "target": "/opt/emuru/" + path,
+                            "read_only": True,
+                            "bind": {"create_host_path": False},
+                        }
+                        for path in ("src", "infra/hermes", "tests")
+                    ],
+                ]
+            },
             "litellm": {"ports": ["127.0.0.1::4000"]},
         }
     }
@@ -521,6 +546,13 @@ def verify(config_only=False):
         )
         print("Pinned Hermes native inference: PASS", flush=True)
         print(
+            app(
+                "/opt/emuru/.venv/bin/python",
+                "/opt/emuru/tests/telegram_shutdown_fixture.py",
+            ),
+            flush=True,
+        )
+        print(
             app("/opt/hermes/.venv/bin/python", "/check.py", "profile-lifecycle"),
             flush=True,
         )
@@ -557,6 +589,19 @@ def verify(config_only=False):
             extra=extra,
         )
         address = "http://" + compose("port", "litellm", "4000", extra=extra)
+        compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "litellm",
+            "python",
+            "-m",
+            "emuru.models.startup",
+            extra=extra,
+        )
+        print(
+            "Selected primary / authenticated gateway startup probe: PASS", flush=True
+        )
 
         def attempts():
             return json.loads(
@@ -570,6 +615,8 @@ def verify(config_only=False):
                     extra=extra,
                 )
             )["attempts"]
+
+        assert attempts() == 2
 
         def request(token, model="emuru", content="fail"):
             headers = {"Content-Type": "application/json"}
@@ -597,14 +644,110 @@ def verify(config_only=False):
         # This pinned DB-free proxy rejects non-master keys with HTTP 400 (no_db_connection).
         assert request("sk-wrong") in (400, 401, 403)
         assert request(key, model="unknown") in (400, 404)
-        assert attempts() == 0
-        print(app("/opt/hermes/.venv/bin/python", "/check.py", "native"), flush=True)
         assert attempts() == 2
+        print(app("/opt/hermes/.venv/bin/python", "/check.py", "native"), flush=True)
+        assert attempts() == 4
         assert request(key) >= 400
-        assert attempts() == 3
+        assert attempts() == 5
         assert key not in compose("logs", "--no-color", extra=extra)
         print(
             "Gateway auth / alias rejection / one attempt per request / secret-free logs: PASS",
+            flush=True,
+        )
+        # Exercise the operator interfaces against this disposable project only.
+        lifecycle = deployment["status"].__globals__
+        lifecycle["DEPLOYMENT_ENV"] = private / "deployment.env"
+        lifecycle["PROJECT_NAME"] = private.name
+        lifecycle["docker_compose"] = lambda *args: compose(*args, extra=extra)
+        report = deployment["status"](private)
+        assert report["state"] == "UNAVAILABLE", report
+        assert report["last_used"] and report["last_used"]["route"] == "primary", report
+        override["services"]["emuru"]["command"] = [
+            "/opt/emuru/.venv/bin/python",
+            "/opt/emuru/tests/telegram_shutdown_fixture.py",
+            "--child",
+            "/state/shutdown-check",
+            "timeout",
+        ]
+        write_private(private / "check.yaml", yaml.safe_dump(override))
+        compose(
+            "--profile",
+            "agent",
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "emuru",
+            extra=extra,
+        )
+        for _ in range(50):
+            if "TURN_STARTED" in compose("logs", "--no-color", "emuru", extra=extra):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("Synthetic worker did not start")
+        report = deployment["status"](private)
+        assert report["state"] == "UNKNOWN", (
+            report
+        )  # Process health is not guarded readiness.
+        assert report["last_used"]["route"] == "primary"
+        for _ in range(2):
+            deployment["sleep"](private)
+            assert deployment["status"](private)["state"] == "STOPPED"
+        from emuru.telegram.queue import diagnostics
+
+        assert diagnostics(private / "state/shutdown-check/queue.sqlite3")["queue"] == {
+            "interrupted": 1,
+            "queued": 1,
+        }
+        print(
+            "Docker status / ordered repeated sleep / interrupted receipts: PASS",
+            flush=True,
+        )
+        override["services"]["emuru"]["command"][-2] = "/state/forced-check"
+        write_private(private / "check.yaml", yaml.safe_dump(override))
+        compose(
+            "--profile",
+            "agent",
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--force-recreate",
+            "emuru",
+            extra=extra,
+        )
+        for _ in range(50):
+            if "TURN_STARTED" in compose("logs", "--no-color", "emuru", extra=extra):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("Synthetic forced-stop worker did not start")
+        compose("kill", "--signal", "SIGKILL", "emuru", extra=extra)
+        forced = private / "state/forced-check/queue.sqlite3"
+        assert diagnostics(forced)["queue"] == {"started": 1, "queued": 1}
+        from emuru.telegram.queue import TelegramQueue, load_telegram_settings
+
+        queue = TelegramQueue(
+            forced,
+            load_telegram_settings(root / "infra/hermes/telegram-settings.json"),
+            42,
+            clock=lambda: 100000,
+        )
+        try:
+            queue.recover()
+            assert queue.status() == {"interrupted": 1, "queued": 1}
+            assert "Some actions may already have completed" in queue.terminal_notice(
+                7, 1
+            )
+            assert queue.claim(7)["update_id"] == 2
+            assert queue.claim(7) is None
+        finally:
+            queue.close()
+        deployment["sleep"](private)
+        assert deployment["status"](private)["state"] == "STOPPED"
+        print(
+            "Docker forced termination / recreation / uncertain no-replay recovery: PASS",
             flush=True,
         )
     finally:

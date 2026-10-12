@@ -39,6 +39,8 @@ class TelegramWorker:
             raise RuntimeError("Telegram intake stopped after a durable queue failure")
         if self.retired:
             raise RuntimeError("An interrupted native turn requires a gateway restart")
+        if self._stopping:
+            raise RuntimeError("Telegram intake is stopping")
 
     def start(self):
         self.ensure_accepting()
@@ -89,7 +91,9 @@ class TelegramWorker:
 
     async def local_status(self):
         bot, username = self.execution.identity()
-        while row := self.queue.claim(bot, username, local_status=True):
+        while not self._stopping and (
+            row := self.queue.claim(bot, username, local_status=True)
+        ):
             try:
                 health = self.health_error or (
                     "consumer_running"
@@ -109,11 +113,15 @@ class TelegramWorker:
                 self.queue.finish(row["sequence"], True)
 
     async def once(self):
+        if self._stopping:
+            return False
         if self.retired:
             raise RuntimeError("An interrupted native turn requires a gateway restart")
         await self.local_status()
         # Readiness is opaque: the adapter waits before a durable claim is made.
         await self.execution.wait_ready()
+        if self._stopping:
+            return False
         bot, username = self.execution.identity()
         row = self.queue.claim_report(bot)
         if row:
@@ -150,14 +158,21 @@ class TelegramWorker:
 
     async def run(self):
         self._running.set()
-        while True:
+        while not self._stopping:
             self._wake.clear()
             while await self.once():
                 pass
-            await self._wake.wait()
+            if not self._stopping:
+                await self._wake.wait()
 
-    async def stop(self):
+    def stop_admission(self):
         self._stopping = True
+        self._wake.set()
+
+    async def stop(self, *, grace=0):
+        self.stop_admission()
+        if self._task and not self._task.done() and grace > 0:
+            await asyncio.wait({self._task}, timeout=grace)
         if self._task and not self._task.done():
             self._task.cancel()
             try:

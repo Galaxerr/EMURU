@@ -85,7 +85,6 @@ def test_container_initializer_creates_private_deployment(tmp_path, monkeypatch)
     (tmp_path / ".env").write_text(f"EMURU_VAULT_PATH={vault}\n")
     (tmp_path / ".env").chmod(0o600)
     monkeypatch.setattr(os, "environ", {})
-    monkeypatch.setattr(sys, "argv", ["container.py", "up"])
     commands = []
 
     def run(command, check):
@@ -93,18 +92,9 @@ def test_container_initializer_creates_private_deployment(tmp_path, monkeypatch)
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(module["subprocess"], "run", run)
-    initialized = []
-    initialize = module["initialize"]
-
-    def prepare(*args):
-        initialized.append(args)
-        return initialize(*args)
-
-    monkeypatch.setitem(globals_, "initialize", prepare)
-    module["main"]()
-    assert len(initialized) == 1
+    module["compose"](home, "config", "--quiet")
     assert len(commands) == 1
-    assert commands[0][-3:] == ["up", "-d", "--build"]
+    assert commands[0][-2:] == ["config", "--quiet"]
     assert all(command[-2:] != ["build", "emuru"] for command in commands)
     assert all(
         command[command.index("--env-file") + 1] == str(env_path)
@@ -119,14 +109,266 @@ def test_container_initializer_creates_private_deployment(tmp_path, monkeypatch)
     history = home / "profiles/emuru/history.txt"
     history.write_text("saved conversation")
     gateway_key = (home / "gateway.key").read_text()
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in (env_path, *home.rglob("*"))
+        if path.is_file()
+    }
     assert module["initialize"](home) == env_path
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before
+    } == before
     assert history.read_text() == "saved conversation"
     assert (home / "gateway.key").read_text() == gateway_key
     assert "EMURU_TELEGRAM_OWNER_ID=42" in env_path.read_text()
+    gateway.write_private(home / "route.json", "{}")
+    with pytest.raises(ValueError, match="Invalid route shape"):
+        module["saved_deployment"](home)
+    assert len(commands) == 1
+
+
+def test_wake_checks_saved_state_and_never_starts_while_systemd_active(
+    tmp_path, monkeypatch
+):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    home = tmp_path / "deployment"
+    home.mkdir(mode=0o700)
+    monkeypatch.setitem(
+        globals_,
+        "saved_deployment",
+        lambda requested: {"EMURU_PROFILE": str(home / "profiles/emuru")},
+    )
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="active\n")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    with pytest.raises(ValueError, match="Systemd Telegram poller is active"):
+        module["wake"](home)
+    assert len(calls) == 1
+    assert calls[0][:3] == ["systemctl", "--user", "is-active"]
+
+
+def test_wake_gates_worker_on_checks_and_fresh_ready(tmp_path, monkeypatch):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    home = tmp_path / "deployment"
+    home.mkdir(mode=0o700)
+    monkeypatch.setitem(
+        globals_,
+        "saved_deployment",
+        lambda requested: {"EMURU_PROFILE": str(home / "profiles/emuru")},
+    )
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    monkeypatch.setitem(globals_, "COMPOSE_FILE", tmp_path / "compose.yaml")
+    monkeypatch.setitem(globals_, "time", SimpleNamespace(sleep=lambda _: None))
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[0] == "systemctl":
+            return SimpleNamespace(returncode=3, stdout="inactive\n")
+        if "ps" in command:
+            return SimpleNamespace(
+                returncode=0, stdout="" if len(commands) == 2 else "emuru\n"
+            )
+        if "logs" in command:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="EMURU Telegram checkpoint: required guards and five MCP tools READY\n",
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    module["wake"](home)
+    assert any(
+        command[-3:] == ["python", "-m", "emuru.models.startup"] for command in commands
+    )
+    assert any(
+        command[-2:] == ["scripts/hermes/telegram.sh", "--check"]
+        for command in commands
+    )
+    assert commands.index(
+        next(command for command in commands if "emuru.models.startup" in command)
+    ) < commands.index(next(command for command in commands if "--profile" in command))
+    assert commands[-1][-1] == "emuru"
 
 
 @pytest.mark.parametrize(
-    "command,arguments", [("down", ["down", "--remove-orphans"]), ("status", ["ps"])]
+    "failed_probe", ["emuru.models.startup", "--check", "--require-real"]
+)
+def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch, failed_probe):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    home = tmp_path / "deployment"
+    home.mkdir(mode=0o700)
+    monkeypatch.setitem(
+        globals_,
+        "saved_deployment",
+        lambda requested: {"EMURU_PROFILE": str(home / "profiles/emuru")},
+    )
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "systemctl":
+            return SimpleNamespace(returncode=3, stdout="inactive\n")
+        if "ps" in command:
+            return SimpleNamespace(returncode=0, stdout="")
+        if failed_probe in command:
+            raise __import__("subprocess").CalledProcessError(1, command)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    with pytest.raises(__import__("subprocess").CalledProcessError):
+        module["wake"](home)
+    assert not any("--profile" in command for command in calls)
+
+
+@pytest.mark.parametrize("failure", ["no_ready", "exited_after_ready", "logs_failed"])
+def test_failed_current_readiness_stops_worker(tmp_path, monkeypatch, failure, capsys):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(globals_, "time", SimpleNamespace(sleep=lambda _: None))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "systemctl":
+            return SimpleNamespace(returncode=3, stdout="inactive\n")
+        if "ps" in command:
+            return SimpleNamespace(returncode=0, stdout="")
+        if "logs" in command:
+            assert "--since" in command  # Old READY logs cannot satisfy startup.
+            if failure == "logs_failed":
+                raise __import__("subprocess").CalledProcessError(1, command)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="" if failure == "no_ready" else module["READY_CHECKPOINT"],
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    with pytest.raises((ValueError, __import__("subprocess").CalledProcessError)):
+        module["wake"]()
+    assert calls[-1][-2:] == ["stop", "emuru"]
+    assert "EMURU READY" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "code,output", [(1, "unknown"), (0, "activating"), (3, ""), (1, "inactive")]
+)
+def test_uncertain_systemd_state_blocks_docker(tmp_path, monkeypatch, code, output):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=code, stdout=output)
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    with pytest.raises(ValueError, match="Cannot establish systemd poller state"):
+        module["wake"]()
+    assert len(calls) == 1 and calls[0][0] == "systemctl"
+
+
+def test_wake_reuses_running_worker_without_restarting(tmp_path, monkeypatch):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=3 if command[0] == "systemctl" else 0,
+            stdout="inactive\n" if command[0] == "systemctl" else "emuru\n",
+        )
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    module["wake"]()
+    assert len(calls) == 2
+    assert calls[-1][-5:] == ["ps", "--status", "running", "--services", "emuru"]
+
+
+def test_lifecycle_lock_rejects_second_operator(tmp_path, monkeypatch):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    monkeypatch.setitem(
+        module["lifecycle_lock"].__globals__,
+        "DEPLOYMENT_ENV",
+        tmp_path / "deployment.env",
+    )
+    with (
+        module["lifecycle_lock"](),
+        pytest.raises(BlockingIOError),
+        module["lifecycle_lock"](),
+    ):
+        pytest.fail("Concurrent lifecycle operation acquired lock")
+
+
+def test_init_prepares_profile_before_manual_wake(tmp_path, monkeypatch):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    globals_ = module["main"].__globals__
+    home = tmp_path / "deployment"
+    monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
+    monkeypatch.setattr(sys, "argv", ["container.py", "--home", str(home), "init"])
+    calls = []
+    monkeypatch.setitem(
+        globals_, "initialize", lambda *args: calls.append("initialize")
+    )
+    monkeypatch.setitem(globals_, "compose", lambda *args: calls.append(args[1:]))
+    module["main"]()
+    assert calls == [
+        "initialize",
+        ("pull", "--policy", "missing", "ollama", "litellm"),
+        ("build", "emuru"),
+        (
+            "run",
+            "--rm",
+            "--no-deps",
+            "emuru",
+            "uv",
+            "run",
+            "--frozen",
+            "--no-sync",
+            "python",
+            "scripts/hermes/vault.py",
+            "prepare",
+        ),
+        (
+            "run",
+            "--rm",
+            "--no-deps",
+            "emuru",
+            "uv",
+            "run",
+            "--frozen",
+            "--no-sync",
+            "python",
+            "scripts/hermes/vault-profile.py",
+            "--apply",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "command,arguments",
+    [
+        ("down", ["down", "--remove-orphans"]),
+        ("status", ["ps", "--all", "--quiet"]),
+        ("sleep", ["ps", "--all", "--quiet"]),
+    ],
 )
 def test_saved_deployment_operates_without_vault_or_initialization(
     tmp_path, monkeypatch, command, arguments
@@ -136,9 +378,14 @@ def test_saved_deployment_operates_without_vault_or_initialization(
     home = tmp_path / "custom-deployment"
     home.mkdir()
     metadata = tmp_path / "deployment.env"
-    metadata.write_text(
-        f"EMURU_PROFILE={home}/profiles/emuru\nEMURU_VAULT={tmp_path}/missing-vault\n"
+    values = {key: str(home / path) for key, path in module["DEPLOYMENT_PATHS"].items()}
+    values.update(
+        EMURU_VAULT=str(tmp_path / "missing-vault"),
+        EMURU_UID=str(os.getuid()),
+        EMURU_GID=str(os.getgid()),
+        EMURU_TELEGRAM_OWNER_ID="42",
     )
+    metadata.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
     metadata.chmod(0o600)
     secret = home / "gateway.key"
     secret.write_text("saved-key")
@@ -164,11 +411,12 @@ def test_saved_deployment_operates_without_vault_or_initialization(
         module["subprocess"],
         "run",
         lambda command, **kwargs: (
-            executed.append(command) or SimpleNamespace(returncode=0)
+            executed.append(command) or SimpleNamespace(returncode=0, stdout="")
         ),
     )
     module["main"]()
-    assert len(executed) == 1 and executed[0][-len(arguments) :] == arguments
+    assert executed[-1][-len(arguments) :] == arguments
+    assert all("systemctl" not in call for call in executed)
     assert executed[0][executed[0].index("--env-file") + 1] == str(metadata)
     assert {
         path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)

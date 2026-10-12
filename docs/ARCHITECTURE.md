@@ -1,4 +1,4 @@
-# EMURU architecture — v0.3.4
+# EMURU architecture — v0.4.0
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
 vault through five constrained MCP tools. Telegram adds durable owner-only
@@ -60,7 +60,7 @@ use only stdlib; MCP and YAML dependencies stay in EMURU's vault environment.
 
 The workspace-root `.env` is the source for external API keys and the Telegram
 token. Launch tools load it only when it is owner-owned and mode `0600`;
-process-environment values take precedence. Docker initialization syncs only the
+process-environment values take precedence. First Docker initialization syncs only the
 needed credentials into mode-`0600` Compose secret files and the private Hermes
 profile. The generated gateway key also lives in the root `.env`; Docker gets
 separate copies for the app and LiteLLM. The MCP child receives none of these keys.
@@ -115,7 +115,7 @@ uses the installed pinned Hermes/PTB session implementation with synthetic
 HTTP/provider behavior. Hosted CI does not prove live deployment acceptance.
 
 Follow [README](../README.md) for setup and [RUNBOOK](RUNBOOK.md) for migration,
-service lifecycle and recovery. [Release evidence](releases/v0.3.4-report.md)
+service lifecycle and recovery. [Release evidence](releases/v0.4.0-report.md)
 separates container checks from live acceptance.
 
 ## Gateway and containers
@@ -167,9 +167,39 @@ the private directory layout, key generation, route copy, proxy rendering,
 Compose environment and lifecycle delegation. Private data defaults to
 `$HOME/.local/state/emuru/container`; Compose metadata stays in
 `infra/docker/deployment.env`, including when `--home` selects another root.
-Rebuilds initialize that layout and reuse existing state. Its interface is
-intentionally small (`init`, `config`, `up`, `down`, `status`); route selection
-and model qualification remain behind the existing explicit picker seam.
+Initialization is explicit and separate from routine operation. Existing deployment
+metadata is reused and validated; repeated initialization does not rewrite secrets,
+routes or the owner. The interface is `init`, `config`, `wake`, `sleep`, `status`,
+`up` (wake alias), and `down` (drain, stop, then remove containers without deleting
+bind state). `scripts/service/{wake,sleep,status}.sh` delegate to this seam.
+
+Wake holds a private lifecycle lock, rejects active or inconclusive systemd state,
+checks infrastructure and authenticated primary routing, selected model and local
+qualification state, checks Telegram/profile/vault bindings, and requires a new
+worker READY checkpoint. An already-running worker is left untouched. Wake uses
+existing images only. Qualification remains an explicit operator action.
+
+Shutdown closes polling admission and new claims before draining the active owner
+turn within its 600-second bound. Compose grants 660 seconds for cleanup. The worker
+must be confirmed stopped before inference stops. Forced termination preserves
+receipts; recovery reports started work as uncertain rather than replaying it.
+Every service uses `restart: "no"`; reboot does not authorize automatic intake.
+
+Status does not initialize, take the lifecycle lock, recover/prune receipts, exec
+containers or issue inference. Observations bind timestamps to container identity;
+stale or inconclusive data yields `UNKNOWN`. States are `READY`, `DEGRADED_PRIMARY`,
+`LOCAL_UNQUALIFIED`, `UNAVAILABLE`, `STOPPED`, and `UNKNOWN`. `last_used` records a
+historical route, not current readiness. Infrastructure health alone is insufficient.
+
+Migration is an operator-controlled transfer of verified stopped state, not an
+initializer feature. Preserve the entire private profile, SQLite sidecars, native
+history, runtime/workspace, bindings, configuration and model-cache identity together.
+Compare existing host and Docker receipts before choosing a source. Divergent histories
+block replacement until reconciled; timestamps and counts alone cannot establish
+receipt continuity. Rollback transfers the newest stopped state and restores only
+host-specific bindings. Never overwrite newer effects with a pre-cutover queue.
+The installed systemd unit remains available until live acceptance; the repository
+template is retained solely as a rollback reference. See the runbook for checkpoints.
 
 The container checker replaces Ollama with a deterministic native-chat fixture
 only in its disposable Compose project. Proxy authentication, structured tool

@@ -1,6 +1,7 @@
 """Initialize and operate the isolated EMURU Docker deployment."""
 
 import argparse
+import fcntl
 import json
 import os
 import secrets
@@ -8,16 +9,28 @@ import shlex
 import stat
 import subprocess
 import tempfile
+import time
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from emuru.environment import load_env, write_env
-from emuru.models.gateway import private_path, read_route, render, write_private
+from emuru.models import observations
+from emuru.models.gateway import (
+    private_path,
+    read_route,
+    render,
+    valid_qualification,
+    write_private,
+)
+from emuru.telegram.queue import QueueDiagnosticsError, diagnostics
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = ROOT / "infra/docker/compose.yaml"
 DEFAULT_HOME = Path.home() / ".local/state/emuru/container"
 DEPLOYMENT_ENV = ROOT / "infra/docker/deployment.env"
 CONTAINER_VAULT_PATH = Path("/state/vault")
+PROJECT_NAME = "emuru"
 
 UPSTREAM_KEYS = {
     "ollama": "OLLAMA_API_KEY",
@@ -43,6 +56,23 @@ PRIVATE_DIRECTORIES = (
     "EMURU_RUNTIME",
     "EMURU_OLLAMA_STATE",
 )
+
+
+@contextmanager
+def lifecycle_lock():
+    path = DEPLOYMENT_ENV.with_suffix(".lock")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+") as stream:
+        info = os.fstat(fd)
+        if (
+            info.st_uid != os.getuid()
+            or not stat.S_ISREG(info.st_mode)
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+        ):
+            raise ValueError("Lifecycle lock permissions mismatch")
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
 
 
 def deployment_home(value=None):
@@ -129,6 +159,13 @@ def initialize(
     home=None, route_source=None, telegram_owner_id=None, workspace_env=None
 ):
     """Create one private deployment and return its Compose environment path."""
+    if DEPLOYMENT_ENV.exists():
+        saved_deployment(home)
+        if route_source is not None or telegram_owner_id is not None:
+            raise ValueError(
+                "Deployment already initialized; edit private state explicitly"
+            )
+        return DEPLOYMENT_ENV
     if workspace_env is not None:
         workspace_env = private_path(workspace_env)
         load_env(workspace_env)
@@ -202,10 +239,11 @@ def initialize(
     return env_path
 
 
-def compose(
-    home, *arguments, route_source=None, telegram_owner_id=None, workspace_env=None
-):
-    if arguments[:1] in {("down",), ("ps",)}:
+def compose(home, *arguments):
+    if arguments[:1] in {("config",), ("run",), ("build",), ("pull",), ("logs",)}:
+        saved_deployment(home)
+        env_path = DEPLOYMENT_ENV
+    elif arguments[:1] in {("down",), ("ps",)}:
         env_path = private_path(DEPLOYMENT_ENV)
         info = env_path.stat()
         if (
@@ -227,12 +265,12 @@ def compose(
             if shlex.split(saved) != [expected]:
                 raise ValueError("Saved deployment does not match the requested home")
     else:
-        env_path = initialize(home, route_source, telegram_owner_id, workspace_env)
+        raise ValueError("Unsupported Compose operation")
     command = [
         "docker",
         "compose",
         "--project-name",
-        "emuru",
+        PROJECT_NAME,
         "--env-file",
         str(env_path),
         "-f",
@@ -240,6 +278,448 @@ def compose(
         *arguments,
     ]
     return subprocess.run(command, check=True).returncode
+
+
+def deployment_metadata(home=None):
+    """Read bindings even when the vault or runtime services are unavailable."""
+    env_path = private_path(DEPLOYMENT_ENV)
+    info = env_path.stat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        raise ValueError("Deployment metadata must be owner-owned and mode 0600")
+    values = {}
+    for line in env_path.read_text().splitlines():
+        key, separator, raw = line.partition("=")
+        if (
+            not separator
+            or key in values
+            or key
+            not in {
+                "EMURU_UID",
+                "EMURU_GID",
+                "EMURU_TELEGRAM_OWNER_ID",
+                "EMURU_VAULT",
+                *DEPLOYMENT_PATHS,
+            }
+        ):
+            raise ValueError("Invalid deployment metadata")
+        parsed = shlex.split(raw)
+        if len(parsed) != 1:
+            raise ValueError("Invalid deployment metadata")
+        values[key] = parsed[0]
+    if set(values) != {
+        "EMURU_UID",
+        "EMURU_GID",
+        "EMURU_TELEGRAM_OWNER_ID",
+        "EMURU_VAULT",
+        *DEPLOYMENT_PATHS,
+    }:
+        raise ValueError("Incomplete deployment metadata")
+    if values["EMURU_UID"] != str(os.getuid()) or values["EMURU_GID"] != str(
+        os.getgid()
+    ):
+        raise ValueError("Deployment identity mismatch")
+    owner = values["EMURU_TELEGRAM_OWNER_ID"]
+    if not owner.isascii() or not owner.isdecimal() or int(owner) <= 0:
+        raise ValueError("Invalid Telegram owner")
+    profile = private_path(values["EMURU_PROFILE"])
+    if profile.name != "emuru" or profile.parent.name != "profiles":
+        raise ValueError("Invalid deployment profile path")
+    saved_home = profile.parents[1]
+    if profile != saved_home / "profiles/emuru" or (
+        (home is not None or os.environ.get("EMURU_CONTAINER_HOME"))
+        and saved_home != deployment_home(home)
+    ):
+        raise ValueError("Saved deployment does not match the requested home")
+    for key, relative in DEPLOYMENT_PATHS.items():
+        if private_path(values[key]) != saved_home / relative:
+            raise ValueError("Deployment path mismatch")
+    return values
+
+
+def saved_deployment(home=None):
+    """Read the initialized deployment without changing private files."""
+    values = deployment_metadata(home)
+    profile = Path(values["EMURU_PROFILE"])
+    saved_home = profile.parents[1]
+    home_info = saved_home.stat()
+    if home_info.st_uid != os.getuid() or stat.S_IMODE(home_info.st_mode) != 0o700:
+        raise ValueError("Deployment home permissions mismatch")
+    for key, relative in DEPLOYMENT_PATHS.items():
+        path = private_path(values[key])
+        if path != saved_home / relative:
+            raise ValueError("Deployment path mismatch")
+        info = path.stat()
+        mode = 0o700 if key in PRIVATE_DIRECTORIES else 0o600
+        if (
+            info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != mode
+            or not (
+                stat.S_ISDIR(info.st_mode)
+                if key in PRIVATE_DIRECTORIES
+                else stat.S_ISREG(info.st_mode)
+            )
+        ):
+            raise ValueError("Deployment permissions mismatch")
+    route = read_route(values["EMURU_ROUTE"])
+    if Path(values["EMURU_GATEWAY_CONFIG"]).read_text() != render(route):
+        raise ValueError("Gateway config does not match selected route")
+    target = profile / "vault-target.json"
+    info = target.stat()
+    if (
+        info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or json.loads(target.read_text())
+        != {"mode": "real", "vault_path": str(CONTAINER_VAULT_PATH)}
+    ):
+        raise ValueError("Private vault target mismatch")
+    vault = private_path(values["EMURU_VAULT"])
+    if (
+        not vault.is_dir()
+        or not (vault / ".git").exists()
+        or not (vault / "00_Inbox").is_dir()
+    ):
+        raise ValueError("Saved vault unavailable")
+    return values
+
+
+def wake(home=None):
+    with lifecycle_lock():
+        saved_deployment(home)
+        service = subprocess.run(
+            ["systemctl", "--user", "is-active", "emuru-telegram.service"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if service.returncode not in (0, 3) or service.stdout.strip() not in (
+            "active",
+            "inactive",
+            "failed",
+        ):
+            raise ValueError("Cannot establish systemd poller state")
+        if service.stdout.strip() == "active":
+            raise ValueError("Systemd Telegram poller is active")
+        command = [
+            "docker",
+            "compose",
+            "--project-name",
+            PROJECT_NAME,
+            "--env-file",
+            str(DEPLOYMENT_ENV),
+            "-f",
+            str(COMPOSE_FILE),
+        ]
+        running = subprocess.run(
+            [*command, "ps", "--status", "running", "--services", "emuru"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if running.stdout.strip() == "emuru":
+            print("EMURU worker already running; no second poller started")
+            return
+        if running.stdout.strip():
+            raise ValueError("Unexpected Compose worker state")
+        subprocess.run(
+            [
+                *command,
+                "up",
+                "-d",
+                "--wait",
+                "--wait-timeout",
+                "180",
+                "--pull",
+                "never",
+                "--no-build",
+                "ollama",
+                "litellm",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                *command,
+                "run",
+                "--rm",
+                "--no-deps",
+                "litellm",
+                "python",
+                "-m",
+                "emuru.models.startup",
+            ],
+            check=True,
+        )
+        for args in (
+            ("scripts/hermes/telegram.sh", "--check"),
+            (
+                "/opt/emuru/.venv/bin/python",
+                "scripts/hermes/vault.py",
+                "target",
+                "--require-real",
+            ),
+        ):
+            subprocess.run(
+                [*command, "run", "--rm", "--no-deps", "emuru", *args], check=True
+            )
+        started = datetime.now(UTC).isoformat()
+        ready = False
+        try:
+            subprocess.run(
+                [
+                    *command,
+                    "--profile",
+                    "agent",
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--no-build",
+                    "emuru",
+                ],
+                check=True,
+            )
+            for _ in range(60):
+                worker = subprocess.run(
+                    [*command, "logs", "--no-color", "--since", started, "emuru"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                if (
+                    "EMURU Telegram checkpoint: required guards and five MCP tools READY"
+                    in worker.stdout
+                ):
+                    break
+                running = subprocess.run(
+                    [*command, "ps", "--status", "running", "--services", "emuru"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                if not running.stdout.strip():
+                    break
+                time.sleep(1)
+            else:
+                worker = None
+            if (
+                worker is None
+                or "EMURU Telegram checkpoint: required guards and five MCP tools READY"
+                not in worker.stdout
+            ):
+                raise ValueError("Guarded worker did not reach READY")
+            running = subprocess.run(
+                [*command, "ps", "--status", "running", "--services", "emuru"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if running.stdout.strip() != "emuru":
+                raise ValueError("Guarded worker exited after READY")
+            ready = True
+        finally:
+            if not ready:
+                subprocess.run([*command, "stop", "emuru"], check=True)
+        print("EMURU READY")
+
+
+READY_CHECKPOINT = "EMURU Telegram checkpoint: required guards and five MCP tools READY"
+SERVICES = ("emuru", "litellm", "ollama")
+STOPPED_STATES = {"exited", "created", "dead"}
+
+
+def docker_compose(*arguments):
+    return subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--project-name",
+            PROJECT_NAME,
+            "--env-file",
+            str(DEPLOYMENT_ENV),
+            "-f",
+            str(COMPOSE_FILE),
+            *arguments,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def containers():
+    identifiers = docker_compose("ps", "--all", "--quiet").split()
+    if not identifiers:
+        return {}
+    # Request only runtime metadata; never inspect environment or mount paths.
+    template = (
+        '{"id":{{json .Id}},"instance":{{json .Config.Hostname}},'
+        '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
+        '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+        '"oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}},'
+        '"status":{{json .State.Status}},"started":{{json .State.StartedAt}},'
+        '"health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}}}'
+    )
+    result = subprocess.run(
+        ["docker", "inspect", "--format", template, *identifiers],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    found = {}
+    for line in result.stdout.splitlines():
+        item = json.loads(line)
+        name = item["service"]
+        if item["oneoff"] == "True":
+            continue
+        if item["project"] != PROJECT_NAME or name not in SERVICES or name in found:
+            raise ValueError("Unexpected deployment containers")
+        if item["status"] not in STOPPED_STATES | {
+            "running",
+            "restarting",
+            "paused",
+            "removing",
+        }:
+            raise ValueError("Unknown container state")
+        found[name] = item
+    if not found:
+        raise ValueError("Deployment observation inconclusive")
+    return found
+
+
+def sleep(home=None, *, remove=False):
+    with lifecycle_lock():
+        deployment_metadata(home)
+        docker_compose("stop", "--timeout", "660", "emuru")
+        worker = containers().get("emuru")
+        if worker and worker["status"] not in STOPPED_STATES:
+            raise ValueError("Worker stop not confirmed; inference retained")
+        docker_compose("stop", "litellm", "ollama")
+        if any(item["status"] not in STOPPED_STATES for item in containers().values()):
+            raise ValueError("Inference stop not confirmed")
+        if remove:
+            docker_compose("down", "--remove-orphans")
+    print("EMURU STOPPED")
+
+
+def status(home=None):
+    """Observe only: no lifecycle lock, queue recovery, exec, or model requests."""
+    report = {
+        "state": "UNKNOWN",
+        "services": {},
+        "observed_at": None,
+        "last_used": None,
+    }
+    try:
+        values = deployment_metadata(home)
+        queue = private_path(
+            Path(values["EMURU_PROFILE"]) / "emuru-telegram/queue.sqlite3"
+        )
+        try:
+            report.update(diagnostics(queue))
+        except QueueDiagnosticsError as error:
+            report.update(queue="unavailable", health=[str(error)])
+        current = containers()
+        report["services"] = {name: item["status"] for name, item in current.items()}
+        worker, gateway = current.get("emuru"), current.get("litellm")
+        route = None
+        invalid_route = False
+        if gateway:
+            try:
+                route = read_route(values["EMURU_ROUTE"])
+            except ValueError:
+                invalid_route = True
+            except OSError:
+                pass
+        if gateway and route:
+            try:
+                logs = subprocess.run(
+                    ["docker", "logs", gateway["id"]],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                report.update(
+                    observations.read(
+                        logs.stdout + "\n" + logs.stderr,
+                        route,
+                        gateway["instance"],
+                        datetime.fromisoformat(gateway["started"]).timestamp(),
+                    )
+                )
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                report["state"] = "UNKNOWN"
+        if all(item["status"] in STOPPED_STATES for item in current.values()):
+            report["state"] = "STOPPED"
+        elif any(
+            name not in current
+            or current[name]["status"] != "running"
+            or current[name]["health"] == "unhealthy"
+            for name in ("emuru", "litellm")
+        ):
+            report["state"] = "UNAVAILABLE"
+        else:
+            worker_logs = subprocess.run(
+                ["docker", "logs", "--since", worker["started"], worker["id"]],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            worker_lines = (worker_logs.stdout + "\n" + worker_logs.stderr).splitlines()
+            if READY_CHECKPOINT not in worker_lines:
+                report["state"] = "UNKNOWN"
+            if "EMURU Telegram checkpoint: intake STOPPED" in worker_lines:
+                report["state"] = "UNAVAILABLE"
+            health = queue.parent / "health.json"
+            if (
+                health.exists()
+                and health.stat().st_mtime
+                >= datetime.fromisoformat(worker["started"]).timestamp()
+            ):
+                report.update(diagnostics(queue, health_file=health))
+                report["state"] = "UNAVAILABLE"
+            if not isinstance(report["queue"], dict):
+                report["state"] = "UNKNOWN"
+            if invalid_route:
+                report["state"] = "UNAVAILABLE"
+            if report["state"] in {
+                "READY",
+                "DEGRADED_PRIMARY",
+            }:
+                local = current.get("ollama")
+                if (
+                    not valid_qualification(route)
+                    or not local
+                    or local["status"] != "running"
+                    or local["health"] == "unhealthy"
+                ):
+                    report["state"] = (
+                        "LOCAL_UNQUALIFIED"
+                        if report["state"] == "READY"
+                        else "UNAVAILABLE"
+                    )
+                elif (
+                    report["state"] == "DEGRADED_PRIMARY"
+                    and report["observed_at"]
+                    < datetime.fromisoformat(local["started"]).timestamp()
+                ):
+                    report["state"] = "UNKNOWN"
+        # A restart or stop during observation invalidates the assembled snapshot.
+        if containers() != current:
+            report["state"] = "UNKNOWN"
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.CalledProcessError,
+        QueueDiagnosticsError,
+    ):
+        report["state"] = "UNKNOWN"
+        report["diagnostic"] = "observation_unavailable"
+    return report
 
 
 def main():
@@ -259,16 +739,44 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init", help="Create private files and Compose environment")
     subparsers.add_parser("config", help="Validate the generated Compose configuration")
-    subparsers.add_parser("up", help="Build and start isolated infrastructure")
+    subparsers.add_parser("up", help="Start with guarded readiness checks")
     subparsers.add_parser("down", help="Stop and remove the isolated deployment")
-    subparsers.add_parser("status", help="Show isolated deployment status")
+    subparsers.add_parser("status", help="Show read-only redacted deployment status")
+    subparsers.add_parser("sleep", help="Drain worker, then stop inference services")
+    subparsers.add_parser(
+        "wake", help="Start infrastructure and guarded worker after readiness checks"
+    )
     args = parser.parse_args()
     try:
         workspace_env = ROOT / ".env"
         if args.command == "init":
-            initialize(
-                args.home, args.route_source, args.telegram_owner_id, workspace_env
-            )
+            with lifecycle_lock():
+                initialize(
+                    args.home, args.route_source, args.telegram_owner_id, workspace_env
+                )
+                compose(args.home, "pull", "--policy", "missing", "ollama", "litellm")
+                compose(args.home, "build", "emuru")
+                for arguments in (
+                    (
+                        "uv",
+                        "run",
+                        "--frozen",
+                        "--no-sync",
+                        "python",
+                        "scripts/hermes/vault.py",
+                        "prepare",
+                    ),
+                    (
+                        "uv",
+                        "run",
+                        "--frozen",
+                        "--no-sync",
+                        "python",
+                        "scripts/hermes/vault-profile.py",
+                        "--apply",
+                    ),
+                ):
+                    compose(args.home, "run", "--rm", "--no-deps", "emuru", *arguments)
             home = deployment_home(args.home)
             print(f"Private container deployment initialized: {home}")
             print(
@@ -277,20 +785,27 @@ def main():
                 f" --home {shlex.quote(str(home))} up"
             )
             return
-        command = {
-            "config": ("config", "--quiet"),
-            "up": ("up", "-d", "--build"),
-            "down": ("down", "--remove-orphans"),
-            "status": ("ps",),
-        }[args.command]
-        compose(
-            args.home,
-            *command,
-            route_source=args.route_source,
-            telegram_owner_id=args.telegram_owner_id,
-            workspace_env=workspace_env,
-        )
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        if args.command in {"wake", "up"}:
+            if args.route_source is not None or args.telegram_owner_id is not None:
+                raise ValueError("Route and owner selection belong to initialization")
+            wake(args.home)
+            return
+        if args.command == "status":
+            print(json.dumps(status(args.home), sort_keys=True))
+        elif args.command in {"sleep", "down"}:
+            sleep(args.home, remove=args.command == "down")
+        else:
+            compose(args.home, "config", "--quiet")
+    except (
+        OSError,
+        ValueError,
+        BlockingIOError,
+        subprocess.CalledProcessError,
+    ) as error:
+        if args.command in {"sleep", "down", "status"}:
+            raise SystemExit(
+                "EMURU lifecycle operation failed; state unconfirmed"
+            ) from None
         raise SystemExit(str(error)) from None
 
 

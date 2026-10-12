@@ -781,3 +781,144 @@ def test_tool_guard_blocks_late_calls_and_records_before_effect(boundary):
             agent, None, None, execute=lambda args: calls.append("late write")
         )
     assert calls == ["write"]
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_shutdown_closes_intake_drains_one_turn_and_preserves_pending(
+    boundary, complete
+):
+    b = boundary
+
+    async def check():
+        b.execution.turn_timeout = 0.1
+        b.queue.stage(7, [raw(1, "wait"), raw(2, "pending")])
+        await b.adapter.connect()
+        await asyncio.wait_for(b.started.wait(), 1)
+        stopped_poll = asyncio.Event()
+
+        async def stop_poll():
+            assert b.bridge._stopping
+            stopped_poll.set()
+
+        b.app.updater = NS(running=True, stop=stop_poll)
+        stopping = asyncio.create_task(b.execution.shutdown())
+        await asyncio.wait_for(stopped_poll.wait(), 1)
+        with pytest.raises(RuntimeError, match="stopping"):
+            b.bridge.stage(7, [raw(3, "new")])
+        with pytest.raises(RuntimeError, match="stopping"):
+            await b.bot.get_updates()
+        assert b.queue.status() == {"started": 1, "queued": 1}
+        assert not stopping.done()
+        if complete:
+            b.release.set()
+        await asyncio.wait_for(stopping, 1)
+        await b.execution.shutdown()
+        assert b.queue.status() == {
+            "completed" if complete else "interrupted": 1,
+            "queued": 1,
+        }
+        assert b.effects == ["wait"]
+        assert len(b.network) == (1 if complete else 0)
+        if complete:
+            assert b.network[0] == (
+                "sendMessage",
+                {"chat_id": 42, "text": "native reply"},
+            )
+        else:
+            b.release.set()
+            await asyncio.sleep(0.01)
+            assert b.network == []
+        with pytest.raises(RuntimeError):
+            await b.adapter.connect()
+
+    asyncio.run(check())
+
+
+def test_shutdown_during_tool_preserves_uncertainty_and_blocks_late_effects(
+    boundary, monkeypatch
+):
+    import contextvars
+    import threading
+
+    b = boundary
+    tool_started, tool_release, tool_done = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+    errors = []
+    threads = []
+    effects = []
+    executor = NS(
+        _dispatch_authorized_once=lambda agent, state, ref, *, execute: execute({})
+    )
+    b.execution.install_tool_guard(executor)
+
+    interrupts = []
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.interrupt_compat",
+        NS(request_hard_interrupt=lambda *args: interrupts.append(True)),
+    )
+
+    def tool(agent):
+        def write(args):
+            effects.append("write")
+            tool_started.set()
+            assert tool_release.wait(2)
+
+        executor._dispatch_authorized_once(agent, None, None, execute=write)
+        with pytest.raises(RuntimeError, match="tool execution rejected"):
+            executor._dispatch_authorized_once(
+                agent, None, None, execute=lambda args: effects.append("late write")
+            )
+
+    async def run_agent(*args):
+        agent = NS()
+        assert b.execution.inference_permitted(agent)
+
+        def invoke():
+            try:
+                tool(agent)
+            except BaseException as error:  # noqa: BLE001 -- report thread failures in the parent test
+                errors.append(error)
+            finally:
+                tool_done.set()
+
+        thread = threading.Thread(
+            target=contextvars.copy_context().run, args=(invoke,), daemon=True
+        )
+        threads.append(thread)
+        thread.start()
+        while not tool_done.is_set():
+            await asyncio.sleep(0.001)
+        return {"final_response": "must not escape"}
+
+    b.adapter.runner._run_agent = run_agent
+
+    async def check():
+        b.execution.turn_timeout = 0.1
+        b.queue.stage(7, [raw(1, "tool"), raw(2, "pending")])
+        await b.adapter.connect()
+        while not tool_started.is_set():
+            await asyncio.sleep(0.001)
+        await b.execution.shutdown()
+        assert b.queue.status() == {"interrupted": 1, "queued": 1}
+        assert "Some actions may already have completed" in b.queue.terminal_notice(
+            7, 1
+        )
+        tool_release.set()
+        await asyncio.sleep(0.02)
+        assert tool_done.is_set() and errors == []
+        assert effects == ["write"] and b.network == []
+        assert interrupts == [True]
+        b.queue.recover()
+        assert b.queue.status() == {"interrupted": 1, "queued": 1}
+
+    try:
+        asyncio.run(asyncio.wait_for(check(), 2))
+    finally:
+        tool_release.set()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()

@@ -11,6 +11,7 @@ from litellm import CustomLLM, Router
 from litellm.llms.custom_llm import CustomLLMError
 
 from emuru.models.gateway import read_route, upstream, valid_qualification
+from emuru.models.observations import emit
 
 CLOUD_SECONDS = 60
 LOCAL_SECONDS = 180
@@ -234,8 +235,24 @@ class Guard(CustomLLM):
                                 or not 0 < result.usage.prompt_tokens <= bound
                             ):
                                 fail("Upstream token count violates qualification", 502)
-                        return valid_response(result, params.get("tools", []))
+                        result = valid_response(result, params.get("tools", []))
+                        state = "DEGRADED_PRIMARY"
+                        if backend == "primary":
+                            state = (
+                                "READY"
+                                if route["primary"]["provider"] == "ollama"
+                                and valid_qualification(route)
+                                and (
+                                    route["fallback"]["qualification"]["provenance"]
+                                    != "deterministic-fixture"
+                                    or os.environ.get("EMURU_GATEWAY_TEST_FIXTURE")
+                                )
+                                else "LOCAL_UNQUALIFIED"
+                            )
+                        emit(route, state, backend)
+                        return result
                 except asyncio.CancelledError:
+                    emit(route, "UNKNOWN")
                     raise
                 except Exception as error:
                     eligible = (
@@ -267,7 +284,9 @@ class Guard(CustomLLM):
                     ):
                         eligible = False
                     if backend == "local" or not eligible:
+                        emit(route, "UNAVAILABLE")
                         raise
+                    emit(route, "UNKNOWN")
 
     async def collect(self, router, backend, messages, params):
         first = deadline(
