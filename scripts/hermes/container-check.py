@@ -429,7 +429,17 @@ def verify(config_only=False):
     extra = ("-f", str(private / "check.yaml"))
 
     def app(*args):
-        return compose("run", "--rm", "--no-deps", "emuru", *args, extra=extra)
+        # Keep transient uv interpreter caches out of shared persistent state.
+        return compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "--env",
+            "UV_NO_CACHE=1",
+            "emuru",
+            *args,
+            extra=extra,
+        )
 
     def run_app_check(label, *args):
         try:

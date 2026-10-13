@@ -113,3 +113,58 @@ def test_disposable_mounts_live_in_shared_workspace(tmp_path, monkeypatch):
         path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before
     } == before
     assert commands[0][-2:] == ["config", "--quiet"]
+
+
+def test_disposable_checks_do_not_depend_on_shared_uv_cache(tmp_path, monkeypatch):
+    """Inject the reported rename failure if a check uses the shared cache."""
+    import subprocess
+
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))
+    monkeypatch.setitem(
+        module["verify"].__globals__,
+        "__file__",
+        str(tmp_path / "scripts/hermes/container-check.py"),
+    )
+    (tmp_path / "infra/docker").mkdir(parents=True)
+    (tmp_path / "infra/docker/compose.yaml").write_text(
+        "services:\n  litellm:\n    image: synthetic-image\n"
+    )
+    monkeypatch.delenv("ACT", raising=False)
+    load = runpy.run_path
+
+    def load_deployment(path):
+        deployment = load(path)
+        deployment["prepare_deployment"].__globals__["ROOT"] = tmp_path
+        return deployment
+
+    monkeypatch.setattr(runpy, "run_path", load_deployment)
+    commands = []
+
+    class ChecksFinished(Exception):
+        pass
+
+    def run(command, **kwargs):
+        if "/check.py" in command and command[-1] == "seed":
+            raise ChecksFinished
+        if "run" in command and "emuru" in command:
+            commands.append(command)
+            if "uv" in command and "UV_NO_CACHE=1" not in command:
+                raise subprocess.CalledProcessError(
+                    2,
+                    command,
+                    stderr="error: Failed to query Python interpreter\n"
+                    "cause: failed to rename file from /state/.cache/uv/interpreter-v4/.tmpX "
+                    "to /state/.cache/uv/interpreter-v4/python.msgpack: "
+                    "No such file or directory (os error 2)",
+                )
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    previous = os.umask(0o077)
+    try:
+        with pytest.raises(ChecksFinished):
+            module["verify"]()
+    finally:
+        os.umask(previous)
+    assert len(commands) == 5
+    assert all("UV_NO_CACHE=1" in command for command in commands)

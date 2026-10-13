@@ -194,8 +194,6 @@ async def test_failed_refresh_reports_error_without_committing_note(
 async def test_refresh_failure_reports_note_if_rollback_is_blocked(
     tmp_path, monkeypatch
 ):
-    from pathlib import Path
-
     import emuru.vault.indexer as adapter
 
     vault = create_vault(tmp_path)
@@ -205,15 +203,15 @@ async def test_refresh_failure_reports_note_if_rollback_is_blocked(
     def interrupted(*args):
         raise OSError("refresh interrupted")
 
-    unlink = Path.unlink
+    unlink = adapter.os.unlink
 
     def blocked(path, *args, **kwargs):
-        if path == target:
+        if path == target.name:
             raise PermissionError("rollback blocked")
         return unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(adapter, "index_vault", interrupted)
-    monkeypatch.setattr(Path, "unlink", blocked)
+    monkeypatch.setattr(adapter.os, "unlink", blocked)
     async with Client(server, raise_exceptions=True) as client:
         result = await client.call_tool(
             "vault_write",

@@ -38,6 +38,7 @@ def backend(vault: Path, *arguments: str):
             "LANG",
             "LC_ALL",
             "TMPDIR",
+            "UV_NO_CACHE",
             "EMURU_HERMES_PROFILE_HOME",
         )
         if key in os.environ

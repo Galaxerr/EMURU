@@ -1,4 +1,4 @@
-# EMURU architecture — v0.4.0
+# EMURU architecture — v0.4.1
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
 vault through five constrained MCP tools. Telegram adds durable owner-only
@@ -17,6 +17,7 @@ Owner Telegram message
   validated result → Hermes tool execution
   stdio → scripts/hermes/vault.py serve → emuru-vault-mcp
   vault/mcp.py → vault/indexer.py → separate vault
+                         ↳ vault/mutations.py (write paths and lock)
 ```
 
 CLI chat uses `scripts/hermes/emuru.sh` → `infra/hermes/cli-runtime.py` and the
@@ -31,8 +32,9 @@ All module paths below are relative to `src/emuru/`.
 
 | Module | Owns |
 | --- | --- |
-| `vault/indexer.py` | Allowed note roots, parsing, wikilinks, graph and FTS schema/queries, derived paths, publication, read/write restrictions and refresh rollback |
+| `vault/indexer.py` | Allowed note roots, parsing, wikilinks, graph and FTS schema/queries, derived paths, publication, Inbox capture and refresh rollback |
 | `vault/mcp.py` | Five-tool exposure, request limits and MCP error translation; no SQL or graph interpretation |
+| `vault/mutations.py` | Descriptor-relative mutation paths, private policy, shared writer lock and durable internal proposal/receipt storage; no broader publication entry point |
 | `vault/target.py` | Private live-target validation using indexer-owned derived paths and shared profile-home validation |
 | `vault/cli.py`, `vault/server.py` | `emuru-index` and `emuru-vault-mcp` entry points |
 | `hermes/profile.py` | Shared profile policy, exclusive gateway composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
@@ -75,8 +77,8 @@ separate copies for the app and LiteLLM. The MCP child receives none of these ke
 | `$HOME/.local/state/emuru/container/` | Default private container profile, state, route, model config, secret copies and Ollama cache |
 | `infra/docker/deployment.env` | Generated UID/GID, owner ID and absolute private bind paths (ignored by Git; mode 0600; no keys) |
 | `agents/emuru/SOUL.md` | Conversational policy, installed separately in the private Hermes profile |
-| Private `profiles/emuru/` | Runtime token copy, native history, `vault-target.json`, queue storage and process health |
-| Separate vault repository | Authoritative Markdown and generated `_index/graph.json`, `_index/notes.sqlite`, `99_System/INDEX.md` |
+| Private `profiles/emuru/` | Runtime token copy, native history, `vault-target.json`, queue storage, optional `mutation-policy.json`, `emuru-mutations/mutations.sqlite` and process health |
+| Separate vault repository | Authoritative Markdown, persistent `.emuru-writer.lock` and generated `_index/graph.json`, `_index/notes.sqlite`, `99_System/INDEX.md` |
 | `tests/fixtures/hermes-vault/`, ignored `.runtime/vault/` | Synthetic fixtures and their optional runtime copy |
 
 Absent target records select synthetic mode; invalid explicit records fail
@@ -90,9 +92,17 @@ must not be installed into that environment by the launcher.
 - Read/index only `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
   `40_Journal` and `90_Archive`. Excluded roots and symlinks cannot supply notes.
 - Create-only Markdown writes under `00_Inbox`; no overwrite, update or delete.
+  Descriptor-relative traversal rejects symlink ancestors and unsafe destinations.
+  Inbox capture and index refresh share an interprocess lock. The lock covers
+  cooperating EMURU writers; other editors require an exclusive window.
   Refresh stages all outputs, restoring replaced outputs on exceptions. Failed
   writes remove the new note; blocked cleanup reports its committed path.
   This is exception rollback, not crash-atomic publication across files.
+- Absent private mutation policy denies broader roots. A valid policy selects
+  roots under `10_Projects`, `20_Areas` or `30_Resources` with `enabled: false`.
+  Internal proposals and cancellation receipts persist in a private SQLite
+  journal, independently of Telegram receipt pruning. No propose/apply MCP tool
+  or broader publication path exists in v0.4.1.
 - Commit eligible Telegram batches before polling acknowledgement. Authenticate
   the numeric owner in private text-only chat and execute separate turns in FIFO
   order. Queued work survives restart; ambiguous started work is never replayed.
@@ -107,7 +117,8 @@ must not be installed into that environment by the launcher.
 
 ## Verification and operations
 
-`tests/test_vault*` cover temporary-vault policy and refresh failures;
+`tests/test_vault*` cover temporary-vault policy, mutation guards, synthetic
+backup/restore continuity and refresh failures;
 `tests/test_hermes*`, `tests/test_ollama*` and provider tests cover profile and
 transport behavior. `tests/telegram/` checks durable outcomes, diagnostics,
 native guards and real stdio MCP integration. `--runtime-check` additionally
@@ -115,8 +126,7 @@ uses the installed pinned Hermes/PTB session implementation with synthetic
 HTTP/provider behavior. Hosted CI does not prove live deployment acceptance.
 
 Follow [README](../README.md) for setup and [RUNBOOK](RUNBOOK.md) for migration,
-service lifecycle and recovery. [Release evidence](releases/v0.4.0-report.md)
-separates container checks from live acceptance.
+service lifecycle, recovery and live acceptance gates.
 
 ## Gateway and containers
 

@@ -4,32 +4,33 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**v0.4.0 release** Agent inference uses
-authenticated local LiteLLM exclusively.
+**v0.4.1 synthetic milestone.** Agent inference uses authenticated local
+LiteLLM exclusively.
 The gateway bounds each request to one cloud attempt and at most one qualified
 local attempt. Unqualified local models remain disabled. Follow this guide for
-setup, the [runbook](docs/RUNBOOK.md) for operation, and the
-[release report](docs/releases/v0.4.0-report.md) for verification and acceptance gaps.
+setup and the [runbook](docs/RUNBOOK.md) for operation and acceptance gates.
 
 ## Capabilities and limits
 
 - Retrieve indexed facts with vault-relative citations and wikilink relationships.
 - Create new Markdown notes under `00_Inbox` and refresh search immediately.
+- Serialize Inbox capture and index refresh with a shared vault writer lock.
 - Authenticate one numeric Telegram owner in private text-only chats; serialize
   durable work and suppress duplicate dispatch across restart.
 - Preserve native conversation history; `/new` starts a fresh active session.
 - Select cloud Ollama, Gemini or OpenAI as a LiteLLM upstream explicitly.
   Only the default Ollama cloud route may fall back to a qualified local model.
 
-Writes cannot overwrite, update, delete or merge notes. Ambiguous started turns
-are reported without replay. Automatic Git synchronization, general vault cleanup,
+Broader project and area writes remain disabled. Internal proposal records do
+not expose an apply tool. Writes cannot overwrite, update, delete or merge notes.
+Ambiguous started turns are reported without replay. Automatic Git synchronization, general vault cleanup,
 physical remote wake and broader automation are outside this release.
 
 ## Project layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/emuru/vault/` | Deep index module, MCP adapter, target validation and console entry points |
+| `src/emuru/vault/` | Index, MCP adapter, target validation, mutation guards and console entry points |
 | `src/emuru/telegram/` | Durable queue, worker and pinned native execution adapter |
 | `src/emuru/hermes/` | Shared profile policy and verification |
 | `src/emuru/models/` | Provider selection, configuration and checks |
@@ -134,6 +135,10 @@ paths are excluded. Retrieved notes are reference data, not authorization.
 Refresh failures roll back the new note and replaced outputs where possible;
 blocked note cleanup explicitly reports the committed path. Publication is not
 an atomic filesystem transaction against power loss or SIGKILL.
+The persistent `.emuru-writer.lock` serializes cooperating EMURU writers. It
+does not lock Obsidian or other editors. See the
+[v0.4.1 mutation prerequisites](docs/RUNBOOK.md#v041-synthetic-mutation-prerequisites)
+for private policy and backup handling.
 
 For a real deployment, configure the private `vault-target.json` described in
 [the runbook](docs/RUNBOOK.md#vault-target-and-indexing). An absent record selects
@@ -145,8 +150,8 @@ uv run --frozen emuru-index --vault /absolute/path/to/vault
 EMURU_VAULT_PATH=/absolute/path/to/vault uv run --frozen emuru-vault-mcp
 ```
 
-Use one vault writer at a time. Allowed content can reach the selected cloud
-model; review the allowlisted notes before connecting a real vault.
+Use an exclusive editor window for writes. Allowed content can reach the
+selected cloud model; review the allowlisted notes before connecting a real vault.
 
 ## Telegram and service operation
 

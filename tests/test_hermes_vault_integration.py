@@ -15,6 +15,7 @@ def test_backend_keeps_environment_isolated(tmp_path, monkeypatch):
     spec.loader.exec_module(adapter)
     monkeypatch.setattr(adapter.shutil, "which", lambda _: "/mock/bin/uv")
     monkeypatch.setenv("OLLAMA_API_KEY", "SYNTHETIC_SECRET")
+    monkeypatch.setenv("UV_NO_CACHE", "1")
     monkeypatch.setenv("EMURU_VAULT_PATH", "/unrelated/vault")
     monkeypatch.setenv("EMURU_HERMES_PROFILE_HOME", "/state/profiles/emuru")
     command, env = adapter.backend(tmp_path, "emuru-vault-mcp")
@@ -29,6 +30,7 @@ def test_backend_keeps_environment_isolated(tmp_path, monkeypatch):
     ]
     assert env["EMURU_VAULT_PATH"] == str(tmp_path.resolve())
     assert env["UV_OFFLINE"] == "1"
+    assert env["UV_NO_CACHE"] == "1"
     assert set(env) <= {
         "PATH",
         "HOME",
@@ -38,6 +40,7 @@ def test_backend_keeps_environment_isolated(tmp_path, monkeypatch):
         "EMURU_HERMES_PROFILE_HOME",
         "EMURU_VAULT_PATH",
         "UV_OFFLINE",
+        "UV_NO_CACHE",
     }
 
 

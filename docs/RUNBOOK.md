@@ -1,4 +1,4 @@
-# EMURU operating runbook — v0.4.0
+# EMURU operating runbook — v0.4.1
 
 ## Requirements
 
@@ -169,8 +169,9 @@ Keep keys, journals, transcripts, queue data and real-vault details out of Git,
 CI and public issue/release evidence. Allowed notes can reach the selected
 cloud model; review the allowlisted roots before connecting the vault.
 
-Back up the stopped profile and vault privately before deployment. Preserve
-current queue receipts during rollback; restoring an old queue can replay
+Back up the stopped profile and vault privately before deployment. Include the
+mutation database and its SQLite sidecars if present. Preserve current queue
+receipts during rollback; restoring an old queue can replay
 already attempted effects. Restore notes only after comparing newer genuine
 changes. Correct the failure before a manual Compose wake. A legacy rollback uses explicit
 `systemctl --user start emuru-telegram.service`, never the Compose wake script.
@@ -252,7 +253,7 @@ copy profiles, change credentials or perform live acceptance during a dry run.
 Record each checkpoint privately with UTC time, checkout commit, runtime/image
 identities and outcome. Keep public evidence sanitized.
 
-### Read-only discovery and disposable preflight
+### Read-only discovery and disposaM1ble preflight
 
 Run from the installed checkout, as the service owner:
 
@@ -451,8 +452,8 @@ and starts intake: it is never a dry run.
    run `wake.sh`: it starts Docker. Preserve newest receipts even if delivery failed.
 
 No automatic replay, receipt deletion, destructive volume removal or production
-migration belongs in release preparation. See [release evidence](releases/v0.4.0-report.md)
-for observed state, automated results and pending operator checkpoints.
+migration belongs in release preparation. Complete the operator checkpoints above
+before production activation.
 
 ## Gateway policy
 
@@ -502,5 +503,29 @@ for pinned-proxy acceptance. For manual Telegram acceptance, send one read-only
 retrieval/navigation request through cloud. Then cause a controlled eligible
 primary outage and repeat it through qualified local. Inspect Git status and the
 Inbox before and after; no real-vault mutation is allowed. Restore primary and
-confirm the next request uses cloud. The [release report](releases/v0.4.0-report.md)
-records evidence and remaining live checks.
+confirm the next request uses cloud. Record the evidence and remaining live checks.
+
+### v0.4.1 synthetic mutation prerequisites
+
+Broader writes remain disabled. No proposal or apply tool is exposed to the model.
+Absent private `mutation-policy.json` denies all broader locations. A configured
+record must be owner-owned, mode `0600`, and contain exactly `enabled: false`
+and a `roots` list of selected paths under `10_Projects`, `20_Areas`, or
+`30_Resources`. The policy file is optional and is not needed for Inbox capture.
+Its selected roots permit internal proposal storage only, never publication.
+The profile and `emuru-mutations` directory must have mode `0700`.
+
+Include `emuru-mutations/mutations.sqlite` and any SQLite sidecars in every
+stopped profile backup, alongside vault, native history, Telegram queue/sidecars,
+route configuration and deployment identities. Mutation receipts have no
+Telegram expiry. Restore all components into an isolated directory; verify
+archive checksum, per-file checksums and private modes before opening databases.
+Restored proposals retain the original absolute vault identity; restore does not
+rebind approvals. Preserve `send_unknown` and interrupted effects without replay.
+Never replace newer state with an older queue or receipt database.
+
+Inbox capture and index refresh share `.emuru-writer.lock` in the vault root.
+The lock file must be owner-owned, mode `0600`, and have one link. Never unlink or
+replace it while a writer may run. Locks cover cooperating
+EMURU writers only; exclusive editor windows remain required. The synthetic drill
+is `tests/test_vault_recovery.py`; real backup proof still gates activation.

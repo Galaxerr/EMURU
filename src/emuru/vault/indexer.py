@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from emuru.vault.mutations import mutation_parent, regular, writer_lock
+
 INDEXABLE_ROOTS = (
     "00_Inbox",
     "10_Projects",
@@ -413,7 +415,15 @@ def write_human_index(
     return output
 
 
-def index_vault(
+def index_vault(vault_root: Path) -> dict[str, Any]:
+    vault_root = vault_root.expanduser().absolute()
+    if not vault_root.is_dir():
+        raise ValueError(f"vault does not exist or is not a directory: {vault_root}")
+    with writer_lock(vault_root):
+        return _index_vault(vault_root)
+
+
+def _index_vault(
     vault_root: Path,
 ) -> dict[str, Any]:
 
@@ -532,43 +542,6 @@ def _resolve_read_path(
 
     if target.suffix.lower() != ".md":
         raise ValueError("Only Markdown notes may be opened.")
-
-    return target
-
-
-def _resolve_write_path(
-    vault_root: Path,
-    path: str,
-) -> Path:
-    relative = _normalize_relative_path(path)
-
-    if not relative.parts:
-        raise ValueError("Invalid path.")
-
-    if relative.parts[0] != "00_Inbox":
-        raise ValueError("Agent writes are restricted to 00_Inbox/.")
-
-    if relative.suffix.lower() != ".md":
-        raise ValueError("Agent-created notes must be Markdown files.")
-
-    _assert_no_symlink_components(
-        vault_root,
-        relative.parent,
-    )
-
-    target = vault_root / relative
-
-    parent = target.parent
-
-    resolved_parent = parent.resolve()
-
-    try:
-        resolved_parent.relative_to(vault_root)
-    except ValueError as exc:
-        raise ValueError("Write path escapes the vault.") from exc
-
-    if target.exists():
-        raise ValueError("Refusing to overwrite an existing note.")
 
     return target
 
@@ -771,38 +744,43 @@ def vault_write(
     if not content.strip():
         raise ValueError("Cannot create an empty note.")
 
-    target = _resolve_write_path(
-        vault_root,
-        path,
-    )
-
-    target.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    # Exclusive creation also refuses dangling symlinks and concurrent overwrites.
-    created = False
-    try:
-        with target.open("x", encoding="utf-8") as stream:
+    with (
+        writer_lock(vault_root),
+        mutation_parent(vault_root, path, capture=True) as (parent, name),
+    ):
+        created = False
+        try:
+            fd = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent,
+            )
             created = True
-            stream.write(content.rstrip() + "\n")
-        index_vault(vault_root)
-    except BaseException:
-        if created:
-            try:
-                target.unlink()
-            except OSError as rollback_error:
-                relative = target.relative_to(vault_root).as_posix()
-                raise ValueError(
-                    f"Note committed at {relative}; index refresh failed. "
-                    "Do not repeat the write; repair the index."
-                ) from rollback_error
-        raise
+            identity = os.fstat(fd)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                regular(stream.fileno())
+                stream.write(content.rstrip() + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.fsync(parent)
+            index_vault(vault_root)
+        except BaseException:
+            if created:
+                try:
+                    current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) != (
+                        identity.st_dev,
+                        identity.st_ino,
+                    ):
+                        raise OSError("Rollback target changed.")
+                    os.unlink(name, dir_fd=parent)
+                    os.fsync(parent)
+                except OSError as rollback_error:
+                    raise ValueError(
+                        f"Note committed at {path}; index refresh failed. "
+                        "Do not repeat the write; repair the index."
+                    ) from rollback_error
+            raise
 
-    relative = target.relative_to(vault_root).as_posix()
-
-    return {
-        "created": True,
-        "path": relative,
-    }
+    return {"created": True, "path": path}

@@ -23,7 +23,7 @@ def _call(function, *args):
 
 
 def create_mcp(vault_root: Path) -> MCPServer:
-    vault_root = vault_root.expanduser().resolve()
+    vault_root = vault_root.expanduser().absolute()
     index.index_vault(vault_root)
     mcp = MCPServer("EMURU Vault")
 
