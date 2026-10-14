@@ -15,7 +15,13 @@ from emuru.vault.target import TargetError, load_target, profile_home
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/fixtures/hermes-vault"
 RUNTIME = ROOT / ".runtime/vault"
-TOOLS = {"vault_map", "vault_search", "vault_open", "vault_neighbors", "vault_write"}
+TOOLS = {
+    "vault_map",
+    "vault_search",
+    "vault_open",
+    "vault_neighbors",
+    "vault_write",
+}
 CONTAINER_PROFILE = Path("/state/profiles/emuru")
 
 
@@ -228,7 +234,14 @@ def main():
             if (
                 not isinstance(request, dict)
                 or set(request)
-                - {"path", "content", "expected_revision", "anchor", "replacement"}
+                - {
+                    "path",
+                    "content",
+                    "expected_revision",
+                    "anchor",
+                    "replacement",
+                    "request_id",
+                }
                 or "path" not in request
             ):
                 parser.error("Invalid single-note proposal request")

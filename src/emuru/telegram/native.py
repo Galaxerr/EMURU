@@ -496,8 +496,10 @@ class NativeTelegram:
             cls._emuru_adapter_guarded = True
 
         async def guarded_runner(runner, event):
-            turn_for(event)
-            return await runner_handle(runner, event)
+            turn = turn_for(event)
+            response = await runner_handle(runner, event)
+            # The durable worker owns failure notices; native delivery would retry a rejected send.
+            return None if turn.failed else response
 
         async def guarded_agent(runner, event, *args, **kwargs):
             turn = turn_for(event)

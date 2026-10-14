@@ -1,4 +1,4 @@
-# EMURU operating runbook — v0.4.2
+# EMURU operating runbook — v0.4.3
 
 ## Requirements
 
@@ -215,6 +215,9 @@ empty directories. The default home is `$HOME/.local/state/emuru/container`.
    it does not resync keys, owner, route or root `.env`. Do not use it as a repair tool.
 3. Install `agents/emuru/SOUL.md` in the private profile as owner-owned mode 0600.
    Initialization does not install policy. Preserve existing private policy when migrating.
+   Before starting a worker, verify the installed file matches the reviewed
+   checkout with `cmp agents/emuru/SOUL.md /absolute/private/home/SOUL.md`;
+   otherwise the worker may run stale safety guidance.
 4. Verify local model-cache identity before any live qualification. Run
    `uv run --frozen python scripts/hermes/qualify.py --live --route /absolute/private/route.json --base-url http://127.0.0.1:11435`
    only as an explicit operator action against target hardware and runtime. The
@@ -571,3 +574,65 @@ approval metadata and cannot apply; prepare a fresh proposal instead.
 
 Synthetic restore proof still applies. Real activation requires separate backup
 proof, paused editors, transport authorization and model qualification.
+
+
+### v0.4.3 synthetic project workflows
+
+The trusted workflow template is embedded in `agents/emuru/SOUL.md`; it is
+original project guidance, not copied third-party playbook material. Project
+notes use the existing six metadata fields, with Goals, Tasks, Decisions,
+Results and Next actions. Ordinary checkboxes carry an explicit task status;
+stable Obsidian block IDs support exact updates and links. Preserve the source
+Inbox capture when proposing a linked project. Search/open exact existing
+projects first; ask the owner about similar names rather than creating silently.
+
+An existing-note edit or project creation/update takes precedence over proactive
+Inbox capture. Open an exact owner-supplied path directly; otherwise resolve it
+with search/map. Open referenced source notes, preserve existing block IDs and
+unrelated content, and propose the requested changes without claiming they were
+applied. Older untagged notes use exact heading/task text. If the registered
+toolset lacks `vault_propose`, or the target is outside approved proposal roots
+(including an Inbox project plan), return a grounded, unstored text draft and
+explicitly say "No update was applied." Do not create a separate decision note
+or a new project version as an update fallback. Standalone capture still uses
+the existing Inbox procedure. Repository guidance does not update an installed
+private `SOUL.md`; installing it remains an explicit operator action. With no
+proposal capability, new-project requests return an unstored structured Markdown
+draft and intended project path, retaining the Inbox source. Use a fresh `/new`
+session after reviewed guidance installation to verify conversational behavior.
+
+Opt-in synthetic `vault_propose` and `mutation-propose` accept an optional
+owner-supplied `request_id`. Keep the exact request arguments when repeating it.
+The private journal binds identity to vault and request digest, returning the
+prior proposal or receipt; changed inputs fail closed. A new intended change
+needs a fresh owner request identity. Without an identity, exact pending drafts
+are reused. Creation at an existing approved path returns the actual note with
+`outcome: exists`, never an overwrite or a new save. These records are mutation
+recovery metadata, not a task database. Cancellation/prepared/index-pending
+outcomes retain their existing meanings. Open the current note before treating
+a prior receipt as evidence of its present content.
+
+Daily review is read-only and owner-triggered: open notes, cite exact paths and
+block IDs, distinguish recorded facts from suggestions, and leave unknown
+deadlines unknown. The synthetic inference case `workflow_review` in
+`scripts/hermes/qualify.py` checks exact-source facts, citations, separate
+suggestions, and refusal of mutations or unsupported scheduling claims. It is
+an isolated test case; it does not alter live qualification or certify the
+expanded proposal toolset. Live model quality, workload requalification and
+Telegram owner application remain later activation gates.
+
+`tests/test_vault_proposal_mcp.py` exercises idea capture, project proposal,
+owner apply, task completion and result recording through real synthetic stdio.
+`tests/test_project_workflows.py` covers duplicate identities, existing paths,
+competing requests and evidence-only review. No automatic board, scheduled work,
+external synchronization or model apply tool is added.
+
+`tests/test_project_update_conversation.py` retains the three exact owner update
+requests from failed manual acceptance and rejects their observed Inbox
+substitutes before effects. It uses real synthetic MCP with scripted inference
+to test the checker, plus opt-in isolated Ollama inference:
+`EMURU_TEST_PROJECT_UPDATE_MODEL=gemma4:31b-cloud .venv/bin/pytest -q tests/test_project_update_conversation.py -k model`.
+The optional `EMURU_TEST_PROJECT_UPDATE_URL` defaults to local Ollama. This case
+does not use the live gateway, profiles or vault, or change qualification. Its
+JSON draft format and minimized synthetic notes bound the evidence; it does not
+replace owner acceptance of the actual Telegram conversation.

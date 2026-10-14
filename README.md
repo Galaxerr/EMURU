@@ -4,7 +4,7 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**v0.4.2 synthetic milestone.** Agent inference uses authenticated local
+**v0.4.3 synthetic milestone.** Agent inference uses authenticated local
 LiteLLM exclusively.
 The gateway bounds each request to one cloud attempt and at most one qualified
 local attempt. Unqualified local models remain disabled. Follow this guide for
@@ -25,6 +25,8 @@ Broader production writes remain disabled. Disposable `/tmp` fixtures support
 precise proposals, explicit operator application and crash recovery. No apply
 tool is exposed to the model. Default writes remain create-only Inbox capture.
 Saved notes survive index failures and report `saved; indexing pending`.
+Synthetic projects now support stable task/result block links, repeated request
+identities and grounded on-demand daily review. Owner approval remains required.
 Ambiguous started turns are reported without replay. Automatic Git synchronization, general vault cleanup,
 physical remote wake and broader automation are outside this release.
 

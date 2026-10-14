@@ -81,6 +81,16 @@ class Upstream(BaseHTTPRequestHandler):
             "message": {"role": "assistant", "content": backend + "-answer"},
             "done": False,
         }
+        if request_mode in {
+            "empty",
+            "reasoning-only",
+            "reasoning-text",
+            "reasoning-length",
+            "terminal-text",
+        }:
+            data["message"]["content"] = ""
+            if request_mode != "empty":
+                data["message"]["thinking"] = "synthetic reasoning"
         if request_mode == "partial-tool":
             data["message"] = {
                 "role": "assistant",
@@ -108,6 +118,9 @@ class Upstream(BaseHTTPRequestHandler):
             }
         try:
             self.wfile.write((json.dumps(data) + "\n").encode())
+            if request_mode in {"reasoning-text", "reasoning-length"}:
+                data["message"] = {"role": "assistant", "content": backend + "-answer"}
+                self.wfile.write((json.dumps(data) + "\n").encode())
             self.wfile.flush()
         except BrokenPipeError:
             return
@@ -124,6 +137,10 @@ class Upstream(BaseHTTPRequestHandler):
             "prompt_eval_count": 10,
             "eval_count": 5,
         }
+        if request_mode == "terminal-text":
+            data["message"]["content"] = backend + "-answer"
+        if request_mode == "reasoning-length":
+            data["done_reason"] = "length"
         try:
             self.wfile.write((json.dumps(data) + "\n").encode())
         except BrokenPipeError:
@@ -377,6 +394,36 @@ def main():
                     else "Invalid tool arguments" in body
                 ), (status, body)
                 assert counts["local"] == before["local"], counts
+            for stream_flag in (False, True):
+                for response_mode in (
+                    "empty",
+                    "reasoning-only",
+                    "reasoning-text",
+                    "reasoning-length",
+                    "terminal-text",
+                ):
+                    mode = response_mode
+                    before = dict(counts)
+                    status, body = request(stream_flag)
+                    if mode == "reasoning-text":
+                        assert status == 200 and "primary-answer" in body, (
+                            status,
+                            body,
+                        )
+                    else:
+                        error = {
+                            "reasoning-length": "Unsafe or incomplete inference response",
+                            # Pinned Router hides the real finish marker on terminal content.
+                            "terminal-text": "Incomplete upstream stream",
+                        }.get(mode, "Empty inference response")
+                        assert error in body, (status, body)
+                        assert "primary-answer" not in body, (status, body)
+                    if stream_flag or mode != "reasoning-text":
+                        assert "synthetic reasoning" not in body, (status, body)
+                    assert counts == {
+                        "primary": before["primary"] + 1,
+                        "local": before["local"],
+                    }, counts
             mode = "interchunk"
             before = dict(counts)
             started = time.monotonic()

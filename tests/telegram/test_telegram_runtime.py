@@ -17,6 +17,7 @@ from emuru.telegram.worker import TelegramWorker, TurnResult
 @pytest.fixture
 def boundary(tmp_path, policy, runtime, monkeypatch):
     effects, network, reports, fatal = [], [], [], []
+    delivery_attempts = []
     release, started = asyncio.Event(), asyncio.Event()
     monkeypatch.setattr(runtime.os, "kill", lambda *args: fatal.append(args))
     queue = TelegramQueue(tmp_path / "queue.sqlite3", policy, 42, clock=lambda: 100000)
@@ -107,10 +108,15 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             started.set()
             if event.text == "wait":
                 await release.wait()
-            result = await self._run_agent(event)
+            try:
+                result = await self._run_agent(event)
+            except RuntimeError as error:
+                return await self._hmwa_agent_error_reply(error)
             return result.get("final_response", "native reply")
 
         async def _run_agent(self, *args, **kwargs):
+            if getattr(self, "agent_error", False):
+                raise RuntimeError("SYNTHETIC_SECRET")
             sid = self.session_store._entries["owner"].session_id
             notes = []
             await self._hmwa_first_contact_notes(
@@ -182,7 +188,9 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             async def background():
                 try:
                     answer = await self.runner._handle_message(event)
-                    await bot._post("sendMessage", {"chat_id": 42, "text": answer})
+                    if answer:
+                        delivery_attempts.append(answer)
+                        await bot._post("sendMessage", {"chat_id": 42, "text": answer})
                     await self._run_processing_hook(
                         "on_processing_complete", event, "success"
                     )
@@ -244,6 +252,7 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
         Update=Update,
         effects=effects,
         network=network,
+        delivery_attempts=delivery_attempts,
         reports=reports,
         fatal=fatal,
         started=started,
@@ -518,18 +527,22 @@ def test_egress_owner_text_only_and_no_send_retry_after_uncertain_failure(
     "result",
     [
         {"failed": True},
+        "exception",
         {"error": "SYNTHETIC_SECRET"},
         {"messages": [{"role": "tool", "content": '{"error":"SYNTHETIC_SECRET"}'}]},
     ],
 )
 def test_returned_provider_or_tool_failure_is_terminal(boundary, result, caplog):
     b = boundary
+    b.adapter.runner.agent_error = result == "exception"
     b.adapter.runner.agent_result = result
 
     async def check():
         b.queue.stage(7, [raw(1)])
         assert await b.bridge.once()
         assert b.queue.status() == {"failed": 1}
+        assert b.delivery_attempts == []
+        assert b.network == []
         assert b.queue.db.execute("SELECT text FROM updates").fetchone()[0] is None
         assert await b.bridge.once()
         b.queue.stage(7, [raw(1)])

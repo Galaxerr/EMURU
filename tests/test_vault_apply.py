@@ -52,8 +52,9 @@ def test_create_requires_absence_and_repeated_apply_returns_receipt(
     monkeypatch.setattr(mutations, "publish_note", forbidden)
     assert apply(home, vault, proposal) == first
     assert target.stat().st_mtime_ns == metadata.st_mtime_ns
-    with pytest.raises(ValueError, match="absent"):
-        mutations.propose_note(home, vault, proposal["path"], content="another")
+    existing = mutations.propose_note(home, vault, proposal["path"], content="another")
+    assert existing["outcome"] == "exists"
+    assert existing["content"].encode() == b"# New\r\n"
 
 
 def test_exact_update_preserves_human_bytes(tmp_path):

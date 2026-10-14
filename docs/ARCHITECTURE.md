@@ -1,4 +1,4 @@
-# EMURU architecture — v0.4.2
+# EMURU architecture — v0.4.3
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
 vault through five constrained MCP tools. Telegram adds durable owner-only
@@ -106,6 +106,11 @@ must not be installed into that environment by the launcher.
   `/tmp` fixtures or with an explicit real target. Only opt-in synthetic MCP
   sessions add `vault_propose`; no apply tool is exposed. Recovery classifies
   hashes without publication or replay and repairs derived indexing only.
+- Synthetic proposal request identities bind exact inputs and target vault in
+  the private mutation journal. Repeated requests reuse prior proposals/receipts;
+  changed inputs fail closed. Existing paths return actual notes, never overwrite.
+  Project tasks, decisions and results stay in Markdown with stable block IDs.
+  Daily review is read-only, cites opened evidence and separates suggestions.
 - Commit eligible Telegram batches before polling acknowledgement. Authenticate
   the numeric owner in private text-only chat and execute separate turns in FIFO
   order. Queued work survives restart; ambiguous started work is never replayed.

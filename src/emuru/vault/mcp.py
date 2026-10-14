@@ -113,11 +113,14 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
             expected_revision: str | None = None,
             anchor: str | None = None,
             replacement: str | None = None,
+            request_id: str | None = None,
         ) -> dict[str, Any]:
             """Preview one approved-root creation or exact anchored update.
 
             Creation requires content and an absent target. Updates require the
             full revision from vault_open, one exact anchor, and replacement.
+            Reuse an owner-supplied request_id for the same exact request.
+            Existing paths and requests return their prior note/proposal/outcome.
             This stores a private proposal. It cannot apply or approve it.
             """
             return _call(
@@ -129,6 +132,7 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
                 expected_revision=expected_revision,
                 anchor=anchor,
                 replacement=replacement,
+                request_id=request_id,
             )
 
     return mcp

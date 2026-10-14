@@ -229,6 +229,12 @@ def journal(home: Path):
                     proposal_id TEXT PRIMARY KEY REFERENCES proposals(id),
                     staging TEXT NOT NULL)
                 """)
+                connection.execute("""CREATE TABLE IF NOT EXISTS proposal_requests (
+                    vault TEXT NOT NULL, request_id TEXT NOT NULL,
+                    request_digest TEXT NOT NULL, target TEXT NOT NULL,
+                    proposal_id TEXT REFERENCES proposals(id),
+                    PRIMARY KEY(vault, request_id))
+                """)
                 connection.commit()
                 os.fsync(parent)
                 os.fsync(profile)
@@ -341,7 +347,116 @@ def _no_merge_markers(text: str):
         raise ValueError("Unresolved merge markers refused.")
 
 
+def _preview(db, identity):
+    proposal = _proposal(db, identity)
+    approved = db.execute(
+        "SELECT approval_digest FROM validated_proposals WHERE proposal_id=?",
+        (identity,),
+    ).fetchone()
+    if approved is None or approved[0] != _approval(proposal):
+        raise ValueError("Stored proposal approval binding changed.")
+    result = {
+        "proposal_id": identity,
+        "approval_digest": approved[0],
+        "path": proposal["target"],
+        "before_revision": proposal["before_hash"],
+        "after_revision": proposal["after_hash"],
+        "content": proposal["payload"],
+        "outcome": "proposed",
+    }
+    receipt = _receipt(db, identity)
+    if receipt is not None:
+        result.update(receipt)
+    if result["outcome"] == "index_pending":
+        result["message"] = "saved; indexing pending"
+    return result
+
+
+def _existing(parent, name, path):
+    content = read_note(parent, name)
+    if content is None:
+        raise ValueError(
+            "Existing result is no longer present; use a new request identity."
+        )
+    return {
+        "path": path,
+        "revision": _hash(content),
+        "content": content.decode("utf-8"),
+        "outcome": "exists",
+    }
+
+
 def propose_note(
+    home: Path,
+    vault_root: Path,
+    path: str,
+    *,
+    content: str | None = None,
+    expected_revision: str | None = None,
+    anchor: str | None = None,
+    replacement: str | None = None,
+    request_id: str | None = None,
+) -> dict:
+    """Repeated owner request identities reuse durable proposals or outcomes."""
+    if request_id is not None and (
+        not isinstance(request_id, str)
+        or not request_id.strip()
+        or len(request_id) > 256
+        or "\0" in request_id
+    ):
+        raise ValueError("Invalid request identity.")
+    if any(
+        value is not None and not isinstance(value, str)
+        for value in (content, expected_revision, anchor, replacement)
+    ):
+        raise ValueError("Proposal fields must be strings or null.")
+    policy = load_policy(home)
+    with (
+        writer_lock(vault_root),
+        mutation_parent(vault_root, path, roots=policy["roots"]) as (parent, name),
+    ):
+        vault = os.path.abspath(vault_root)
+        fields = {
+            "path": path,
+            "content": content,
+            "expected_revision": expected_revision,
+            "anchor": anchor,
+            "replacement": replacement,
+        }
+        digest = hashlib.sha256(
+            json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if request_id is not None:
+            with journal(home) as db:
+                previous = db.execute(
+                    "SELECT request_digest, target, proposal_id FROM proposal_requests WHERE vault=? AND request_id=?",
+                    (vault, request_id),
+                ).fetchone()
+                if previous is not None:
+                    if previous[0] != digest:
+                        raise ValueError(
+                            "Request identity already binds different proposal inputs."
+                        )
+                    if previous[2] is not None:
+                        return _preview(db, previous[2])
+                    return _existing(parent, name, previous[1])
+        result = _prepare_note(
+            home,
+            vault_root,
+            path,
+            **{key: value for key, value in fields.items() if key != "path"},
+        )
+        if request_id is not None:
+            with journal(home) as db:
+                db.execute(
+                    "INSERT INTO proposal_requests VALUES (?, ?, ?, ?, ?)",
+                    (vault, request_id, digest, path, result.get("proposal_id")),
+                )
+                db.commit()
+        return result
+
+
+def _prepare_note(
     home: Path,
     vault_root: Path,
     path: str,
@@ -364,12 +479,12 @@ def propose_note(
     ):
         before = read_note(parent, name)
         if content is not None:
-            if before is not None or any(
+            if any(
                 value is not None for value in (expected_revision, anchor, replacement)
             ):
-                raise ValueError(
-                    "Creation requires an absent destination and no update fields."
-                )
+                raise ValueError("Creation accepts no update fields.")
+            if before is not None:
+                return _existing(parent, name, path)
             after = content
         else:
             if (
@@ -393,6 +508,23 @@ def propose_note(
         _no_merge_markers(after)
         if after.encode("utf-8") == before:
             raise ValueError("Proposal has no change.")
+        with journal(home) as db:
+            previous = db.execute(
+                """SELECT p.id FROM proposals p
+                JOIN validated_proposals v ON v.proposal_id=p.id
+                LEFT JOIN receipts r ON r.proposal_id=p.id
+                WHERE p.vault=? AND p.target=? AND p.before_hash IS ?
+                AND p.after_hash=? AND p.outcome='proposed' AND r.proposal_id IS NULL
+                ORDER BY p.rowid LIMIT 1""",
+                (
+                    os.path.abspath(vault_root),
+                    path,
+                    _hash(before),
+                    _hash(after.encode()),
+                ),
+            ).fetchone()
+            if previous is not None:
+                return _preview(db, previous[0])
         identity = store_proposal(
             home, vault_root, path, after, expected_before_hash=_hash(before)
         )
