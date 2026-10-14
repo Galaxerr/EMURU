@@ -4,7 +4,7 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**v0.4.1 synthetic milestone.** Agent inference uses authenticated local
+**v0.4.2 synthetic milestone.** Agent inference uses authenticated local
 LiteLLM exclusively.
 The gateway bounds each request to one cloud attempt and at most one qualified
 local attempt. Unqualified local models remain disabled. Follow this guide for
@@ -21,8 +21,10 @@ setup and the [runbook](docs/RUNBOOK.md) for operation and acceptance gates.
 - Select cloud Ollama, Gemini or OpenAI as a LiteLLM upstream explicitly.
   Only the default Ollama cloud route may fall back to a qualified local model.
 
-Broader project and area writes remain disabled. Internal proposal records do
-not expose an apply tool. Writes cannot overwrite, update, delete or merge notes.
+Broader production writes remain disabled. Disposable `/tmp` fixtures support
+precise proposals, explicit operator application and crash recovery. No apply
+tool is exposed to the model. Default writes remain create-only Inbox capture.
+Saved notes survive index failures and report `saved; indexing pending`.
 Ambiguous started turns are reported without replay. Automatic Git synchronization, general vault cleanup,
 physical remote wake and broader automation are outside this release.
 
@@ -137,7 +139,7 @@ blocked note cleanup explicitly reports the committed path. Publication is not
 an atomic filesystem transaction against power loss or SIGKILL.
 The persistent `.emuru-writer.lock` serializes cooperating EMURU writers. It
 does not lock Obsidian or other editors. See the
-[v0.4.1 mutation prerequisites](docs/RUNBOOK.md#v041-synthetic-mutation-prerequisites)
+[synthetic proposals and recovery](docs/RUNBOOK.md#v042-synthetic-proposals-and-recovery)
 for private policy and backup handling.
 
 For a real deployment, configure the private `vault-target.json` described in

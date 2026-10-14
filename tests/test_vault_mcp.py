@@ -171,7 +171,7 @@ async def test_vault_neighbors(tmp_path):
     assert data["incoming"][0]["source"] == "10_Projects/emuru.md"
 
 
-async def test_failed_refresh_reports_error_without_committing_note(
+async def test_failed_refresh_returns_saved_note_as_index_pending(
     tmp_path, monkeypatch
 ):
     import emuru.vault.indexer as adapter
@@ -187,13 +187,19 @@ async def test_failed_refresh_reports_error_without_committing_note(
         result = await client.call_tool(
             "vault_write", {"path": "00_Inbox/interrupted.md", "content": "New note"}
         )
-    assert result.is_error
-    assert not (vault / "00_Inbox/interrupted.md").exists()
+    assert result.is_error is False
+    assert result.structured_content == {
+        "created": True,
+        "path": "00_Inbox/interrupted.md",
+        "outcome": "index_pending",
+        "message": "saved; indexing pending",
+    }
+    assert (vault / "00_Inbox/interrupted.md").read_text(
+        encoding="utf-8"
+    ) == "New note\n"
 
 
-async def test_refresh_failure_reports_note_if_rollback_is_blocked(
-    tmp_path, monkeypatch
-):
+async def test_refresh_failure_does_not_unlink_published_note(tmp_path, monkeypatch):
     import emuru.vault.indexer as adapter
 
     vault = create_vault(tmp_path)
@@ -203,22 +209,26 @@ async def test_refresh_failure_reports_note_if_rollback_is_blocked(
     def interrupted(*args):
         raise OSError("refresh interrupted")
 
+    unlinked: list[str] = []
     unlink = adapter.os.unlink
 
-    def blocked(path, *args, **kwargs):
+    def track_unlink(path, *args, **kwargs):
         if path == target.name:
-            raise PermissionError("rollback blocked")
+            unlinked.append(path)
         return unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(adapter, "index_vault", interrupted)
-    monkeypatch.setattr(adapter.os, "unlink", blocked)
+    monkeypatch.setattr(adapter.os, "unlink", track_unlink)
     async with Client(server, raise_exceptions=True) as client:
         result = await client.call_tool(
             "vault_write",
             {"path": "00_Inbox/committed.md", "content": "Committed note"},
         )
-    assert result.is_error and target.is_file()
-    assert (
-        "Note committed at 00_Inbox/committed.md; index refresh failed"
-        in result.content[0].text
-    )
+    assert result.is_error is False and target.is_file()
+    assert result.structured_content == {
+        "created": True,
+        "path": "00_Inbox/committed.md",
+        "outcome": "index_pending",
+        "message": "saved; indexing pending",
+    }
+    assert unlinked == []

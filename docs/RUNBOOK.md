@@ -1,4 +1,4 @@
-# EMURU operating runbook — v0.4.1
+# EMURU operating runbook — v0.4.2
 
 ## Requirements
 
@@ -112,15 +112,18 @@ the real selection without printing the root. `prepare`, `inspect` and `check`
 remain synthetic regardless of the production binding.
 
 MCP startup and each successful new Inbox write rebuild the derived indexes.
-Source Markdown is authoritative. Refresh builds outputs before publication
-and restores replaced outputs on exceptions. If a write's refresh fails, the
-new note is removed. If cleanup is blocked, the tool reports its committed path:
-inspect that note, stop concurrent writers, and rebuild the index rather than
-repeating the write. This rollback does not guarantee atomicity during SIGKILL
-or power loss. `vault_write` creates new Inbox notes only;
-overwrite/update/delete/merge are unsupported. External vault edits require
-owner-managed indexing/restart. Git synchronization is an owner operation;
-EMURU does not supply automatic synchronization or its monitoring.
+Source Markdown is authoritative. Notes are staged privately, fsynced, published
+atomically without overwriting an Inbox collision, and their directory is
+fsynced. Refresh builds derived outputs before publication and restores replaced
+outputs on exceptions. A failed refresh never removes a saved note: the tool
+returns `outcome: index_pending` and `saved; indexing pending`. Repair the index
+rather than repeating capture. `vault_open` returns a SHA-256 revision of the
+complete raw file, even when its returned content is truncated.
+
+Default `vault_write` remains create-only Inbox capture. Broader production
+writes remain disabled; synthetic proposal/application commands are described
+below. External vault edits require owner-managed indexing/restart. Git
+synchronization remains an owner operation.
 
 If the agent reports an empty vault, first run `scripts/hermes/vault.py target
 --require-real`, then inspect the result of `vault_map` through the configured
@@ -507,7 +510,7 @@ confirm the next request uses cloud. Record the evidence and remaining live chec
 
 ### v0.4.1 synthetic mutation prerequisites
 
-Broader writes remain disabled. No proposal or apply tool is exposed to the model.
+Broader production writes remain disabled. Default profiles expose no proposal or apply tool.
 Absent private `mutation-policy.json` denies all broader locations. A configured
 record must be owner-owned, mode `0600`, and contain exactly `enabled: false`
 and a `roots` list of selected paths under `10_Projects`, `20_Areas`, or
@@ -529,3 +532,42 @@ The lock file must be owner-owned, mode `0600`, and have one link. Never unlink 
 replace it while a writer may run. Locks cover cooperating
 EMURU writers only; exclusive editor windows remain required. The synthetic drill
 is `tests/test_vault_recovery.py`; real backup proof still gates activation.
+
+
+### v0.4.2 synthetic proposals and recovery
+
+Use only disposable `/tmp` vaults and profiles for these commands. Explicit real
+`vault-target.json` records are rejected. Supply `--vault` and `--profile-home`
+on every command; neither defaults to a live profile. The profile must be mode
+`0700`, with a mode `0600` `mutation-policy.json` containing `enabled: false`
+and selected roots. No production enablement switch exists.
+
+`mutation-propose --request /tmp/.../request.json` takes one JSON object:
+creation uses `path` and `content`; updates use `path`, `expected_revision`,
+`anchor`, and `replacement`. Obtain the complete revision from `vault_open`.
+An anchor must match exactly once, including overlapping matches. Revisions,
+merge markers and destination collisions fail closed. Unrelated raw bytes,
+including CRLF, frontmatter and stable links, remain unchanged.
+
+Inspect the returned content and approval digest before invoking
+`mutation-apply --proposal-id ID --approval-digest DIGEST --writers-paused`.
+The digest binds the exact payload, identity, vault, path and before/after
+revisions. `mutation-cancel --proposal-id ID` cancels only an unstarted proposal.
+A prepared intent or completed effect cannot be cancelled or replayed.
+All commands run through `scripts/hermes/vault.py` in the locked environment.
+
+`mutation-serve` exposes `vault_propose` in addition to the five existing tools
+for that isolated fixture. It exposes no apply tool. Default profile tool lists,
+Hermes qualification and Telegram commands remain unchanged.
+
+`mutation-recover` compares prepared intents with disk. Matching after-hashes
+confirm publication and rebuild derived indexes; matching before-hashes become
+`not_applied`; other effects become `quarantined`. Recovery never publishes a
+proposal. Repeated successful application returns the original receipt without
+writing. `index_pending` retries derived indexing only. Complete private staging
+files are cleaned up during recovery; incomplete staging files remain for
+operator inspection and are never replayed. Legacy v0.4.1 drafts lack validated
+approval metadata and cannot apply; prepare a fresh proposal instead.
+
+Synthetic restore proof still applies. Real activation requires separate backup
+proof, paused editors, transport authorization and model qualification.

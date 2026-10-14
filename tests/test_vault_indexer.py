@@ -3,7 +3,6 @@
 import json
 import sqlite3
 from contextlib import closing
-from pathlib import Path
 
 import pytest
 from vault_helpers import create_vault, write_note
@@ -221,20 +220,19 @@ def test_interrupted_write_preserves_previous_index(tmp_path, monkeypatch, error
         for name in ("_index/graph.json", "_index/notes.sqlite", "99_System/INDEX.md")
     ]
     before = [path.read_bytes() for path in paths]
-    replace = index.os.replace
-    failed = False
 
-    def interrupt(source, destination):
-        nonlocal failed
-        if Path(destination) == paths[1] and not failed:
-            failed = True
-            raise error("publication interrupted")
-        return replace(source, destination)
+    def interrupt(root):
+        raise error("publication interrupted")
 
-    monkeypatch.setattr(index.os, "replace", interrupt)
-    with pytest.raises(error, match="publication interrupted"):
-        index.vault_write(vault, "00_Inbox/new.md", "New")
-    assert not (vault / "00_Inbox/new.md").exists()
+    monkeypatch.setattr(index, "index_vault", interrupt)
+    if error is KeyboardInterrupt:
+        with pytest.raises(error, match="publication interrupted"):
+            index.vault_write(vault, "00_Inbox/new.md", "New")
+    else:
+        assert index.vault_write(vault, "00_Inbox/new.md", "New")["outcome"] == (
+            "index_pending"
+        )
+    assert (vault / "00_Inbox/new.md").read_text(encoding="utf-8") == "New\n"
     assert [path.read_bytes() for path in paths] == before
 
 

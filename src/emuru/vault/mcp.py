@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from emuru.vault import indexer as index
+from emuru.vault import mutations
 
 MAX_OPEN_CHARS = 50_000
 DEFAULT_OPEN_CHARS = 12_000
@@ -15,15 +17,18 @@ DEFAULT_SEARCH_RESULTS = 8
 MAX_MAP_ENTRIES = 200
 
 
-def _call(function, *args):
+def _call(function, *args, **kwargs):
     try:
-        return function(*args)
-    except (ValueError, OSError) as error:
+        return function(*args, **kwargs)
+    except (ValueError, OSError, sqlite3.Error) as error:
         raise ToolError(str(error)) from error
 
 
-def create_mcp(vault_root: Path) -> MCPServer:
+def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPServer:
     vault_root = vault_root.expanduser().absolute()
+    if proposal_home is not None:
+        mutations.require_synthetic(proposal_home, vault_root)
+        mutations.recover_proposals(proposal_home, vault_root)
     index.index_vault(vault_root)
     mcp = MCPServer("EMURU Vault")
 
@@ -98,5 +103,32 @@ def create_mcp(vault_root: Path) -> MCPServer:
         to overwrite existing notes.
         """
         return _call(index.vault_write, vault_root, path, content)
+
+    if proposal_home is not None:
+
+        @mcp.tool()
+        def vault_propose(
+            path: str,
+            content: str | None = None,
+            expected_revision: str | None = None,
+            anchor: str | None = None,
+            replacement: str | None = None,
+        ) -> dict[str, Any]:
+            """Preview one approved-root creation or exact anchored update.
+
+            Creation requires content and an absent target. Updates require the
+            full revision from vault_open, one exact anchor, and replacement.
+            This stores a private proposal. It cannot apply or approve it.
+            """
+            return _call(
+                mutations.propose_note,
+                proposal_home,
+                vault_root,
+                path,
+                content=content,
+                expected_revision=expected_revision,
+                anchor=anchor,
+                replacement=replacement,
+            )
 
     return mcp

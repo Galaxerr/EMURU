@@ -1,4 +1,4 @@
-# EMURU architecture — v0.4.1
+# EMURU architecture — v0.4.2
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
 vault through five constrained MCP tools. Telegram adds durable owner-only
@@ -32,9 +32,9 @@ All module paths below are relative to `src/emuru/`.
 
 | Module | Owns |
 | --- | --- |
-| `vault/indexer.py` | Allowed note roots, parsing, wikilinks, graph and FTS schema/queries, derived paths, publication, Inbox capture and refresh rollback |
-| `vault/mcp.py` | Five-tool exposure, request limits and MCP error translation; no SQL or graph interpretation |
-| `vault/mutations.py` | Descriptor-relative mutation paths, private policy, shared writer lock and durable internal proposal/receipt storage; no broader publication entry point |
+| `vault/indexer.py` | Allowed note roots, parsing, wikilinks, graph and FTS schema/queries, derived paths, publication, atomic Inbox capture and refresh recovery |
+| `vault/mcp.py` | Five default tools, optional synthetic proposal tool, request limits and MCP error translation |
+| `vault/mutations.py` | Descriptor-relative mutation paths, private policy, shared writer lock and durable proposals/receipts, exact-anchor validation and synthetic-only atomic publication/recovery |
 | `vault/target.py` | Private live-target validation using indexer-owned derived paths and shared profile-home validation |
 | `vault/cli.py`, `vault/server.py` | `emuru-index` and `emuru-vault-mcp` entry points |
 | `hermes/profile.py` | Shared profile policy, exclusive gateway composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
@@ -95,14 +95,17 @@ must not be installed into that environment by the launcher.
   Descriptor-relative traversal rejects symlink ancestors and unsafe destinations.
   Inbox capture and index refresh share an interprocess lock. The lock covers
   cooperating EMURU writers; other editors require an exclusive window.
-  Refresh stages all outputs, restoring replaced outputs on exceptions. Failed
-  writes remove the new note; blocked cleanup reports its committed path.
-  This is exception rollback, not crash-atomic publication across files.
+  Notes publish atomically after staging/fsync. Derived refresh failure preserves
+  the saved note and reports `index_pending`; derived outputs retain exception
+  rollback. `vault_open` revisions hash complete raw bytes, preserving CRLF.
 - Absent private mutation policy denies broader roots. A valid policy selects
   roots under `10_Projects`, `20_Areas` or `30_Resources` with `enabled: false`.
-  Internal proposals and cancellation receipts persist in a private SQLite
-  journal, independently of Telegram receipt pruning. No propose/apply MCP tool
-  or broader publication path exists in v0.4.1.
+  Proposals, approval bindings, durable intents and receipts persist privately,
+  independently of Telegram pruning. The operator apply path requires explicit
+  approval and paused writers, and refuses any vault/profile outside disposable
+  `/tmp` fixtures or with an explicit real target. Only opt-in synthetic MCP
+  sessions add `vault_propose`; no apply tool is exposed. Recovery classifies
+  hashes without publication or replay and repairs derived indexing only.
 - Commit eligible Telegram batches before polling acknowledgement. Authenticate
   the numeric owner in private text-only chat and execute separate turns in FIFO
   order. Queued work survives restart; ambiguous started work is never replayed.

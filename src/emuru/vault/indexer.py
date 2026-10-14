@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from emuru.vault.mutations import mutation_parent, regular, writer_lock
+from emuru.vault.mutations import mutation_parent, publish_note, writer_lock
 
 INDEXABLE_ROOTS = (
     "00_Inbox",
@@ -80,7 +80,10 @@ def _frontmatter_and_body(
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
             raw = "\n".join(lines[1:i])
-            data = yaml.safe_load(raw) or {}
+            try:
+                data = yaml.safe_load(raw) or {}
+            except yaml.YAMLError as error:
+                raise ValueError("Invalid YAML frontmatter.") from error
 
             if not isinstance(data, dict):
                 raise ValueError("frontmatter must be a YAML mapping")
@@ -686,7 +689,8 @@ def vault_open(
         path,
     )
 
-    text = target.read_text(encoding="utf-8")
+    raw = target.read_bytes()
+    text = raw.decode("utf-8")
 
     truncated = len(text) > max_chars
 
@@ -700,6 +704,7 @@ def vault_open(
         "characters": len(content),
         "total_characters": len(text),
         "truncated": truncated,
+        "revision": hashlib.sha256(raw).hexdigest(),
     }
 
 
@@ -748,39 +753,16 @@ def vault_write(
         writer_lock(vault_root),
         mutation_parent(vault_root, path, capture=True) as (parent, name),
     ):
-        created = False
+        normalized = (content.rstrip() + "\n").encode("utf-8")
+        publish_note(parent, name, normalized, before=None)
         try:
-            fd = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=parent,
-            )
-            created = True
-            identity = os.fstat(fd)
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                regular(stream.fileno())
-                stream.write(content.rstrip() + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.fsync(parent)
             index_vault(vault_root)
-        except BaseException:
-            if created:
-                try:
-                    current = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    if (current.st_dev, current.st_ino) != (
-                        identity.st_dev,
-                        identity.st_ino,
-                    ):
-                        raise OSError("Rollback target changed.")
-                    os.unlink(name, dir_fd=parent)
-                    os.fsync(parent)
-                except OSError as rollback_error:
-                    raise ValueError(
-                        f"Note committed at {path}; index refresh failed. "
-                        "Do not repeat the write; repair the index."
-                    ) from rollback_error
-            raise
+        except (OSError, ValueError, sqlite3.Error):
+            return {
+                "created": True,
+                "path": path,
+                "outcome": "index_pending",
+                "message": "saved; indexing pending",
+            }
 
     return {"created": True, "path": path}

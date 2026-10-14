@@ -287,6 +287,11 @@ def test_failed_index_does_not_delete_replaced_note(tmp_path, monkeypatch):
         raise OSError("index failed")
 
     monkeypatch.setattr(index, "index_vault", replace_then_fail)
-    with pytest.raises(ValueError, match="Do not repeat"):
-        vault_write(vault, "00_Inbox/new.md", "capture")
+    result = vault_write(vault, "00_Inbox/new.md", "capture")
+    assert result == {
+        "created": True,
+        "path": "00_Inbox/new.md",
+        "outcome": "index_pending",
+        "message": "saved; indexing pending",
+    }
     assert target.read_text() == "human replacement"

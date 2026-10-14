@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
@@ -181,12 +182,77 @@ async def inspect_or_check(vault: Path, inspect: bool):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "mode", choices=("prepare", "serve", "inspect", "check", "target")
+        "mode",
+        choices=(
+            "prepare",
+            "serve",
+            "inspect",
+            "check",
+            "target",
+            "mutation-propose",
+            "mutation-apply",
+            "mutation-cancel",
+            "mutation-recover",
+            "mutation-serve",
+        ),
     )
     parser.add_argument("--require-real", action="store_true")
+    parser.add_argument("--vault", type=Path)
+    parser.add_argument("--profile-home", type=Path)
+    parser.add_argument("--request", type=Path)
+    parser.add_argument("--proposal-id")
+    parser.add_argument("--approval-digest")
+    parser.add_argument("--writers-paused", action="store_true")
     args = parser.parse_args()
     if args.require_real and args.mode not in {"serve", "target"}:
         parser.error("--require-real applies only to serve or target")
+    if args.mode.startswith("mutation-"):
+        from emuru.vault import mutations
+
+        if args.vault is None or args.profile_home is None:
+            parser.error(
+                "Synthetic mutation commands require --vault and --profile-home"
+            )
+        mutations.require_synthetic(args.profile_home, args.vault)
+        if args.mode == "mutation-serve":
+            command, env = backend(args.vault, "emuru-vault-mcp")
+            env["EMURU_MUTATION_PROFILE_HOME"] = str(args.profile_home.absolute())
+            os.chdir(ROOT)
+            os.execvpe(command[0], command, env)
+        elif args.mode == "mutation-propose":
+            if args.request is None:
+                parser.error(
+                    "mutation-propose requires --request with one JSON proposal"
+                )
+            request = json.loads(args.request.read_text(encoding="utf-8"))
+            if (
+                not isinstance(request, dict)
+                or set(request)
+                - {"path", "content", "expected_revision", "anchor", "replacement"}
+                or "path" not in request
+            ):
+                parser.error("Invalid single-note proposal request")
+            result = mutations.propose_note(args.profile_home, args.vault, **request)
+        elif args.mode == "mutation-apply":
+            if args.proposal_id is None or args.approval_digest is None:
+                parser.error(
+                    "mutation-apply requires --proposal-id and --approval-digest"
+                )
+            result = mutations.apply_proposal(
+                args.profile_home,
+                args.vault,
+                args.proposal_id,
+                args.approval_digest,
+                writers_paused=args.writers_paused,
+            )
+        elif args.mode == "mutation-cancel":
+            if args.proposal_id is None:
+                parser.error("mutation-cancel requires --proposal-id")
+            result = mutations.cancel_proposal(args.profile_home, args.proposal_id)
+        else:
+            result = mutations.recover_proposals(args.profile_home, args.vault)
+        print(json.dumps(result, ensure_ascii=False))
+        return
     if args.mode == "prepare":
         prepare(RUNTIME)
         print("Synthetic runtime vault prepared")
@@ -213,4 +279,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, sqlite3.Error) as error:
+        raise SystemExit(f"Vault operation failed: {error}") from None
