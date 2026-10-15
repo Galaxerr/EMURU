@@ -1,4 +1,4 @@
-# EMURU operating runbook — v0.4.3
+# EMURU operating runbook — v0.4.4
 
 ## Requirements
 
@@ -115,15 +115,42 @@ MCP startup and each successful new Inbox write rebuild the derived indexes.
 Source Markdown is authoritative. Notes are staged privately, fsynced, published
 atomically without overwriting an Inbox collision, and their directory is
 fsynced. Refresh builds derived outputs before publication and restores replaced
-outputs on exceptions. A failed refresh never removes a saved note: the tool
+outputs on exceptions. `_index/completion.json` records source and output hashes;
+it is durably invalidated before output replacement and published last after
+file/directory flushes. Missing, corrupt or mismatched completion/output state
+requires rebuilding from Markdown, including after process death. Never repair
+derived indexes by rolling back committed notes or replaying mutations.
+A failed refresh never removes a saved note: the tool
 returns `outcome: index_pending` and `saved; indexing pending`. Repair the index
 rather than repeating capture. `vault_open` returns a SHA-256 revision of the
 complete raw file, even when its returned content is truncated.
 
 Default `vault_write` remains create-only Inbox capture. Broader production
 writes remain disabled; synthetic proposal/application commands are described
-below. External vault edits require owner-managed indexing/restart. Git
-synchronization remains an owner operation.
+below. Search, map and neighbors hold the shared writer lock while checking
+allowed Markdown paths/raw bytes, refreshing and collecting results. Completed
+external creates, edits, deletes and renames appear on the next indexed read.
+Scans use no-follow descriptors across the existing six readable roots, excluding
+symlinks and refusing special or hard-linked Markdown files. Returned note paths
+and resolved relationship endpoints are revalidated. An unstable scan or failed
+refresh retries once immediately; a second failure returns retrieval unavailable
+without stale results. Invalid arguments and access violations fail immediately.
+The existing 15-second MCP timeout remains unchanged. `vault_open` reads directly.
+The next indexed read attempts repair after `saved; indexing pending`; do not
+repeat the mutation. An old vault without a completion record rebuilds without
+a migration command. Git synchronization remains an owner operation.
+
+External editors do not honor EMURU's lock. Completed changes and detected
+instability are covered; arbitrary concurrent editing cannot provide an atomic
+snapshot. Pause external writers during approved proposal application.
+
+The opt-in synthetic stdio benchmark runs with
+`uv run --frozen python scripts/hermes/vault-benchmark.py --output /tmp/emuru-freshness.json`.
+It measures search/map/neighbors after unchanged content, create/edit/delete/rename,
+and one detected unstable build followed by a successful retry. Each tool/scenario
+has five samples with median and maximum; initialization is separate. The gate
+is 1,000 notes averaging 10 KiB, with every measured call correct and under 15
+seconds. The 100- and 5,000-note runs expose scaling behavior.
 
 If the agent reports an empty vault, first run `scripts/hermes/vault.py target
 --require-real`, then inspect the result of `vault_map` through the configured

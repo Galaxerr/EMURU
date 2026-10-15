@@ -9,7 +9,7 @@ import stat
 import pytest
 from vault_helpers import create_vault
 
-from emuru.vault.indexer import index_vault, vault_write
+from emuru.vault.indexer import index_vault, vault_map, vault_write
 from emuru.vault.mutations import (
     cancel_proposal,
     journal,
@@ -158,12 +158,14 @@ def _capture(vault, entered, finished, operation):
     entered.set()
     if operation == "capture":
         vault_write(vault, "00_Inbox/child.md", "child")
+    elif operation == "retrieval":
+        vault_map(vault, 200)
     else:
         index_vault(vault)
     finished.set()
 
 
-@pytest.mark.parametrize("operation", ["capture", "index"])
+@pytest.mark.parametrize("operation", ["capture", "index", "retrieval"])
 def test_common_lock_excludes_other_process(tmp_path, operation):
     vault = create_vault(tmp_path)
     context = multiprocessing.get_context("spawn")

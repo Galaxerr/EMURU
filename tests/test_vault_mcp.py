@@ -232,3 +232,33 @@ async def test_refresh_failure_does_not_unlink_published_note(tmp_path, monkeypa
         "message": "saved; indexing pending",
     }
     assert unlinked == []
+
+
+async def test_refresh_failure_returns_unavailable_then_repairs(tmp_path, monkeypatch):
+    from emuru.vault import indexer
+
+    vault = create_vault(tmp_path)
+    note = write_note(vault, "10_Projects/note.md", "oldtoken")
+    server = create_mcp(vault)
+    note.write_text("newtoken")
+    original = indexer._index_vault
+    calls = []
+
+    def fail(*args):
+        calls.append(1)
+        raise OSError("refresh failed")
+
+    monkeypatch.setattr(indexer, "_index_vault", fail)
+    async with Client(server, raise_exceptions=True) as client:
+        for name, arguments in [
+            ("vault_search", {"query": "oldtoken"}),
+            ("vault_map", {}),
+            ("vault_neighbors", {"path": "10_Projects/note.md"}),
+        ]:
+            result = await client.call_tool(name, arguments)
+            assert result.is_error
+            assert "retrieval unavailable" in result.content[0].text
+        assert len(calls) == 6
+        monkeypatch.setattr(indexer, "_index_vault", original)
+        result = await client.call_tool("vault_search", {"query": "newtoken"})
+        assert not result.is_error and result.structured_content["count"] == 1

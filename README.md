@@ -4,7 +4,7 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**v0.4.3 synthetic milestone.** Agent inference uses authenticated local
+**v0.4.4 synthetic milestone.** Agent inference uses authenticated local
 LiteLLM exclusively.
 The gateway bounds each request to one cloud attempt and at most one qualified
 local attempt. Unqualified local models remain disabled. Follow this guide for
@@ -13,6 +13,7 @@ setup and the [runbook](docs/RUNBOOK.md) for operation and acceptance gates.
 ## Capabilities and limits
 
 - Retrieve indexed facts with vault-relative citations and wikilink relationships.
+- Refresh search, maps and links after completed external Markdown edits.
 - Create new Markdown notes under `00_Inbox` and refresh search immediately.
 - Serialize Inbox capture and index refresh with a shared vault writer lock.
 - Authenticate one numeric Telegram owner in private text-only chats; serialize
@@ -25,6 +26,11 @@ Broader production writes remain disabled. Disposable `/tmp` fixtures support
 precise proposals, explicit operator application and crash recovery. No apply
 tool is exposed to the model. Default writes remain create-only Inbox capture.
 Saved notes survive index failures and report `saved; indexing pending`.
+The next indexed retrieval attempts repair. Content hashes cover paths and raw
+bytes across all six readable roots; timestamps and file sizes do not determine
+freshness. Unstable scans or refresh failures retry once, then return unavailable.
+A completion record detects interrupted index publication across processes.
+`vault_open` remains a direct read. Real-vault activation remains separately gated.
 Synthetic projects now support stable task/result block links, repeated request
 identities and grounded on-demand daily review. Owner approval remains required.
 Ambiguous started turns are reported without replay. Automatic Git synchronization, general vault cleanup,

@@ -155,6 +155,33 @@ async def inspect_or_check(vault: Path, inspect: bool):
         if "BRIEFING_742" not in searchable and "daily-briefing" not in searchable:
             raise AssertionError("Inbox write was not immediately searchable")
 
+        # Keep this server alive while an external editor changes source Markdown.
+        external = vault / "30_Resources/external.md"
+        external.write_text("---\ntitle: External\n---\nFRESH_CREATE [[EMURU]]")
+        assert "external.md" in text(await call("vault_search", query="FRESH_CREATE"))
+        assert "external.md" in text(await call("vault_map"))
+        assert "external.md" in text(
+            await call("vault_neighbors", path="10_Projects/EMURU.md")
+        )
+        external.write_text("---\ntitle: Changed\nsummary: FRESH_EDIT\n---\n[[Hermes]]")
+        assert "FRESH_EDIT" in text(await call("vault_search", query="FRESH_EDIT"))
+        assert "Changed" in text(await call("vault_map"))
+        assert "Hermes.md" in text(
+            await call("vault_neighbors", path="30_Resources/external.md")
+        )
+        renamed = external.with_name("renamed.md")
+        external.rename(renamed)
+        assert "renamed.md" in text(await call("vault_search", query="FRESH_EDIT"))
+        assert "external.md" not in text(await call("vault_map"))
+        renamed.unlink()
+        assert "renamed.md" not in text(await call("vault_map"))
+        assert (await call("vault_search", query="FRESH_EDIT")).structured_content[
+            "count"
+        ] == 0
+        assert "renamed.md" not in text(
+            await call("vault_neighbors", path="30_Resources/Hermes.md")
+        )
+
         # One integration spot-check; existing v0.2.0 policy tests stay authoritative.
         try:
             rejected = await call(
@@ -182,7 +209,9 @@ async def inspect_or_check(vault: Path, inspect: bool):
                 raise AssertionError("Forbidden write was not reported as rejected")
         if any(path.read_bytes() != original for path, original in protected.items()):
             raise AssertionError("An existing protected note was modified")
-        print("Stdio retrieval / relationships / Inbox write / reindex / policy: PASS")
+        print(
+            "Stdio retrieval / relationships / Inbox write / reindex / external freshness / policy: PASS"
+        )
 
 
 def main():
