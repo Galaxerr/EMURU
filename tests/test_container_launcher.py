@@ -132,6 +132,9 @@ def test_wake_checks_saved_state_and_never_starts_while_systemd_active(
 ):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "prepare_update", lambda *args: {})
+    monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
+    monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     home = tmp_path / "deployment"
     home.mkdir(mode=0o700)
     monkeypatch.setitem(
@@ -156,6 +159,9 @@ def test_wake_checks_saved_state_and_never_starts_while_systemd_active(
 def test_wake_gates_worker_on_checks_and_fresh_ready(tmp_path, monkeypatch):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "prepare_update", lambda *args: {})
+    monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
+    monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     home = tmp_path / "deployment"
     home.mkdir(mode=0o700)
     monkeypatch.setitem(
@@ -172,6 +178,8 @@ def test_wake_gates_worker_on_checks_and_fresh_ready(tmp_path, monkeypatch):
         commands.append(command)
         if command[0] == "systemctl":
             return SimpleNamespace(returncode=3, stdout="inactive\n")
+        if "ps" in command and "--format" in command:
+            return SimpleNamespace(returncode=0, stdout="")
         if "ps" in command:
             return SimpleNamespace(
                 returncode=0, stdout="" if len(commands) == 2 else "emuru\n"
@@ -179,7 +187,7 @@ def test_wake_gates_worker_on_checks_and_fresh_ready(tmp_path, monkeypatch):
         if "logs" in command:
             return SimpleNamespace(
                 returncode=0,
-                stdout="EMURU Telegram checkpoint: required guards and five MCP tools READY\n",
+                stdout="EMURU Telegram checkpoint: required guards and selected MCP tools READY\n",
             )
         return SimpleNamespace(returncode=0, stdout="")
 
@@ -204,6 +212,9 @@ def test_wake_gates_worker_on_checks_and_fresh_ready(tmp_path, monkeypatch):
 def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch, failed_probe):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "prepare_update", lambda *args: {})
+    monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
+    monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     home = tmp_path / "deployment"
     home.mkdir(mode=0o700)
     monkeypatch.setitem(
@@ -218,6 +229,8 @@ def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch, failed_pro
         calls.append(command)
         if command[0] == "systemctl":
             return SimpleNamespace(returncode=3, stdout="inactive\n")
+        if "ps" in command and "--format" in command:
+            return SimpleNamespace(returncode=0, stdout="")
         if "ps" in command:
             return SimpleNamespace(returncode=0, stdout="")
         if failed_probe in command:
@@ -234,6 +247,9 @@ def test_wake_failed_probe_never_starts_worker(tmp_path, monkeypatch, failed_pro
 def test_failed_current_readiness_stops_worker(tmp_path, monkeypatch, failure, capsys):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "prepare_update", lambda *args: {})
+    monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
+    monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
     monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
     monkeypatch.setitem(globals_, "time", SimpleNamespace(sleep=lambda _: None))
@@ -243,6 +259,8 @@ def test_failed_current_readiness_stops_worker(tmp_path, monkeypatch, failure, c
         calls.append(command)
         if command[0] == "systemctl":
             return SimpleNamespace(returncode=3, stdout="inactive\n")
+        if "ps" in command and "--format" in command:
+            return SimpleNamespace(returncode=0, stdout="")
         if "ps" in command:
             return SimpleNamespace(returncode=0, stdout="")
         if "logs" in command:
@@ -268,6 +286,9 @@ def test_failed_current_readiness_stops_worker(tmp_path, monkeypatch, failure, c
 def test_uncertain_systemd_state_blocks_docker(tmp_path, monkeypatch, code, output):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "prepare_update", lambda *args: {})
+    monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
+    monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
     monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
     calls = []
@@ -285,6 +306,9 @@ def test_uncertain_systemd_state_blocks_docker(tmp_path, monkeypatch, code, outp
 def test_wake_reuses_running_worker_without_restarting(tmp_path, monkeypatch):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     globals_ = module["wake"].__globals__
+    monkeypatch.setitem(globals_, "prepare_update", lambda *args: {})
+    monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
+    monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
     monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
     calls = []

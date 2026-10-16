@@ -5,6 +5,21 @@ import stat
 import sys
 from pathlib import Path
 
+if os.environ.get("EMURU_SOURCE_ID"):
+    sys.path.insert(0, "/opt/emuru/src")
+    from emuru.deployment import source_identity
+
+    if source_identity(Path("/opt/emuru")) != os.environ["EMURU_SOURCE_ID"]:
+        raise SystemExit("Worker source identity mismatch")
+if os.environ.get("EMURU_GATEWAY_ID"):
+    from emuru.deployment import gateway_identity
+
+    if (
+        gateway_identity(Path("/opt/emuru"), Path(__file__))
+        != os.environ["EMURU_GATEWAY_ID"]
+    ):
+        raise SystemExit("Gateway source identity mismatch")
+
 for name in (
     "EMURU_GATEWAY_KEY",
     "OLLAMA_API_KEY",

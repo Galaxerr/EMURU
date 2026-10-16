@@ -8,6 +8,6 @@
   "max_active_turns": 1,
   "poll_timeout_seconds": 25,
   "reconnect_delay_seconds": 5,
-  "allowed_commands": ["start", "help", "status", "new", "stop", "apply", "cancel", "propose-new"],
+  "allowed_commands": ["start", "help", "status", "new", "stop", "apply", "cancel", "propose-new", "revise"],
   "ambiguous_turn_recovery": "report_without_replay"
 }

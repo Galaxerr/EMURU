@@ -270,11 +270,23 @@ async def check_mutations(adapter, execution, directory):
     async def model(event):
         model_calls.append(event.text)
         identity = mutations.authenticated_request(home, vault)
+        number = len(proposals) + 1
+        revising = event.text.startswith("The owner requests a replacement proposal.")
+        path = (
+            proposals[-1]["path"]
+            if revising
+            else f"10_Projects/native-owner-{number}.md"
+        )
+        content = (
+            "# Revised native project\n- [ ] Revised task ^task-native\n"
+            if revising
+            else f"# Native owner project {number}\n- [ ] Task ^task-native-{number}\n"
+        )
         result = mutations.propose_note(
             home,
             vault,
-            "10_Projects/native-owner.md",
-            content="# Native owner project\n- [ ] Task ^task-native\n",
+            path,
+            content=content,
             authenticated_id=identity,
         )
         proposals.append(result)
@@ -283,7 +295,7 @@ async def check_mutations(adapter, execution, directory):
     adapter._message_handler = model
     queue, bot = execution.queue, adapter._app.bot
 
-    async def request(uid, text):
+    async def request(uid, text, reply=None):
         payload = {
             "update_id": uid,
             "message": {
@@ -294,6 +306,14 @@ async def check_mutations(adapter, execution, directory):
                 "text": text,
             },
         }
+        if reply is not None:
+            payload["message"]["reply_to_message"] = {
+                "message_id": 500,
+                "date": int(queue.now()),
+                "chat": {"id": 42, "type": "private"},
+                "from": {"id": bot.id, "is_bot": True, "first_name": "EMURU"},
+                "text": "EMURU approval: " + reply,
+            }
         queue.stage(bot.id, [payload], bot.username)
         while await execution.worker.once():
             pass
@@ -320,6 +340,62 @@ async def check_mutations(adapter, execution, directory):
     assert (vault / proposal["path"]).stat().st_mtime_ns == modified
     await request(106, "/propose-new create native project")
     assert model_calls == ["create native project", "create native project"]
+    cancelled = proposals[1]
+    assert cancelled["proposal_id"] != identity
+    assert not (vault / cancelled["path"]).exists()
+    owner, bot_id = execution.queue.owner_id, execution.identity()[0]
+    assert (
+        mutations.owner_preview(home, vault, cancelled["proposal_id"], owner, bot_id)[
+            "proposal_id"
+        ]
+        == cancelled["proposal_id"]
+    )
+    try:
+        mutations.owner_preview(
+            home, vault, cancelled["proposal_id"], owner + 1, bot_id
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Proposal preview was not bound to its owner")
+    await request(108, f"/cancel {cancelled['proposal_id']}")
+    await request(109, f"/apply {cancelled['proposal_id']} writers-paused")
+    assert not (vault / cancelled["path"]).exists()
     await request(107, f"/cancel {identity}")
     assert (vault / proposal["path"]).stat().st_mtime_ns == modified
+    # Exercise real PTB admission, durable normalization and native operator commands.
+    await request(110, "/propose-new create conversational project")
+    pending = proposals[-1]
+    assert not (vault / pending["path"]).exists()
+    await request(111, "Change the first task", reply=pending["proposal_id"])
+    revised = proposals[-1]
+    assert (
+        revised["proposal_id"] != pending["proposal_id"]
+        and revised["path"] == pending["path"]
+    )
+    assert (
+        mutations.owner_preview(home, vault, pending["proposal_id"], owner, bot_id)[
+            "outcome"
+        ]
+        == "cancelled"
+    )
+    assert not (vault / revised["path"]).exists()
+    await request(112, "yes", reply=revised["proposal_id"])
+    assert not (vault / revised["path"]).exists()
+    await request(113, "approve, writers paused", reply=revised["proposal_id"])
+    assert (vault / revised["path"]).read_text() == revised["content"]
+    stamp = (vault / revised["path"]).stat().st_mtime_ns
+    await request(114, "approve, writers paused", reply=revised["proposal_id"])
+    assert (vault / revised["path"]).stat().st_mtime_ns == stamp
+    await request(115, "/propose-new create rejected project")
+    rejected = proposals[-1]
+    await request(116, "reject", reply=rejected["proposal_id"])
+    await request(117, "approve, writers paused", reply=rejected["proposal_id"])
+    assert not (vault / rejected["path"]).exists()
+    assert (
+        mutations.owner_preview(home, vault, rejected["proposal_id"], owner, bot_id)[
+            "outcome"
+        ]
+        == "cancelled"
+    )
     execution.mutation_target = None

@@ -41,10 +41,18 @@ scripts/service/sleep.sh
 
 For a nondefault home, pass `--home /absolute/private/home` to each script.
 `EMURU_CONTAINER_HOME` also selects a home; it must match saved metadata.
-Wake/up uses existing images and private configuration. It refuses active or
-inconclusive systemd state, checks infrastructure and authenticated model routing,
-then validates guarded Telegram/profile/vault preflight before starting intake.
-A new worker must reach `EMURU Telegram checkpoint: required guards and configured MCP tools READY`.
+Wake/up updates a stopped deployment from the current checkout. It reuses the
+content-addressed application image when available, or builds it with pinned
+dependencies and `--pull=false`. It does not update the checkout from Git.
+It freezes the gateway source snapshot, verifies the image and running source,
+then records them in `release.json`. It never replaces an active worker; it refuses
+active or inconclusive systemd state and any worker that is not safely stopped.
+Compatible managed profiles receive reviewed stock `SOUL.md`
+updates automatically. Customized or missing guidance is refused for explicit
+review. Wake never enables `mutation-policy.json` or migrates queue/journal state.
+It then checks infrastructure and authenticated model routing, and validates
+guarded Telegram/profile/vault preflight before starting intake.
+A new worker must reach `EMURU Telegram checkpoint: required guards and selected MCP tools READY`.
 Wake prints `EMURU READY` only after that checkpoint and a running-worker check.
 Repeated wake leaves a running worker alone; it is not fresh acceptance evidence.
 
@@ -80,7 +88,16 @@ uv run --frozen python scripts/hermes/vault-profile.py --offline
 uv run --frozen python scripts/hermes/telegram.py --offline
 uv run --frozen python scripts/hermes/qualify.py --fixture
 scripts/hermes/telegram.sh --runtime-check
+uv run --frozen python scripts/hermes/wake-check.py
+uv run --frozen pytest tests/test_deployment_update.py tests/test_container_launcher.py
 ```
+
+The disposable Docker checks require the existing acceptance image (`emuru:latest`,
+or `EMURU_TEST_IMAGE`). Build one with `docker build --pull=false -t emuru:wake-test .`,
+then run `EMURU_TEST_IMAGE=emuru:wake-test uv run --frozen python scripts/hermes/wake-check.py`.
+The runner seeds synthetic state from that image and exercises the real wake update,
+with synthetic polling/model calls and the pinned native Telegram proposal checks.
+It does not use production metadata, credentials, or vault bindings.
 
 Run one file with `uv run --frozen pytest tests/test_environment.py`. The
 runtime check requires the pinned Hermes installation but makes no provider
@@ -183,9 +200,13 @@ absolute path. `enabled: false`, a missing policy, malformed input, extra roots,
 or any target mismatch denies broader proposals. Inbox capture remains governed
 by the existing `vault_write` path. Do not copy an enabled policy into a synthetic
 qualification fixture or another profile. After separately approved activation,
-reapply the existing profile with
-`uv run --frozen python scripts/hermes/vault-profile.py --apply`, audit by running
-the same command without `--apply`, and manually restart the drained runtime. Registration, inference
+keep the enabled policy in the deployment's private `profiles/emuru` directory.
+This is a persistent capability of normal owner-private Telegram sessions, not a
+per-session or staging toggle. A normal stopped `scripts/service/wake.sh` synchronizes
+the six-tool registration and preserves the approved policy across restarts.
+Activation requires a graceful worker restart; use a fresh owner `/new` session
+to verify `vault_propose` is available without requesting a note save or application.
+Registration, inference
 guards and readiness must agree on the six-tool surface. Disabling broader writes
 requires the same drained profile update back to five tools.
 
@@ -212,6 +233,7 @@ delivery receipt is complete. Commands are:
 /apply <proposal-id> writers-paused
 /cancel <proposal-id>
 /propose-new <request>
+/revise <proposal-id> <requested edits>
 ```
 
 Before `/apply`, pause other vault writers, review the entire preview, and send
@@ -221,6 +243,39 @@ policy, vault target, preview digest, proposal revision and durable claim. The
 model has no apply tool. `/cancel` cancels an unstarted proposal; prepared or
 completed effects cannot be cancelled or replayed. A failed or uncertain preview
 delivery blocks application until the complete preview is presented successfully.
+
+For an explicit creation or edit outside Inbox, the agent uses `vault_propose`
+when its trusted tool description lists the approved target root. Asking to see
+changes first requests a stored preview, not an unstored draft. A direct project
+creation can use the owner's supplied goal/tasks without an existing Inbox idea.
+
+Reply directly to the transport's `EMURU approval: <proposal-id>` message with
+`approve, writers paused` after reviewing all preview parts and pausing other
+writers. A bare `yes` does not apply. `reject`, `no`, or `cancel` cancels the
+pending proposal. Replying with edits cancels the old proposal and prepares a
+replacement with fresh approval; `/revise` is the command equivalent. Revision
+context must fit the existing input bound; oversized revisions leave the old
+proposal pending and require a complete new request. Silence never applies or
+cancels anything. Forwarded or wrong-bot/chat replies cannot authorize changes.
+Commands remain available when replying is inconvenient.
+
+After an approved stopped-worker wake, send `/new` in the owner's private chat,
+then this acceptance request:
+
+```text
+Create a new project named "Release Validation" with the goal "Verify EMURU v0.5.0 manual acceptance". Its first task should be "Validate project creation". Show me the exact proposed changes before applying anything.
+```
+
+Expect a stored proposal ID, the full transport preview and an `EMURU approval:`
+prompt. Reply `reject` to validate cancellation without a vault write. Test edits
+and `approve, writers paused` only with an explicitly approved disposable target;
+verify the returned diff against a fresh readback. An active-worker wake does not
+install this workflow; schedule its cutover separately.
+
+After successful application, the transport returns the approved diff, path and
+applied revision. Anchored updates show the exact changed fragment; creations
+show the complete added note. Index-pending and previously applied receipts are
+labelled explicitly. Failed/stale/uncertain application never reports a new success.
 
 Application outcomes are `applied`, `index_pending`, `not_applied`, or
 `quarantined`. Repair `index_pending` by rebuilding derived indexes. Inspect
@@ -361,13 +416,19 @@ empty directories. The default home is `$HOME/.local/state/emuru/container`.
    write_private(sys.argv[2], render(read_route(sys.argv[1])))
    PY_RENDER
    ```
-5. Run `scripts/service/wake.sh`; require fresh READY and perform live acceptance
-   below. Null/expired/invalid local qualification permits primary-only operation,
-   but does not satisfy qualified-local release acceptance.
+5. Validate deployment update behavior with the disposable runner and focused tests
+   listed under [Run tests](#run-tests). Run `scripts/service/wake.sh` against a
+   real deployment only after it is stopped, production update is explicitly
+   approved, and no queue or mutation-state migration is required. Require fresh
+   READY and perform live acceptance below. Null/expired/invalid local qualification
+   permits primary-only operation, but does not satisfy qualified-local release
+   acceptance.
 
 For credential changes, stop through `sleep.sh`, back up stopped state, and update
 only the selected private credential copies and root `.env` consistently. Recreate
-changed services explicitly while stopped; normal wake uses no builds. Never print
+changed services explicitly while stopped. Normal wake builds only when the
+content-addressed application image is absent. The build does not update dependency
+pins; a cache miss may download the exact pinned artifacts. Never print
 secret values in Compose config/logs or public reports. Do not change provider routes
 or credentials during a migration. Root `.env` and process environment are separate:
 existing process variables take precedence during first initialization.
@@ -721,8 +782,9 @@ toolset lacks `vault_propose`, or the target is outside approved proposal roots
 (including an Inbox project plan), return a grounded, unstored text draft and
 explicitly say "No update was applied." Do not create a separate decision note
 or a new project version as an update fallback. Standalone capture still uses
-the existing Inbox procedure. Repository guidance does not update an installed
-private `SOUL.md`; installing it remains an explicit operator action. With no
+the existing Inbox procedure. Wake may update a managed private `SOUL.md` only
+when its current content matches a reviewed stock version; customized or missing
+guidance requires explicit review. Wake does not enable mutation policy. With no
 proposal capability, new-project requests return an unstored structured Markdown
 draft and intended project path, retaining the Inbox source. Use a fresh `/new`
 session after reviewed guidance installation to verify conversational behavior.

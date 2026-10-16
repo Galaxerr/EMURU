@@ -277,6 +277,9 @@ def test_stopped_wake_sleep_and_simulated_reboot_preserve_state(
     d = deployment
     monkeypatch.setitem(d.globals, "saved_deployment", lambda home: {})
     monkeypatch.setitem(d.globals, "valid_qualification", lambda route: True)
+    monkeypatch.setitem(d.globals, "prepare_update", lambda command, values: {})
+    monkeypatch.setitem(d.globals, "verify_release", lambda command, env: None)
+    monkeypatch.setitem(d.globals, "record_release", lambda values, env: None)
     d.record["state"] = "READY"
     for item in d.items.values():
         item["status"] = "exited"
@@ -300,6 +303,8 @@ def test_stopped_wake_sleep_and_simulated_reboot_preserve_state(
     def lifecycle(command, **kwargs):
         if command[0] == "systemctl":
             return NS(returncode=3, stdout="inactive\n")
+        if "ps" in command and "--format" in command:
+            return NS(stdout='[{"State":"exited"}]')
         if "ps" in command and "--services" in command:
             return NS(
                 stdout="emuru\n" if d.items["emuru"]["status"] == "running" else ""
@@ -343,6 +348,9 @@ def test_stopped_wake_sleep_and_simulated_reboot_preserve_state(
                         "DEPLOYMENT_ENV",
                         "saved_deployment",
                         "valid_qualification",
+                        "prepare_update",
+                        "verify_release",
+                        "record_release",
                     )
                 }
             )

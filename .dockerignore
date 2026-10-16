@@ -1,5 +1,6 @@
 **
 !Dockerfile
+!.dockerignore
 !pyproject.toml
 !uv.lock
 !README.md
@@ -13,6 +14,8 @@
 !infra/hermes/**
 !infra/docker/
 !infra/docker/secret-exec.py
+!infra/docker/compose.yaml
+!infra/docker/deployment-lock.json
 !agents/
 !agents/emuru/
 !agents/emuru/**

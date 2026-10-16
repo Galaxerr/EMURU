@@ -203,6 +203,7 @@ def load_telegram_settings(path: Path) -> dict:
             "apply",
             "cancel",
             "propose-new",
+            "revise",
         ],
         "ambiguous_turn_recovery": "report_without_replay",
     }
@@ -228,7 +229,7 @@ class QueueFull(RuntimeError):
     """Do not return a polling batch whose accepted input cannot be committed."""
 
 
-def admit_update(update, owner_id, settings, now, bot_username=""):
+def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
     """Return minimal text-only Bot API JSON, or reject before any Hermes handler."""
     if type(owner_id) is not int or owner_id <= 0:
         raise ValueError("A single positive owner ID is required")
@@ -285,6 +286,41 @@ def admit_update(update, owner_id, settings, now, bot_username=""):
     } | service_flags
     if set(msg) - permitted:
         return None
+    # Persist a bound command rather than trusting reply metadata after a restart.
+    reply = msg.get("reply_to_message")
+    if isinstance(reply, dict) and not text.lstrip().startswith("/"):
+        header = re.fullmatch(
+            r"EMURU approval: ([0-9a-f]{32})",
+            str(reply.get("text", "")).split("\n", 1)[0],
+        )
+        author, reply_chat = reply.get("from", {}), reply.get("chat", {})
+        if (
+            header
+            and type(bot_id) is int
+            and isinstance(author, dict)
+            and isinstance(reply_chat, dict)
+            and type(reply.get("message_id")) is int
+            and reply["message_id"] > 0
+            and type(author.get("id")) is int
+            and author.get("id") == bot_id
+            and author.get("is_bot") is True
+            and reply_chat.get("id") == owner_id
+            and type(reply_chat.get("id")) is int
+            and reply_chat.get("type") == "private"
+            and not reply.get("forward_origin")
+            and not msg.get("forward_origin")
+        ):
+            response = text.strip().casefold()
+            if response == "approve, writers paused":
+                text = f"/apply {header[1]} writers-paused"
+            elif response in {"no", "reject", "cancel"}:
+                text = f"/cancel {header[1]}"
+            elif response in {"yes", "approve", "ok", "okay"}:
+                text = f"/apply {header[1]}"  # The existing handler refuses missing paused-writer confirmation.
+            else:
+                text = f"/revise {header[1]} {text.strip()}"
+            if len(text) > settings["max_input_chars"]:
+                return None
     entities = []
     if text.lstrip().startswith("/"):
         command = re.fullmatch(
@@ -295,6 +331,9 @@ def admit_update(update, owner_id, settings, now, bot_username=""):
             or command[1] not in settings["allowed_commands"]
             or command[2]
             and command[2].lower() != bot_username.lower()
+            or command is not None
+            and command[1] in {"apply", "cancel", "revise"}
+            and msg.get("forward_origin")
         ):
             return None
         entities = [
@@ -460,7 +499,7 @@ class TelegramQueue:
                         },
                     }
                 payload = admit_update(
-                    raw, self.owner_id, self.settings, now, bot_username
+                    raw, self.owner_id, self.settings, now, bot_username, bot
                 )
                 if payload is None:
                     states.append(None)
@@ -547,7 +586,7 @@ class TelegramQueue:
                     return None
                 now = self.now()
                 payload = admit_update(
-                    as_update(row), self.owner_id, self.settings, now, bot_username
+                    as_update(row), self.owner_id, self.settings, now, bot_username, bot
                 )
                 if payload is None:
                     state = (

@@ -1036,9 +1036,7 @@ def test_bound_stdio_proposals_preview_apply_and_repetition(
                 if endpoint == "sendMessage"
             ]
             instructions = [
-                i
-                for i, text in enumerate(sent)
-                if text.startswith("Pause other writers")
+                i for i, text in enumerate(sent) if text.startswith("EMURU approval:")
             ]
             assert instructions and all(
                 sent[i - 1].startswith("Preview ") for i in instructions

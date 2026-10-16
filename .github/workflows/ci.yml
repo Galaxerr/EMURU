@@ -117,6 +117,8 @@ jobs:
         run: >-
           uv run --frozen pytest -q
           tests/test_container_launcher.py tests/test_container_startup.py
+          tests/test_deployment_update.py
+          tests/test_proposal_creation.py
           tests/test_container_status.py tests/test_container_check.py
           tests/test_native_launch.py tests/test_cli_runtime.py
           tests/telegram
@@ -134,3 +136,5 @@ jobs:
         run: docker build -t emuru:latest .
       - name: Native MCP, auth, tools and persistent receipts
         run: uv run --frozen python scripts/hermes/container-check.py
+      - name: Automatic stopped wake update and native proposal lifecycle
+        run: uv run --frozen python scripts/hermes/wake-check.py

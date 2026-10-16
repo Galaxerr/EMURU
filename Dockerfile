@@ -9,12 +9,14 @@ RUN uv sync --locked --no-dev --extra telegram --extra mcp --python /usr/local/b
 RUN git config --system --add safe.directory /opt/hermes
 WORKDIR /opt/emuru
 COPY pyproject.toml uv.lock README.md ./
+COPY Dockerfile .dockerignore ./
 RUN uv sync --locked --no-install-project --python /usr/local/bin/python3.14
 COPY src ./src
 RUN uv sync --locked --python /usr/local/bin/python3.14
 COPY scripts/hermes ./scripts/hermes
 COPY infra/hermes ./infra/hermes
 COPY infra/docker/secret-exec.py ./infra/docker/secret-exec.py
+COPY infra/docker/compose.yaml infra/docker/deployment-lock.json ./infra/docker/
 COPY agents/emuru ./agents/emuru
 COPY tests/fixtures/hermes-vault ./tests/fixtures/hermes-vault
 COPY tests/telegram/native_session_case.py ./tests/telegram/native_session_case.py

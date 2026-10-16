@@ -113,7 +113,18 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
 
     if proposal_home is not None:
 
-        @mcp.tool()
+        @mcp.tool(
+            description=(
+                "Prepare and store a non-mutating preview for an explicit owner creation or edit request. "
+                "Approved roots: "
+                + ", ".join(mutations.load_policy(proposal_home)["roots"])
+                + ". "
+                "Use this for new projects/resources outside Inbox; do not substitute an unstored draft when this tool is available. "
+                "Creation requires content and an absent target; updates require the full revision from vault_open, one exact anchor, and replacement. "
+                "Search for duplicates first. A direct owner creation request needs no existing Inbox source. "
+                "Never apply or approve changes. Owner approval is handled by the trusted Telegram transport."
+            )
+        )
         def vault_propose(
             path: str,
             content: str | None = None,

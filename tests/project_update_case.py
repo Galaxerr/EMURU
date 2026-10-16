@@ -8,7 +8,6 @@ from pathlib import Path
 from mcp import Client
 
 from emuru.vault.mcp import create_mcp
-from emuru.vault.mutations import load_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT = runpy.run_path(str(ROOT / "scripts/hermes/qualify.py"))["chat"]
@@ -34,11 +33,6 @@ async def update_case(inference, model, vault, path, prompt, *, home=None, soul=
     creating = not (vault / path).exists()
     before = {p: p.read_bytes() for p in vault.rglob("*.md")}
     guidance = soul or (ROOT / "agents/emuru/SOUL.md").read_text()
-    if home is not None:
-        guidance += (
-            "\nApproved proposal roots for this synthetic session: "
-            + json.dumps(load_policy(home)["roots"])
-        )
     messages = [
         {
             "role": "system",

@@ -1,6 +1,7 @@
 """Private owner-bound proposals, deterministic approval, and crash recovery."""
 
 import ctypes
+import difflib
 import fcntl
 import hashlib
 import json
@@ -601,6 +602,41 @@ def preview_parts(preview, limit=3500):
         text += f"Exact anchor:\n{changes['anchor']}\nExact replacement:\n{changes['replacement']}"
     else:
         text += f"Exact creation content:\n{preview['content']}"
+    return message_parts(text, limit, label="Preview")
+
+
+def applied_diff_parts(preview, receipt):
+    """Report only the approved change; edit line numbers refer to its exact fragment."""
+    changes = preview.get("changes")
+    before = changes["anchor"] if changes else ""
+    after = changes["replacement"] if changes else preview["content"]
+    lines = list(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=preview["path"] + " (approved fragment)"
+            if changes
+            else "/dev/null",
+            tofile=preview["path"],
+        )
+    )
+    diff = "".join(
+        line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+        for line in lines
+    )
+    label = (
+        "Previously applied proposal; no mutation replayed"
+        if preview["outcome"] in {"applied", "index_pending"}
+        else "Applied proposal"
+    )
+    text = f"{label} {preview['proposal_id']}\nPath: {preview['path']}\nApplied revision: {receipt['after_revision']}\n"
+    if receipt["outcome"] == "index_pending":
+        text += "saved; indexing pending\n"
+    text += "Approved diff" + (" (changed fragment)" if changes else "") + ":\n" + diff
+    return message_parts(text, label="Applied diff")
+
+
+def message_parts(text, limit=3500, *, label):
     # UTF-16 bounds also keep astral characters within Telegram's message limit.
     chunks, chunk, size = [], [], 0
     for char in text:
@@ -611,7 +647,7 @@ def preview_parts(preview, limit=3500):
         chunk.append(char)
         size += width
     chunks.append("".join(chunk))
-    return [f"Preview {i}/{len(chunks)}\n{part}" for i, part in enumerate(chunks, 1)]
+    return [f"{label} {i}/{len(chunks)}\n{part}" for i, part in enumerate(chunks, 1)]
 
 
 def _hash(data: bytes | None):

@@ -4,18 +4,21 @@ services:
     profiles: [agent]
     build:
       context: ../..
-    image: emuru:latest
+    image: ${EMURU_IMAGE:-emuru:latest}
     user: "${EMURU_UID:?}:${EMURU_GID:?}"
     restart: "no"
     stop_grace_period: 660s
     read_only: true
     tmpfs: [/tmp]
     environment:
+      EMURU_SOURCE_ID: ${EMURU_SOURCE_ID:-}
       EMURU_CONTAINER_ROUTE: /run/emuru/route.json
       EMURU_TELEGRAM_OWNER_ID: "${EMURU_TELEGRAM_OWNER_ID:?}"
       EMURU_HERMES_PROFILE_HOME: /state/profiles/emuru
       HERMES_HOME: /state/profiles/emuru
     secrets: [emuru_gateway_key]
+    labels:
+      io.emuru.source: ${EMURU_SOURCE_ID:-unrecorded}
     volumes:
       - type: bind
         source: ${EMURU_PROFILE:?}
@@ -47,14 +50,17 @@ services:
     entrypoint: [python, /opt/emuru/secret-exec.py]
     command: [litellm, --config, /run/emuru/litellm.yaml, --port, "4000"]
     environment:
+      EMURU_GATEWAY_ID: ${EMURU_GATEWAY_ID:-}
       EMURU_CONTAINER_ROUTE: /run/emuru/route.json
       PYTHONPATH: /opt/emuru/src
       LITELLM_LOG: ERROR
       HOME: /tmp
+    labels:
+      io.emuru.source: ${EMURU_SOURCE_ID:-unrecorded}
     secrets: [emuru_gateway_key, ollama_api_key, gemini_api_key, openai_api_key]
     volumes:
       - type: bind
-        source: ../../src
+        source: ${EMURU_SOURCE_ROOT:-../..}/src
         target: /opt/emuru/src
         read_only: true
         bind: {create_host_path: false}
@@ -64,7 +70,7 @@ services:
         read_only: true
         bind: {create_host_path: false}
       - type: bind
-        source: ./secret-exec.py
+        source: ${EMURU_SOURCE_ROOT:-../..}/infra/docker/secret-exec.py
         target: /opt/emuru/secret-exec.py
         read_only: true
         bind: {create_host_path: false}

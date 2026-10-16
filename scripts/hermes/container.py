@@ -2,6 +2,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import secrets
@@ -14,6 +15,12 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from emuru.deployment import (
+    READY_CHECKPOINT,
+    gateway_identity,
+    snapshot_source,
+    source_identity,
+)
 from emuru.environment import load_env, write_env
 from emuru.models import observations
 from emuru.models.gateway import (
@@ -386,23 +393,186 @@ def saved_deployment(home=None):
     return values
 
 
-def wake(home=None):
-    with lifecycle_lock():
-        saved_deployment(home)
-        service = subprocess.run(
-            ["systemctl", "--user", "is-active", "emuru-telegram.service"],
+def ensure_image():
+    """Build with Docker's cache and verify bytes, rather than trusting a tag."""
+    identity = source_identity(ROOT)
+    tag = f"emuru:local-{identity}"
+
+    def image_record():
+        result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{json .}}", tag],
             check=False,
             capture_output=True,
             text=True,
         )
-        if service.returncode not in (0, 3) or service.stdout.strip() not in (
-            "active",
-            "inactive",
-            "failed",
+        if result.returncode:
+            return None
+        record = json.loads(result.stdout)
+        if (
+            record.get("Config", {}).get("Labels", {}).get("io.emuru.source")
+            != identity
         ):
-            raise ValueError("Cannot establish systemd poller state")
-        if service.stdout.strip() == "active":
-            raise ValueError("Systemd Telegram poller is active")
+            raise ValueError("Image source label mismatch")
+        return record["Id"]
+
+    image = image_record()
+    if image is None:
+        subprocess.run(
+            [
+                "docker",
+                "build",
+                "--pull=false",
+                "--tag",
+                tag,
+                "--label",
+                f"io.emuru.source={identity}",
+                str(ROOT),
+            ],
+            check=True,
+        )
+        image = image_record()
+        if image is None:
+            raise ValueError("Updated image unavailable")
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "/opt/emuru/.venv/bin/python",
+            image,
+            "-m",
+            "emuru.deployment",
+            "identity",
+            "--expect",
+            identity,
+        ],
+        check=True,
+    )
+    return identity, image
+
+
+def prepare_update(command, values):
+    """Prepare one release without changing credentials, bindings, or database state."""
+    identity, image = ensure_image()
+    home = Path(values["EMURU_PROFILE"]).parents[1]
+    snapshot = snapshot_source(ROOT, home, identity)
+    env = {
+        **os.environ,
+        "EMURU_IMAGE": image,
+        "EMURU_SOURCE_ID": identity,
+        "EMURU_SOURCE_ROOT": str(snapshot),
+        "EMURU_GATEWAY_ID": gateway_identity(snapshot),
+    }
+    subprocess.run(
+        [
+            *command,
+            "run",
+            "--rm",
+            "--no-deps",
+            "--pull",
+            "never",
+            "emuru",
+            "/opt/emuru/.venv/bin/python",
+            "-m",
+            "emuru.deployment",
+            "profile-sync",
+        ],
+        check=True,
+        env=env,
+    )
+    if source_identity(ROOT) != identity:
+        raise ValueError("Source changed during update; retry wake")
+    return env
+
+
+def record_release(values, env):
+    home = Path(values["EMURU_PROFILE"])
+    record = private_path(home.parents[1] / "release.json")
+    payload = (
+        json.dumps(
+            {
+                "source": env["EMURU_SOURCE_ID"],
+                "image": env["EMURU_IMAGE"],
+                "gateway": env["EMURU_GATEWAY_ID"],
+                "configuration": hashlib.sha256(
+                    (home / "config.yaml").read_bytes()
+                ).hexdigest(),
+                "guidance": hashlib.sha256((home / "SOUL.md").read_bytes()).hexdigest(),
+                "hermes_commit": json.loads(
+                    (ROOT / "infra/hermes/runtime-lock.json").read_text()
+                )["commit"],
+                "litellm": json.loads(
+                    (ROOT / "infra/docker/deployment-lock.json").read_text()
+                )["litellm"],
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    if not record.exists() or record.read_text() != payload:
+        write_private(record, payload)
+
+
+def verify_release(command, env):
+    """Verify the actual running image and gateway release labels, never just a tag."""
+    for service in ("emuru", "litellm"):
+        identifier = subprocess.run(
+            [*command, "ps", "--quiet", service],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.split()
+        if len(identifier) != 1:
+            raise ValueError("Deployment service identity unavailable")
+        record = json.loads(
+            subprocess.run(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    '{"image":{{json .Image}},"source":{{json (index .Config.Labels "io.emuru.source")}},"status":{{json .State.Status}}}',
+                    identifier[0],
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+        if record["source"] != env["EMURU_SOURCE_ID"] or record["status"] != "running":
+            raise ValueError("Running deployment source mismatch")
+        if service == "emuru" and record["image"] != env["EMURU_IMAGE"]:
+            raise ValueError("Running worker image mismatch")
+        if service == "litellm":
+            pins = json.loads((ROOT / "infra/docker/deployment-lock.json").read_text())
+            if record["image"] != pins["litellm"].split("@", 1)[1]:
+                raise ValueError("Running gateway image mismatch")
+
+
+def require_systemd_idle():
+    service = subprocess.run(
+        ["systemctl", "--user", "is-active", "emuru-telegram.service"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if service.returncode not in (0, 3) or service.stdout.strip() not in (
+        "active",
+        "inactive",
+        "failed",
+    ):
+        raise ValueError("Cannot establish systemd poller state")
+    if service.stdout.strip() == "active":
+        raise ValueError("Systemd Telegram poller is active")
+
+
+def wake(home=None):
+    with lifecycle_lock():
+        values = saved_deployment(home)
+        require_systemd_idle()
         command = [
             "docker",
             "compose",
@@ -420,10 +590,28 @@ def wake(home=None):
             text=True,
         )
         if running.stdout.strip() == "emuru":
-            print("EMURU worker already running; no second poller started")
+            print(
+                "EMURU worker already running; updates deferred until explicit sleep/wake"
+            )
             return
         if running.stdout.strip():
             raise ValueError("Unexpected Compose worker state")
+        # Paused/restarting workers must never be replaced by an implicit wake.
+        existing = subprocess.run(
+            [*command, "ps", "--all", "--format", "json", "emuru"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if existing:
+            records = (
+                json.loads(existing)
+                if existing.startswith("[")
+                else [json.loads(line) for line in existing.splitlines()]
+            )
+            if any(item.get("State") not in STOPPED_STATES for item in records):
+                raise ValueError("Worker is not safely stopped")
+        env = prepare_update(command, values)
         subprocess.run(
             [
                 *command,
@@ -439,6 +627,7 @@ def wake(home=None):
                 "litellm",
             ],
             check=True,
+            env=env,
         )
         subprocess.run(
             [
@@ -452,6 +641,7 @@ def wake(home=None):
                 "emuru.models.startup",
             ],
             check=True,
+            env=env,
         )
         for args in (
             ("scripts/hermes/telegram.sh", "--check"),
@@ -463,8 +653,20 @@ def wake(home=None):
             ),
         ):
             subprocess.run(
-                [*command, "run", "--rm", "--no-deps", "emuru", *args], check=True
+                [
+                    *command,
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "--pull",
+                    "never",
+                    "emuru",
+                    *args,
+                ],
+                check=True,
+                env=env,
             )
+        require_systemd_idle()  # Builds and readiness probes may outlive the initial observation.
         started = datetime.now(UTC).isoformat()
         ready = False
         try:
@@ -477,9 +679,12 @@ def wake(home=None):
                     "-d",
                     "--no-deps",
                     "--no-build",
+                    "--pull",
+                    "never",
                     "emuru",
                 ],
                 check=True,
+                env=env,
             )
             for _ in range(60):
                 worker = subprocess.run(
@@ -487,45 +692,42 @@ def wake(home=None):
                     check=True,
                     capture_output=True,
                     text=True,
+                    env=env,
                 )
-                if (
-                    "EMURU Telegram checkpoint: required guards and five MCP tools READY"
-                    in worker.stdout
-                ):
+                if READY_CHECKPOINT in worker.stdout:
                     break
                 running = subprocess.run(
                     [*command, "ps", "--status", "running", "--services", "emuru"],
                     check=True,
                     capture_output=True,
                     text=True,
+                    env=env,
                 )
                 if not running.stdout.strip():
                     break
                 time.sleep(1)
             else:
                 worker = None
-            if (
-                worker is None
-                or "EMURU Telegram checkpoint: required guards and five MCP tools READY"
-                not in worker.stdout
-            ):
+            if worker is None or READY_CHECKPOINT not in worker.stdout:
                 raise ValueError("Guarded worker did not reach READY")
             running = subprocess.run(
                 [*command, "ps", "--status", "running", "--services", "emuru"],
                 check=True,
                 capture_output=True,
                 text=True,
+                env=env,
             )
             if running.stdout.strip() != "emuru":
                 raise ValueError("Guarded worker exited after READY")
+            verify_release(command, env)
+            record_release(values, env)
             ready = True
         finally:
             if not ready:
-                subprocess.run([*command, "stop", "emuru"], check=True)
+                subprocess.run([*command, "stop", "emuru"], check=True, env=env)
         print("EMURU READY")
 
 
-READY_CHECKPOINT = "EMURU Telegram checkpoint: required guards and five MCP tools READY"
 SERVICES = ("emuru", "litellm", "ollama")
 STOPPED_STATES = {"exited", "created", "dead"}
 
