@@ -134,7 +134,7 @@ def test_readiness_fails_closed_and_hard_exit_closes_queue(
     assert calls == [] and capsys.readouterr().out == ""
     monkeypatch.setattr(runtime.native, "vault_tools_ready", lambda: True)
     assert asyncio.run(Runner().start()) is True
-    assert "five MCP tools READY" in capsys.readouterr().out
+    assert "selected MCP tools READY" in capsys.readouterr().out
     run._exit_after_graceful_shutdown(0)
     assert calls == ["native_start", "consumer", "close", ("exit", 0)]
 

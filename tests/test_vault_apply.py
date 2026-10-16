@@ -29,6 +29,15 @@ def apply(home, vault, proposal):
         proposal["proposal_id"],
         proposal["approval_digest"],
         writers_paused=True,
+        **(
+            {
+                "owner": 42,
+                "bot": 7,
+                "application_request": proposal["authenticated_request"],
+            }
+            if "authenticated_request" in proposal
+            else {}
+        ),
     )
 
 
@@ -470,3 +479,294 @@ def test_untrusted_proposal_field_types_fail_closed(tmp_path, field, value):
     with pytest.raises(ValueError, match="fields"):
         mutations.propose_note(home, vault, "10_Projects/new.md", **{field: value})
     assert not (vault / "10_Projects/new.md").exists()
+
+
+def production_fixture(tmp_path):
+    """Explicit real-mode policy against disposable files, never the owner's vault."""
+    home, vault = setup(tmp_path)
+    (home / "mutation-policy.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "roots": ["10_Projects"],
+                "vault_path": str(vault),
+            }
+        )
+    )
+    target = home / "vault-target.json"
+    target.write_text(json.dumps({"mode": "real", "vault_path": str(vault)}))
+    target.chmod(0o600)
+    return home, vault
+
+
+def bound_proposal(home, vault, *, owner=42, bot=7, update=1, text="create project"):
+    request, _ = mutations.begin_request(home, vault, owner, bot, update, text)
+    proposal = mutations.propose_note(
+        home,
+        vault,
+        "10_Projects/owned.md",
+        content="# Owned\n",
+        authenticated_id=request,
+    )
+    return request, proposal
+
+
+def test_production_owner_policy_preview_and_application_binding(tmp_path):
+    home, vault = production_fixture(tmp_path)
+    request, proposal = bound_proposal(home, vault)
+    args = (home, vault, proposal["proposal_id"], proposal["approval_digest"])
+    with pytest.raises(ValueError, match="owner"):
+        mutations.apply_proposal(
+            *args, writers_paused=True, owner=43, bot=7, application_request=request
+        )
+    with pytest.raises(ValueError, match="preview"):
+        mutations.apply_proposal(
+            *args, writers_paused=True, owner=42, bot=7, application_request=request
+        )
+    mutations.record_preview(
+        home, proposal["proposal_id"], proposal["approval_digest"], complete=True
+    )
+    with pytest.raises(ValueError, match="paused"):
+        mutations.apply_proposal(*args, owner=42, bot=7, application_request=request)
+    with pytest.raises(ValueError, match="application request"):
+        mutations.apply_proposal(*args, writers_paused=True, owner=42, bot=7)
+    result = mutations.apply_proposal(
+        *args, writers_paused=True, owner=42, bot=7, application_request=request
+    )
+    assert result["outcome"] == "applied"
+    modified = (vault / proposal["path"]).stat().st_mtime_ns
+    assert (
+        mutations.apply_proposal(
+            *args, writers_paused=True, owner=42, bot=7, application_request=request
+        )
+        == result
+    )
+    assert (vault / proposal["path"]).stat().st_mtime_ns == modified
+    with mutations.journal(home) as db:
+        assert db.execute("SELECT request_id FROM application_requests").fetchone() == (
+            request,
+        )
+    policy = home / "mutation-policy.json"
+    data = json.loads(policy.read_text())
+    data["roots"].append("20_Areas")
+    policy.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="policy changed"):
+        mutations.apply_proposal(
+            *args, writers_paused=True, owner=42, bot=7, application_request=request
+        )
+
+
+def test_production_rejects_legacy_unbound_and_wrong_target(tmp_path):
+    home, vault = setup(tmp_path)
+    legacy = mutations.propose_note(
+        home, vault, "10_Projects/legacy.md", content="legacy"
+    )
+    target = home / "vault-target.json"
+    target.write_text(json.dumps({"mode": "real", "vault_path": str(vault)}))
+    target.chmod(0o600)
+    (home / "mutation-policy.json").write_text(
+        json.dumps(
+            {"enabled": True, "roots": ["10_Projects"], "vault_path": str(vault)}
+        )
+    )
+    with pytest.raises(ValueError, match="owner"):
+        mutations.apply_proposal(
+            home,
+            vault,
+            legacy["proposal_id"],
+            legacy["approval_digest"],
+            writers_paused=True,
+            owner=42,
+            bot=7,
+        )
+    authenticated, _ = mutations.begin_request(
+        home, vault, 42, 7, 1, "fresh legacy replacement"
+    )
+    fresh = mutations.propose_note(
+        home,
+        vault,
+        "10_Projects/legacy.md",
+        content="legacy",
+        authenticated_id=authenticated,
+    )
+    assert fresh["proposal_id"] != legacy["proposal_id"]
+    with pytest.raises(ValueError, match="Authenticated"):
+        mutations.propose_note(
+            home, vault, "10_Projects/new.md", content="new", request_id="claimed-owner"
+        )
+    target.write_text(
+        json.dumps({"mode": "real", "vault_path": str(tmp_path / "wrong")})
+    )
+    with pytest.raises(ValueError, match="selected vault"):
+        mutations.load_policy(home)
+
+
+def test_request_identity_survives_restart_and_read_questions_stay_fresh(tmp_path):
+    home, vault = production_fixture(tmp_path)
+    request, proposal = bound_proposal(home, vault)
+    mutations.finish_request(home, request)
+    assert mutations.begin_request(home, vault, 42, 7, 2, "create project") == (
+        request,
+        True,
+    )
+    fresh, repeated = mutations.begin_request(
+        home, vault, 42, 7, 3, "create project", fresh=True
+    )
+    assert not repeated and fresh != request
+    assert mutations.begin_request(
+        home, vault, 42, 7, 3, "create project", fresh=True
+    ) == (fresh, True)
+    for owner, bot in [(43, 7), (42, 8)]:
+        assert not mutations.begin_request(
+            home, vault, owner, bot, 2, "create project"
+        )[1]
+    read, _ = mutations.begin_request(home, vault, 42, 7, 4, "daily planning")
+    mutations.finish_request(home, read)
+    assert not mutations.begin_request(home, vault, 42, 7, 5, "daily planning")[1]
+    assert (
+        mutations.request_previews(home, request)[0]["proposal_id"]
+        == proposal["proposal_id"]
+    )
+
+
+def test_owner_binding_is_part_of_approval_digest(tmp_path):
+    home, vault = production_fixture(tmp_path)
+    request, proposal = bound_proposal(home, vault)
+    with mutations.journal(home) as db:
+        db.execute("UPDATE owner_requests SET owner='43' WHERE id=?", (request,))
+        db.commit()
+    with pytest.raises(ValueError, match="binding changed"):
+        mutations.owner_preview(home, vault, proposal["proposal_id"], 43, 7)
+
+
+def test_numbered_preview_preserves_all_content_with_utf16_limit():
+    preview = {
+        "proposal_id": "a" * 32,
+        "path": "10_Projects/a.md",
+        "before_revision": None,
+        "content": "😀\r\n" * 3000,
+        "outcome": "proposed",
+    }
+    parts = mutations.preview_parts(preview)
+    assert len(parts) > 1
+    assert all(len(part.encode("utf-16-le")) // 2 < 4096 for part in parts)
+    joined = "".join(part.split("\n", 1)[1] for part in parts)
+    assert joined.endswith(preview["content"])
+
+
+@pytest.mark.parametrize(
+    "point",
+    ["before_publication", "after_publication", "before_receipt", "after_receipt"],
+)
+def test_bound_sigkill_preserves_request_and_application_outcome(tmp_path, point):
+    home, vault = production_fixture(tmp_path)
+    request, proposal = bound_proposal(home, vault)
+    mutations.record_preview(
+        home, proposal["proposal_id"], proposal["approval_digest"], complete=True
+    )
+    proposal["authenticated_request"] = request
+    process = multiprocessing.get_context("spawn").Process(
+        target=_crash, args=(home, vault, proposal, point)
+    )
+    process.start()
+    process.join(15)
+    assert not process.is_alive() and process.exitcode == -signal.SIGKILL
+    target = vault / proposal["path"]
+    modified = target.stat().st_mtime_ns if target.exists() else None
+    mutations.recover_proposals(home, vault)
+    expected = "not_applied" if point == "before_publication" else "applied"
+    assert apply(home, vault, proposal)["outcome"] == expected
+    assert (
+        mutations.application_outcomes(home, vault, 42, 7, 1)[0]["outcome"] == expected
+    )
+    assert mutations.begin_request(home, vault, 42, 7, 2, "create project") == (
+        request,
+        True,
+    )
+    assert (target.stat().st_mtime_ns if target.exists() else None) == modified
+
+
+def test_backend_requires_live_owner_private_durable_claim(tmp_path):
+    from pathlib import Path
+
+    from telegram_helpers import update
+
+    from emuru.telegram.queue import TelegramQueue
+
+    home, vault = production_fixture(tmp_path)
+    settings = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "infra/hermes/telegram-settings.json"
+        ).read_text()
+    )
+    queue = TelegramQueue(
+        tmp_path / "queue/queue.sqlite3", settings, 42, clock=lambda: 100000
+    )
+    try:
+        queue.stage(7, [update(1, "create project")])
+        claim = queue.claim(7)
+        request, _ = mutations.begin_request(home, vault, 42, 7, 1, "create project")
+        mutations.activate_request(home, request, queue.path, 7, 1)
+        assert mutations.authenticated_request(home, vault) == request
+        queue.finish(claim["sequence"], True)
+        with pytest.raises(ValueError, match="claim is invalid"):
+            mutations.authenticated_request(home, vault)
+    finally:
+        queue.close()
+
+
+@pytest.mark.parametrize("lost_receipt", [False, True])
+def test_capture_request_keeps_result_and_never_replays(
+    tmp_path, monkeypatch, lost_receipt
+):
+    from pathlib import Path
+
+    from telegram_helpers import update
+
+    from emuru.telegram.queue import TelegramQueue, load_telegram_settings
+
+    home, vault = production_fixture(tmp_path)
+    settings = load_telegram_settings(
+        Path(__file__).resolve().parents[1] / "infra/hermes/telegram-settings.json"
+    )
+    queue = TelegramQueue(
+        tmp_path / "queue.sqlite3", settings, 42, clock=lambda: 100000
+    )
+    request, _ = mutations.begin_request(home, vault, 42, 7, 1, "capture idea")
+    queue.stage(7, [update(1, "capture idea")])
+    queue.claim(7)
+    mutations.activate_request(home, request, queue.path, 7, 1)
+    write = indexer.vault_write
+
+    def publish_then_lose_ack(*args):
+        result = write(*args)
+        if lost_receipt:
+            raise OSError("lost acknowledgment")
+        return result
+
+    monkeypatch.setattr(indexer, "vault_write", publish_then_lose_ack)
+    try:
+        if lost_receipt:
+            with pytest.raises(OSError, match="acknowledgment"):
+                mutations.capture_note(home, vault, "00_Inbox/capture.md", "idea")
+        else:
+            assert mutations.capture_note(home, vault, "00_Inbox/capture.md", "idea")[
+                "created"
+            ]
+        mutations.finish_request(home, request)
+        assert mutations.begin_request(home, vault, 42, 7, 2, "capture idea") == (
+            request,
+            True,
+        )
+        result = mutations.request_previews(home, request)[0]
+        assert result["path"] == "00_Inbox/capture.md"
+        assert result.get("outcome") == ("uncertain" if lost_receipt else None)
+        mutations.activate_request(home, request, queue.path, 7, 1)
+        assert (
+            mutations.capture_note(home, vault, "00_Inbox/duplicate.md", "idea")
+            == result
+        )
+        assert not (vault / "00_Inbox/duplicate.md").exists()
+        assert (vault / "00_Inbox/capture.md").read_text() == "idea\n"
+    finally:
+        queue.close()

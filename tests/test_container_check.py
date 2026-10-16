@@ -115,9 +115,14 @@ def test_disposable_mounts_live_in_shared_workspace(tmp_path, monkeypatch):
     assert commands[0][-2:] == ["config", "--quiet"]
 
 
-def test_disposable_checks_do_not_depend_on_shared_uv_cache(tmp_path, monkeypatch):
+@pytest.mark.parametrize("image", [None, "emuru:0.5.0-rc-test"])
+def test_disposable_checks_do_not_depend_on_shared_uv_cache(
+    tmp_path, monkeypatch, image
+):
     """Inject the reported rename failure if a check uses the shared cache."""
     import subprocess
+
+    import yaml
 
     module = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))
     monkeypatch.setitem(
@@ -130,6 +135,10 @@ def test_disposable_checks_do_not_depend_on_shared_uv_cache(tmp_path, monkeypatc
         "services:\n  litellm:\n    image: synthetic-image\n"
     )
     monkeypatch.delenv("ACT", raising=False)
+    if image is None:
+        monkeypatch.delenv("EMURU_TEST_IMAGE", raising=False)
+    else:
+        monkeypatch.setenv("EMURU_TEST_IMAGE", image)
     load = runpy.run_path
 
     def load_deployment(path):
@@ -145,6 +154,12 @@ def test_disposable_checks_do_not_depend_on_shared_uv_cache(tmp_path, monkeypatc
 
     def run(command, **kwargs):
         if "/check.py" in command and command[-1] == "seed":
+            override = next(
+                Path(value) for value in command if value.endswith("/check.yaml")
+            )
+            assert yaml.safe_load(override.read_text())["services"]["emuru"][
+                "image"
+            ] == (image or "emuru:latest")
             raise ChecksFinished
         if "run" in command and "emuru" in command:
             commands.append(command)
@@ -166,5 +181,5 @@ def test_disposable_checks_do_not_depend_on_shared_uv_cache(tmp_path, monkeypatc
             module["verify"]()
     finally:
         os.umask(previous)
-    assert len(commands) == 5
+    assert len(commands) == 6
     assert all("UV_NO_CACHE=1" in command for command in commands)

@@ -194,7 +194,16 @@ def load_telegram_settings(path: Path) -> dict:
         "private_chat_only": True,
         "text_only": True,
         "max_active_turns": 1,
-        "allowed_commands": ["start", "help", "status", "new", "stop"],
+        "allowed_commands": [
+            "start",
+            "help",
+            "status",
+            "new",
+            "stop",
+            "apply",
+            "cancel",
+            "propose-new",
+        ],
         "ambiguous_turn_recovery": "report_without_replay",
     }
     ceilings = {
@@ -279,7 +288,7 @@ def admit_update(update, owner_id, settings, now, bot_username=""):
     entities = []
     if text.lstrip().startswith("/"):
         command = re.fullmatch(
-            r"/([a-z]+)(?:@([A-Za-z0-9_]+))?(?:\s.*)?", text, re.DOTALL
+            r"/([a-z]+(?:-[a-z]+)*)(?:@([A-Za-z0-9_]+))?(?:\s.*)?", text, re.DOTALL
         )
         if (
             command is None

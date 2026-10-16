@@ -6,7 +6,7 @@ import time
 from contextvars import ContextVar
 from functools import wraps
 
-from emuru.hermes.profile import TOOLS, HealthError
+from emuru.hermes.profile import HealthError, vault_tools
 from emuru.models.gateway import settings
 
 
@@ -20,7 +20,6 @@ def install_guard(agent_class, permitted=None):
     request_scope = ContextVar("emuru_inference_request", default=None)
     owner_agent = ContextVar("emuru_inference_agent", default=None)
     compression_scope = ContextVar("emuru_compression_request", default=None)
-    allowed_tools = {"mcp__vault__" + name for name in TOOLS}
 
     def check(agent):
         if getattr(agent, "_emuru_owner_token", None) is not owner_scope.get():
@@ -93,7 +92,8 @@ def install_guard(agent_class, permitted=None):
                 raise HealthError("inference_gateway_model_mismatch")
             if any(
                 tool.get("type") != "function"
-                or tool.get("function", {}).get("name") not in allowed_tools
+                or tool.get("function", {}).get("name")
+                not in {"mcp__vault__" + name for name in vault_tools()}
                 for tool in (kwargs.get("tools") or [])
             ):
                 raise HealthError("inference_tool_schema_refused")
@@ -227,7 +227,7 @@ def install_guard(agent_class, permitted=None):
                 if not getattr(agent, "_emuru_owner_open", False):
                     raise HealthError("owner_turn_closed")
                 check(agent)
-                if ref.name not in allowed_tools:
+                if ref.name not in {"mcp__vault__" + name for name in vault_tools()}:
                     raise HealthError("inference_tool_dispatch_refused")
                 return execute(args)
 

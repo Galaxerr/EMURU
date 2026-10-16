@@ -1,9 +1,11 @@
-# EMURU architecture — v0.4.3
+# EMURU architecture — v0.5.0
 
 EMURU connects an independently installed Hermes agent to a separate Obsidian
-vault through five constrained MCP tools. Telegram adds durable owner-only
-admission and serialized execution. Markdown is knowledge; Hermes transcripts
-are conversation history. Neither updates model weights.
+vault through five default MCP tools and an optional proposal tool gated by a
+private owner policy. Telegram adds durable owner-only admission, request identity,
+preview delivery and explicit application. Markdown is knowledge; Hermes
+transcripts are conversation history. Neither updates model weights. This is an
+implementation candidate; production acceptance remains pending.
 
 ## Execution flow
 
@@ -17,7 +19,7 @@ Owner Telegram message
   validated result → Hermes tool execution
   stdio → scripts/hermes/vault.py serve → emuru-vault-mcp
   vault/mcp.py → vault/indexer.py → separate vault
-                         ↳ vault/mutations.py (write paths and lock)
+                         ↳ vault/mutations.py (proposals, approval and recovery)
 ```
 
 CLI chat uses `scripts/hermes/emuru.sh` → `infra/hermes/cli-runtime.py` and the
@@ -33,8 +35,8 @@ All module paths below are relative to `src/emuru/`.
 | Module | Owns |
 | --- | --- |
 | `vault/indexer.py` | Allowed note roots, parsing, wikilinks, graph and FTS schema/queries, derived paths, publication, atomic Inbox capture and refresh recovery |
-| `vault/mcp.py` | Five default tools, optional synthetic proposal tool, request limits and MCP error translation |
-| `vault/mutations.py` | Descriptor-relative mutation paths, private policy, shared writer lock and durable proposals/receipts, exact-anchor validation and synthetic-only atomic publication/recovery |
+| `vault/mcp.py` | Five default tools, policy-gated `vault_propose`, request limits and MCP error translation |
+| `vault/mutations.py` | Descriptor-relative mutation paths, real-vault policy binding, shared writer lock, request/proposal/preview/application records, exact-anchor validation and durable publication/recovery |
 | `vault/target.py` | Private live-target validation using indexer-owned derived paths and shared profile-home validation |
 | `vault/cli.py`, `vault/server.py` | `emuru-index` and `emuru-vault-mcp` entry points |
 | `hermes/profile.py` | Shared profile policy, exclusive gateway composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
@@ -57,6 +59,9 @@ Tests supply a deterministic adapter through the same interface.
 composes the native adapter and worker, with native configuration access kept
 separate from the CLI config transport. The profile core and Telegram modules
 use only stdlib; MCP and YAML dependencies stay in EMURU's vault environment.
+Deterministic Telegram apply/cancel invokes the existing vault adapter in that
+environment. Its internal operator mode verifies the live durable queue claim;
+model tool arguments cannot supply owner or application authority.
 
 ## Configuration and state
 
@@ -91,26 +96,28 @@ must not be installed into that environment by the launcher.
 
 - Read/index only `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
   `40_Journal` and `90_Archive`. Excluded roots and symlinks cannot supply notes.
-- Create-only Markdown writes under `00_Inbox`; no overwrite, update or delete.
-  Descriptor-relative traversal rejects symlink ancestors and unsafe destinations.
-  Inbox capture and index refresh share an interprocess lock. The lock covers
-  cooperating EMURU writers; other editors require an exclusive window.
-  Notes publish atomically after staging/fsync. Derived refresh failure preserves
-  the saved note and reports `index_pending`; derived outputs retain exception
-  rollback. `vault_open` revisions hash complete raw bytes, preserving CRLF.
-- Absent private mutation policy denies broader roots. A valid policy selects
-  roots under `10_Projects`, `20_Areas` or `30_Resources` with `enabled: false`.
-  Proposals, approval bindings, durable intents and receipts persist privately,
-  independently of Telegram pruning. The operator apply path requires explicit
-  approval and paused writers, and refuses any vault/profile outside disposable
-  `/tmp` fixtures or with an explicit real target. Only opt-in synthetic MCP
-  sessions add `vault_propose`; no apply tool is exposed. Recovery classifies
-  hashes without publication or replay and repairs derived indexing only.
-- Synthetic proposal request identities bind exact inputs and target vault in
-  the private mutation journal. Repeated requests reuse prior proposals/receipts;
-  changed inputs fail closed. Existing paths return actual notes, never overwrite.
-  Project tasks, decisions and results stay in Markdown with stable block IDs.
-  Daily review is read-only, cites opened evidence and separates suggestions.
+- `vault_write` creates new Markdown only under `00_Inbox`. Policy-gated
+  `vault_propose` can prepare one approved-root creation or exact anchored update;
+  it cannot apply. Descriptor-relative traversal rejects symlink ancestors and
+  unsafe destinations. Inbox capture, proposals and publication share the
+  interprocess writer lock. Other editors require an exclusive window. Notes
+  publish atomically after staging/fsync. Index failure preserves the note and
+  returns `index_pending`; `vault_open` revisions hash complete raw bytes,
+  preserving CRLF.
+- Missing, disabled or malformed private mutation policy denies broader
+  proposals. Production activation requires `enabled: true`, approved roots, and
+  an absolute `vault_path` exactly matching the selected real
+  `vault-target.json`. Proposal identity binds owner, bot, durable request,
+  vault, payload and revision. Proposal, preview-delivery and application records
+  persist independently of Telegram pruning. Application rechecks policy,
+  owner/request, full preview delivery, paused writers and revision. No apply tool
+  is exposed to the model. Recovery classifies hashes into `applied`,
+  `index_pending`, `not_applied` or `quarantined` without replay.
+- Repeated mutation text reuses its prior proposal or outcome; changed inputs
+  fail closed. `/propose-new <request>` creates an intentional fresh identity.
+  Existing paths return actual notes, never overwrite. Project tasks, decisions
+  and results stay in Markdown with stable block IDs. Daily review is read-only,
+  cites opened evidence and separates suggestions.
 - Commit eligible Telegram batches before polling acknowledgement. Authenticate
   the numeric owner in private text-only chat and execute separate turns in FIFO
   order. Queued work survives restart; ambiguous started work is never replayed.
@@ -119,7 +126,9 @@ must not be installed into that environment by the launcher.
 - Queue diagnostics never instantiate a live queue, recover, prune or rewrite
   rows. Process `health.json` is a separate diagnostic input, merged with safe
   receipt errors; status exposes no message bodies or identities.
-- Expose only the five vault tools; no generic shell/filesystem/browser tools or Hermes-owned retry/fallback. Retrieved content grants no authority.
+- Expose five default vault tools and add `vault_propose` only under the selected
+  private policy; no generic shell/filesystem/browser tools or Hermes-owned
+  application/retry/fallback. Retrieved content grants no authority.
 - Operate one poller and one vault writer. Preserve receipts when investigating
   uncertain effects: at-most-once dispatch does not guarantee exactly-once effects.
 
@@ -152,10 +161,14 @@ automatic fallback chain.
 
 The gateway owns a bounded primary/local sequence using the pinned LiteLLM
 implementation. `qualify.py` exercises both selected models against a disposable
-synthetic vault. It records five repetitions of retrieval, navigation and unique
-Inbox create/search/readback, prompt-injection and forbidden-access faults, three
+synthetic vault. The five-repetition workload covers fact retrieval, MCP
+navigation, Inbox create/search/readback, project creation, anchored task
+completion, stale proposal rejection, repeated request reuse, grounded daily
+planning and injection resistance. It also checks forbidden access, three
 near-context trials, twenty latency samples, hardware headroom and OOM status.
-The real vault is never mounted for automated qualification.
+The real vault is never mounted for automated qualification. The configured
+models remain cloud `gemma4:31b` and local `qwen3.5:2b-q4_K_M`; qualification
+thresholds and context settings remain unchanged.
 
 The private v2 record binds cloud/local identity, digest, Ollama runtime and
 template, effective context, output reserve, workload policy and a canonical

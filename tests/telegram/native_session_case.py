@@ -7,6 +7,9 @@ from unittest.mock import patch
 
 
 async def check(run, adapter, bridge, directory):
+    from hermes_constants import get_hermes_home
+
+    assert get_hermes_home().name.startswith("emuru-telegram-native-home-")
     from agent import system_prompt
     from gateway.config import GatewayConfig
     from gateway.run_turn_runner import TurnRunner
@@ -236,3 +239,87 @@ def check_tools(execution, directory):
     assert queue.terminal_notice(bot, 90).startswith("I couldn’t finish")
     assert queue.stage(bot, [payload], username) == ["failed"]
     assert queue.claim(bot, username) is None
+
+
+async def check_mutations(adapter, execution, directory):
+    """Pinned PTB command admission and final preview/application; no provider or network."""
+    import shutil
+
+    from emuru.vault import mutations
+
+    home = Path(directory) / "mutation-profile"
+    home.mkdir(mode=0o700)
+    vault = Path(directory) / "mutation-vault"
+    shutil.copytree(
+        Path(__file__).resolve().parents[1] / "fixtures/hermes-vault", vault
+    )
+    for name, data in {
+        "mutation-policy.json": {
+            "enabled": True,
+            "roots": ["10_Projects"],
+            "vault_path": str(vault),
+        },
+        "vault-target.json": {"mode": "real", "vault_path": str(vault)},
+    }.items():
+        record = home / name
+        record.write_text(json.dumps(data))
+        record.chmod(0o600)
+    execution.mutation_target = (home, vault)
+    proposals, model_calls = [], []
+
+    async def model(event):
+        model_calls.append(event.text)
+        identity = mutations.authenticated_request(home, vault)
+        result = mutations.propose_note(
+            home,
+            vault,
+            "10_Projects/native-owner.md",
+            content="# Native owner project\n- [ ] Task ^task-native\n",
+            authenticated_id=identity,
+        )
+        proposals.append(result)
+        return "Stored proposal; no mutation applied."
+
+    adapter._message_handler = model
+    queue, bot = execution.queue, adapter._app.bot
+
+    async def request(uid, text):
+        payload = {
+            "update_id": uid,
+            "message": {
+                "message_id": uid,
+                "date": int(queue.now()),
+                "chat": {"id": 42, "type": "private"},
+                "from": {"id": 42, "is_bot": False},
+                "text": text,
+            },
+        }
+        queue.stage(bot.id, [payload], bot.username)
+        while await execution.worker.once():
+            pass
+        assert (
+            queue.db.execute(
+                "SELECT state FROM updates WHERE update_id=?", (uid,)
+            ).fetchone()[0]
+            == "completed"
+        )
+
+    await request(100, "create native project")
+    proposal = proposals[0]
+    identity = proposal["proposal_id"]
+    assert not (vault / proposal["path"]).exists()
+    await request(101, "create native project")
+    assert model_calls == ["create native project"]
+    await request(102, "/apply")
+    await request(103, f"/apply {identity}")
+    assert not (vault / proposal["path"]).exists()
+    await request(104, f"/apply {identity} writers-paused")
+    assert (vault / proposal["path"]).read_text() == proposal["content"]
+    modified = (vault / proposal["path"]).stat().st_mtime_ns
+    await request(105, f"/apply {identity} writers-paused")
+    assert (vault / proposal["path"]).stat().st_mtime_ns == modified
+    await request(106, "/propose-new create native project")
+    assert model_calls == ["create native project", "create native project"]
+    await request(107, f"/cancel {identity}")
+    assert (vault / proposal["path"]).stat().st_mtime_ns == modified
+    execution.mutation_target = None

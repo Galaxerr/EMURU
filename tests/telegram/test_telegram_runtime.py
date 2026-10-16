@@ -935,3 +935,198 @@ def test_shutdown_during_tool_preserves_uncertainty_and_blocks_late_effects(
         for thread in threads:
             thread.join(timeout=2)
             assert not thread.is_alive()
+
+
+@pytest.mark.usefixtures("mcp_environment")
+@pytest.mark.parametrize("failed_preview", [False, True])
+def test_bound_stdio_proposals_preview_apply_and_repetition(
+    boundary, tmp_path, monkeypatch, failed_preview
+):
+    from pathlib import Path
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from vault_helpers import create_vault
+
+    from emuru.telegram.worker import TurnResult
+    from emuru.vault import mutations
+
+    b = boundary
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    vault = create_vault(tmp_path)
+    for name, value in {
+        "mutation-policy.json": {
+            "enabled": True,
+            "roots": ["10_Projects"],
+            "vault_path": str(vault),
+        },
+        "vault-target.json": {"mode": "real", "vault_path": str(vault)},
+    }.items():
+        record = home / name
+        record.write_text(json.dumps(value))
+        record.chmod(0o600)
+    b.execution.mutation_target = (home, vault)
+    model_calls = []
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "emuru.vault.server"],
+        env={"EMURU_VAULT_PATH": str(vault), "EMURU_MUTATION_PROFILE_HOME": str(home)},
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+
+    async def check():
+        async with (
+            stdio_client(params) as (read, write),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
+            tools = {tool.name for tool in (await client.list_tools()).tools}
+            assert "vault_propose" in tools and "vault_apply" not in tools
+            denied = await client.call_tool(
+                "vault_propose",
+                {
+                    "path": "10_Projects/new.md",
+                    "content": "claimed authority",
+                    "request_id": "owner",
+                },
+            )
+            assert denied.is_error
+
+            async def model(payload, session):
+                model_calls.append(payload["message"]["text"])
+                result = await client.call_tool(
+                    "vault_propose",
+                    {
+                        "path": "10_Projects/new.md",
+                        "content": "# Project\n" + "😀" * 5000,
+                        "request_id": "model-cannot-set-owner",
+                    },
+                )
+                assert not result.is_error
+                return TurnResult(True)
+
+            monkeypatch.setattr(b.execution, "_execute_native", model)
+            b.queue.stage(7, [raw(1, "create project")])
+            if failed_preview:
+                b.bot.fail_send = True
+            await b.bridge.once()
+            assert not (vault / "10_Projects/new.md").exists()
+            with mutations.journal(home) as db:
+                proposal = db.execute(
+                    "SELECT proposal_id FROM proposal_bindings"
+                ).fetchone()[0]
+                complete = db.execute(
+                    "SELECT complete FROM preview_deliveries"
+                ).fetchone()[0]
+                assert complete == int(not failed_preview)
+            b.bot.fail_send = False
+            if failed_preview:
+                # Failure notice gets one attempt before the next queued command.
+                await b.bridge.once()
+                b.queue.stage(7, [raw(2, f"/apply {proposal} writers-paused")])
+                await b.bridge.once()
+                assert not (vault / "10_Projects/new.md").exists()
+            b.queue.stage(7, [raw(3, "create project")])
+            await b.bridge.once()
+            assert model_calls == ["create project"]
+            sent = [
+                data["text"]
+                for endpoint, data in b.network
+                if endpoint == "sendMessage"
+            ]
+            instructions = [
+                i
+                for i, text in enumerate(sent)
+                if text.startswith("Pause other writers")
+            ]
+            assert instructions and all(
+                sent[i - 1].startswith("Preview ") for i in instructions
+            )
+            b.queue.stage(7, [raw(4, "/apply"), raw(5, f"/apply {proposal}")])
+            await b.bridge.once()
+            await b.bridge.once()
+            assert not (vault / "10_Projects/new.md").exists()
+            b.queue.stage(7, [raw(6, f"/apply {proposal} writers-paused")])
+            b.bot.fail_send = failed_preview
+            await b.bridge.once()
+            b.bot.fail_send = False
+            if failed_preview:
+                await b.bridge.once()
+                assert any(
+                    "Mutation outcome:" in data.get("text", "")
+                    and "applied" in data["text"]
+                    for endpoint, data in b.network
+                    if endpoint == "sendMessage"
+                )
+            assert (vault / "10_Projects/new.md").exists()
+            modified = (vault / "10_Projects/new.md").stat().st_mtime_ns
+            b.queue.stage(7, [raw(7, f"/apply {proposal} writers-paused")])
+            b.bot.fail_send = failed_preview
+            await b.bridge.once()
+            b.bot.fail_send = False
+            if failed_preview:
+                await b.bridge.once()
+                assert "Mutation outcome:" in b.network[-1][1]["text"]
+                assert "applied" in b.network[-1][1]["text"]
+            assert (vault / "10_Projects/new.md").stat().st_mtime_ns == modified
+            b.queue.stage(7, [raw(8, "/new"), raw(9, "create project")])
+            # Fake native model isn't needed for the reset in this integration test.
+            row = b.queue.claim(7)
+            b.queue.finish(row["sequence"], True)
+            await b.bridge.once()
+            assert model_calls == ["create project"]
+            # Request bindings survive Telegram terminal-receipt pruning.
+            with b.queue.transaction():
+                b.queue._prune(100000 + 8 * 86400)
+            b.queue.stage(7, [raw(10, "create project")])
+            await b.bridge.once()
+            assert model_calls == ["create project"]
+            b.queue.stage(
+                7,
+                [
+                    raw(11, "/propose-new create project"),
+                    raw(11, "/propose-new create project"),
+                ],
+            )
+            await b.bridge.once()
+            assert model_calls == ["create project", "create project"]
+            assert not await b.bridge.once()
+
+            async def capture(payload, session):
+                model_calls.append("capture")
+                result = await client.call_tool(
+                    "vault_write",
+                    {"path": "00_Inbox/owned-capture.md", "content": "idea"},
+                )
+                assert not result.is_error
+                return TurnResult(True)
+
+            monkeypatch.setattr(b.execution, "_execute_native", capture)
+            b.queue.stage(7, [raw(12, "capture idea"), raw(13, "capture idea")])
+            await b.bridge.once()
+            await b.bridge.once()
+            assert model_calls.count("capture") == 1
+            assert (vault / "00_Inbox/owned-capture.md").read_text() == "idea\n"
+
+    asyncio.run(asyncio.wait_for(check(), 60))
+
+
+def test_model_and_previews_share_one_turn_budget(boundary, monkeypatch):
+    b = boundary
+    b.execution.turn_timeout = 0.1
+    phases = []
+
+    async def model_and_previews(payload, session):
+        await asyncio.sleep(0.01)
+        phases.append("model completed")
+        await asyncio.sleep(0.15)
+        phases.append("preview completed")
+        return TurnResult(True)
+
+    monkeypatch.setattr(b.execution, "_execute", model_and_previews)
+    b.queue.stage(7, [raw(1)])
+    asyncio.run(b.bridge.once())
+    assert phases == ["model completed"]
+    assert b.queue.status() == {"interrupted": 1}
+    assert b.bridge.retired

@@ -334,3 +334,46 @@ async def test_synthetic_idea_project_task_result_and_repeated_requests(tmp_path
             assert (home / "mutation-policy.json").read_bytes() == policy_before
             assert not (vault / "99_Private/no.md").exists()
             assert (vault / project_path).stat().st_mtime_ns == modified
+
+
+def test_cli_enabled_policy_binds_preview_and_repeated_application(tmp_path):
+    from emuru.vault import mutations
+
+    home, vault = fixture(tmp_path)
+    target = home / "vault-target.json"
+    target.write_text(json.dumps({"mode": "real", "vault_path": str(vault)}))
+    target.chmod(0o600)
+    (home / "mutation-policy.json").write_text(
+        json.dumps(
+            {"enabled": True, "roots": ["10_Projects"], "vault_path": str(vault)}
+        )
+    )
+    request = tmp_path / "request.json"
+    request.write_text(
+        '{"path":"10_Projects/cli.md","content":"# CLI owner preview\\n"}'
+    )
+    preview = cli(home, vault, "mutation-propose", "--request", str(request))
+    assert not (vault / "10_Projects/cli.md").exists()
+    assert (
+        cli(home, vault, "mutation-preview", "--proposal-id", preview["proposal_id"])
+        == preview
+    )
+    with mutations.journal(home) as db:
+        assert db.execute("SELECT complete FROM preview_deliveries").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM proposal_bindings").fetchone()[0] == 1
+    arguments = (
+        "--proposal-id",
+        preview["proposal_id"],
+        "--approval-digest",
+        preview["approval_digest"],
+        "--writers-paused",
+    )
+    result = cli(home, vault, "mutation-apply", *arguments)
+    assert result["outcome"] == "applied"
+    modified = (vault / "10_Projects/cli.md").stat().st_mtime_ns
+    assert cli(home, vault, "mutation-apply", *arguments) == result
+    assert (
+        cli(home, vault, "mutation-propose", "--request", str(request))["outcome"]
+        == "applied"
+    )
+    assert (vault / "10_Projects/cli.md").stat().st_mtime_ns == modified

@@ -10,7 +10,6 @@ from emuru.hermes.profile import (
     no_symlinks,
     profile_home,  # noqa: F401 -- shared public import
 )
-from emuru.vault.indexer import derived_paths
 
 
 def _read_record(path: Path):
@@ -69,6 +68,8 @@ def load_target(repo: Path, home: Path) -> tuple[str, Path]:
         inbox = root / "00_Inbox"
         if inbox.is_symlink() or not inbox.is_dir():
             raise TargetError("target_inbox_unavailable")
+        from emuru.vault.indexer import derived_paths
+
         directories, outputs = derived_paths(root)
         for folder in directories:
             if folder.is_symlink() or (folder.exists() and not folder.is_dir()):

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -125,13 +126,9 @@ def vault_tools_ready():
     from tools import mcp_tool
     from tools.mcp_tool_scope import _server_key
 
-    expected = {
-        "vault_map",
-        "vault_search",
-        "vault_open",
-        "vault_neighbors",
-        "vault_write",
-    }
+    from emuru.hermes.profile import vault_tools
+
+    expected = set(vault_tools())
     with mcp_tool._lock:
         server = mcp_tool._servers.get(_server_key("vault"))
         return bool(
@@ -155,6 +152,30 @@ class NativeTelegram:
         self.turn_timeout = turn_timeout
         self.queue, self.root = queue, root
         self._app, self._runner = None, None
+        self.mutation_target = None
+        if queue.path.parent.name == "emuru-telegram":
+            from emuru.vault.mutations import load_policy, require_authority
+
+            home = queue.path.parent.parent
+            policy = load_policy(home)
+            if policy["enabled"]:
+                vault = Path(policy["vault_path"])
+                require_authority(home, vault)
+                subprocess.run(
+                    [
+                        str(root / ".venv/bin/python"),
+                        str(root / "scripts/hermes/vault.py"),
+                        "mutation-recover",
+                        "--profile-home",
+                        str(home),
+                        "--vault",
+                        str(vault),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=60,
+                )
+                self.mutation_target = (home, vault)
         self._current = contextvars.ContextVar("emuru_native_turn", default=None)
         self._update = classes["Update"]
         self._message_type = classes["MessageType"]
@@ -215,7 +236,182 @@ class NativeTelegram:
                 request_hard_interrupt(turn.agent, "Owner turn ended")
             self._current.reset(token)
 
+    async def _operator(self, operation, identity, writers_paused=False):
+        home, vault = self.mutation_target
+        process = await asyncio.create_subprocess_exec(
+            str(self.root / ".venv/bin/python"),
+            str(self.root / "scripts/hermes/vault.py"),
+            "mutation-operator",
+            "--profile-home",
+            str(home),
+            "--vault",
+            str(vault),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            output, _ = await asyncio.wait_for(
+                process.communicate(
+                    json.dumps(
+                        {
+                            "operation": operation,
+                            "proposal_id": identity,
+                            "writers_paused": writers_paused,
+                        }
+                    ).encode()
+                ),
+                self.turn_timeout,
+            )
+        except BaseException:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+            raise
+        if process.returncode != 0:
+            raise ValueError(
+                "Vault operator refused application; check owner binding, complete preview, policy, paused writers and current revision."
+            )
+        return json.loads(output)
+
+    async def _present_previews(self, previews):
+        from emuru.vault import mutations
+
+        home, _ = self.mutation_target
+        for preview in previews:
+            if "proposal_id" not in preview:
+                await self._app.bot.send_message(
+                    chat_id=self.queue.owner_id, text=json.dumps(preview)
+                )
+                continue
+            identity, digest = preview["proposal_id"], preview["approval_digest"]
+            mutations.record_preview(home, identity, digest)
+            for part in mutations.preview_parts(preview):
+                await self._app.bot.send_message(chat_id=self.queue.owner_id, text=part)
+            if preview["outcome"] == "proposed":
+                await self._app.bot.send_message(
+                    chat_id=self.queue.owner_id,
+                    text=f"Pause other writers, then confirm: /apply {identity} writers-paused\nCancel: /cancel {identity}",
+                )
+            mutations.record_preview(home, identity, digest, complete=True)
+
     async def execute(self, payload, session_key):
+        try:
+            async with asyncio.timeout(self.turn_timeout):
+                return await self._execute(payload, session_key)
+        except TimeoutError:
+            return TurnResult(False, "turn_timeout", interrupted=True)
+
+    async def _execute(self, payload, session_key):
+        from emuru.vault import mutations
+
+        text = payload["message"]["text"]
+        command = text.split(maxsplit=1)[0].split("@")[0]
+        controls = {"/apply", "/cancel", "/propose-new"}
+        if self.mutation_target is None:
+            if command in controls:
+                with self._turn_scope(payload["update_id"], session_key, notice=True):
+                    await self._app.bot.send_message(
+                        chat_id=self.queue.owner_id,
+                        text="Broader vault writes are disabled.",
+                    )
+                return TurnResult(True)
+            return await self._execute_native(payload, session_key)
+        home, vault = self.mutation_target
+        uid, bot, owner = payload["update_id"], self.identity()[0], self.queue.owner_id
+        # Revalidate the minimal owner envelope even for direct adapter calls.
+        if (
+            queue_module.admit_update(
+                payload,
+                owner,
+                self.queue.settings,
+                self.queue.now(),
+                self.identity()[1],
+            )
+            is None
+        ):
+            raise ValueError("Owner-private admission required.")
+        request_text = (
+            text.split(maxsplit=1)[1]
+            if command == "/propose-new" and len(text.split(maxsplit=1)) == 2
+            else text
+        )
+        identity, repeated = mutations.begin_request(
+            home, vault, owner, bot, uid, request_text, fresh=command == "/propose-new"
+        )
+        mutations.activate_request(home, identity, self.queue.path, bot, uid)
+        try:
+            mutations.authenticated_request(home, vault)
+            if command in {"/apply", "/cancel"}:
+                with self._turn_scope(uid, session_key, notice=True):
+                    fields = text.split()
+                    try:
+                        if len(fields) < 2:
+                            result = "Use /apply <proposal-id> writers-paused after pausing other writers. Use /cancel <proposal-id> to cancel."
+                        else:
+                            self.queue.mark_tools_started(bot, uid)
+                            if command == "/cancel":
+                                if len(fields) != 2:
+                                    raise ValueError("Use /cancel <proposal-id>.")
+                                result = json.dumps(
+                                    await self._operator("cancel", fields[1])
+                                )
+                            else:
+                                result = json.dumps(
+                                    await self._operator(
+                                        "apply",
+                                        fields[1],
+                                        len(fields) == 3
+                                        and fields[2] == "writers-paused",
+                                    )
+                                )
+                    except (ValueError, OSError) as error:
+                        result = str(error)
+                    await self._app.bot.send_message(chat_id=owner, text=result)
+                mutations.finish_request(home, identity)
+                return TurnResult(True)
+            if repeated:
+                with self._turn_scope(uid, session_key, notice=True):
+                    previews = mutations.request_previews(home, identity)
+                    if previews:
+                        await self._present_previews(previews)
+                    else:
+                        await self._app.bot.send_message(
+                            chat_id=owner,
+                            text="Previous request was interrupted. No model turn replayed. Inspect its effects before /propose-new.",
+                        )
+                return TurnResult(True)
+            if command == "/propose-new":
+                if request_text == text:
+                    with self._turn_scope(uid, session_key, notice=True):
+                        await self._app.bot.send_message(
+                            chat_id=owner,
+                            text="Use /propose-new <request> for an intentional fresh proposal.",
+                        )
+                    mutations.finish_request(home, identity)
+                    return TurnResult(True)
+                payload = {
+                    **payload,
+                    "message": {
+                        **payload["message"],
+                        "text": request_text,
+                        "entities": [],
+                    },
+                }
+            outcome = await self._execute_native(payload, session_key)
+            if outcome.success:
+                with self._turn_scope(uid, session_key, notice=True):
+                    await self._present_previews(
+                        mutations.request_previews(home, identity)
+                    )
+                mutations.finish_request(home, identity)
+            return outcome
+        finally:
+            with mutations.journal(home) as db:
+                db.execute("DELETE FROM active_request WHERE request_id=?", (identity,))
+                db.commit()
+
+    async def _execute_native(self, payload, session_key):
         app, adapter = self._app, self._app.adapter
         with self._turn_scope(payload["update_id"], session_key) as turn:
             try:
@@ -254,6 +450,19 @@ class NativeTelegram:
             if status is not None
             else self.queue.terminal_notice(self.identity()[0], uid)
         )
+        if status is None and self.mutation_target is not None:
+            from emuru.vault.mutations import application_outcomes
+
+            home, vault = self.mutation_target
+            outcomes = application_outcomes(
+                home, vault, self.queue.owner_id, self.identity()[0], uid
+            )
+            if outcomes:
+                text = (
+                    "Mutation outcome: "
+                    + json.dumps(outcomes)
+                    + ". Telegram delivery failed or is unknown; no mutation replayed."
+                )
         with self._turn_scope(uid, notice=True):
             await self._app.bot.send_message(chat_id=self.queue.owner_id, text=text)
 
@@ -498,6 +707,11 @@ class NativeTelegram:
         async def guarded_runner(runner, event):
             turn = turn_for(event)
             response = await runner_handle(runner, event)
+            if event.text.split(maxsplit=1)[0].split("@")[0] in {
+                "/help",
+                "/start",
+            } and isinstance(response, str):
+                response += "\nVault: /apply <proposal-id> writers-paused, /cancel <proposal-id>, /propose-new <request>. Repeat the original request to present its complete preview again."
             # The durable worker owns failure notices; native delivery would retry a rejected send.
             return None if turn.failed else response
 
@@ -732,7 +946,7 @@ class NativeTelegram:
                 raise HealthError("native_start_failed")
             await self.worker.require_consumer()
             print(
-                "EMURU Telegram checkpoint: required guards and five MCP tools READY",
+                "EMURU Telegram checkpoint: required guards and selected MCP tools READY",
                 flush=True,
             )
             return result

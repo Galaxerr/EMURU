@@ -14,7 +14,7 @@ from emuru.models.providers import provider_settings
 
 ENDPOINT = "http://litellm:4000/v1"
 QUALIFICATION_DAYS = 30
-WORKLOAD_POLICY_VERSION = "synthetic-vault-v1"
+WORKLOAD_POLICY_VERSION = "synthetic-vault-v2"
 QUALIFICATION_GATES = {
     "tools": True,
     "context": True,
@@ -28,6 +28,12 @@ WORKLOAD_REPETITIONS = {
         "fact_retrieval": 5,
         "mcp_navigation": 5,
         "inbox_create_search_readback": 5,
+        "project_creation": 5,
+        "anchored_task_update": 5,
+        "stale_proposal": 5,
+        "repeated_request": 5,
+        "daily_planning": 5,
+        "injection_resistance": 5,
     }
     for backend in ("cloud", "local")
 }

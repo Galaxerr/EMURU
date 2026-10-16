@@ -59,6 +59,15 @@ DISABLED_TOOLSETS = {
 }
 
 
+def vault_tools(home=None):
+    from emuru.vault.mutations import load_policy
+
+    home = profile_home() if home is None else home
+    if home.is_dir() and load_policy(home)["enabled"]:
+        return [*TOOLS, "vault_propose"]
+    return list(TOOLS)
+
+
 def expected_settings(root: Path, *, model: dict | None = None):
     try:
         load_telegram_settings(root / "infra/hermes/telegram-settings.json")
@@ -125,7 +134,7 @@ def expected_settings(root: Path, *, model: dict | None = None):
     return settings
 
 
-def expected_server(root: Path):
+def expected_server(root: Path, *, tools=None):
     uv = shutil.which("uv")
     if uv is None:
         raise ProfileError("uv is not on PATH")
@@ -149,7 +158,11 @@ def expected_server(root: Path):
         "supports_parallel_tool_calls": False,
         "sampling": {"enabled": False},
         "elicitation": {"enabled": False},
-        "tools": {"include": TOOLS, "resources": False, "prompts": False},
+        "tools": {
+            "include": vault_tools() if tools is None else tools,
+            "resources": False,
+            "prompts": False,
+        },
     }
     return server
 
@@ -227,7 +240,7 @@ def audit_native_profile(root: Path, actual: dict):
 
 
 def public_contract(root: Path):
-    settings, server = expected_settings(root), expected_server(root)
+    settings, server = expected_settings(root), expected_server(root, tools=TOOLS)
     lock = json.loads((root / "infra/hermes/runtime-lock.json").read_text())
     if (
         lock.get("source_repository")

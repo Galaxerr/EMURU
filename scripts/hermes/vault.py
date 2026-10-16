@@ -7,7 +7,9 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 from emuru.vault.target import TargetError, load_target, profile_home
@@ -225,6 +227,8 @@ def main():
             "check",
             "target",
             "mutation-propose",
+            "mutation-preview",
+            "mutation-operator",
             "mutation-apply",
             "mutation-cancel",
             "mutation-recover",
@@ -245,11 +249,44 @@ def main():
         from emuru.vault import mutations
 
         if args.vault is None or args.profile_home is None:
-            parser.error(
-                "Synthetic mutation commands require --vault and --profile-home"
+            parser.error("Mutation commands require --vault and --profile-home")
+        policy = mutations.require_authority(args.profile_home, args.vault)
+        owner, bot = f"cli:{os.getuid()}", "cli"
+        delivered = None
+        if args.mode == "mutation-operator":
+            identity = mutations.authenticated_request(args.profile_home, args.vault)
+            with mutations.journal(args.profile_home) as db:
+                owner, bot = db.execute(
+                    "SELECT owner,bot FROM owner_requests WHERE id=?", (identity,)
+                ).fetchone()
+            envelope = json.loads(sys.stdin.read(4096))
+            if not isinstance(envelope, dict) or set(envelope) != {
+                "operation",
+                "proposal_id",
+                "writers_paused",
+            }:
+                parser.error("Invalid operator envelope")
+            preview = mutations.owner_preview(
+                args.profile_home, args.vault, envelope["proposal_id"], owner, bot
             )
-        mutations.require_synthetic(args.profile_home, args.vault)
-        if args.mode == "mutation-serve":
+            if envelope["operation"] == "apply":
+                result = mutations.apply_proposal(
+                    args.profile_home,
+                    args.vault,
+                    envelope["proposal_id"],
+                    preview["approval_digest"],
+                    writers_paused=envelope["writers_paused"],
+                    owner=owner,
+                    bot=bot,
+                    application_request=identity,
+                )
+            elif envelope["operation"] == "cancel":
+                result = mutations.cancel_proposal(
+                    args.profile_home, envelope["proposal_id"]
+                )
+            else:
+                parser.error("Unknown operator operation")
+        elif args.mode == "mutation-serve":
             command, env = backend(args.vault, "emuru-vault-mcp")
             env["EMURU_MUTATION_PROFILE_HOME"] = str(args.profile_home.absolute())
             os.chdir(ROOT)
@@ -274,26 +311,89 @@ def main():
                 or "path" not in request
             ):
                 parser.error("Invalid single-note proposal request")
-            result = mutations.propose_note(args.profile_home, args.vault, **request)
+            identity, _ = mutations.begin_request(
+                args.profile_home,
+                args.vault,
+                owner,
+                bot,
+                uuid.uuid4().hex,
+                json.dumps(request, sort_keys=True),
+            )
+            previews = mutations.request_previews(args.profile_home, identity)
+            result = (
+                previews[0]
+                if previews
+                else mutations.propose_note(
+                    args.profile_home,
+                    args.vault,
+                    **request,
+                    authenticated_id=identity,
+                )
+            )
+            mutations.finish_request(args.profile_home, identity)
+            if "proposal_id" in result:
+                delivered = result
+        elif args.mode == "mutation-preview":
+            if args.proposal_id is None:
+                parser.error("mutation-preview requires --proposal-id")
+            result = mutations.owner_preview(
+                args.profile_home, args.vault, args.proposal_id, owner, bot
+            )
+            delivered = result
         elif args.mode == "mutation-apply":
             if args.proposal_id is None or args.approval_digest is None:
                 parser.error(
                     "mutation-apply requires --proposal-id and --approval-digest"
                 )
+            identity, _ = mutations.begin_request(
+                args.profile_home,
+                args.vault,
+                owner,
+                bot,
+                uuid.uuid4().hex,
+                f"apply {args.proposal_id}",
+                fresh=True,
+            )
             result = mutations.apply_proposal(
                 args.profile_home,
                 args.vault,
                 args.proposal_id,
                 args.approval_digest,
                 writers_paused=args.writers_paused,
+                owner=owner,
+                bot=bot,
+                application_request=identity,
             )
+            mutations.finish_request(args.profile_home, identity)
         elif args.mode == "mutation-cancel":
             if args.proposal_id is None:
                 parser.error("mutation-cancel requires --proposal-id")
+            with mutations.journal(args.profile_home) as db:
+                bound = db.execute(
+                    "SELECT 1 FROM proposal_bindings WHERE proposal_id=?",
+                    (args.proposal_id,),
+                ).fetchone()
+            if policy["enabled"] or bound:
+                mutations.owner_preview(
+                    args.profile_home, args.vault, args.proposal_id, owner, bot
+                )
             result = mutations.cancel_proposal(args.profile_home, args.proposal_id)
         else:
             result = mutations.recover_proposals(args.profile_home, args.vault)
-        print(json.dumps(result, ensure_ascii=False))
+        if delivered is not None:
+            mutations.record_preview(
+                args.profile_home,
+                delivered["proposal_id"],
+                delivered["approval_digest"],
+            )
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+        if delivered is not None:
+            mutations.record_preview(
+                args.profile_home,
+                delivered["proposal_id"],
+                delivered["approval_digest"],
+                complete=True,
+            )
         return
     if args.mode == "prepare":
         prepare(RUNTIME)
@@ -311,6 +411,12 @@ def main():
         if not vault.is_dir():
             raise SystemExit("Prepare the synthetic vault or repair the private target")
         command, env = backend(vault, "emuru-vault-mcp")
+        from emuru.vault import mutations
+
+        home = selected_profile_home()
+        if home.is_dir() and mutations.load_policy(home)["enabled"]:
+            mutations.require_authority(home, vault)
+            env["EMURU_MUTATION_PROFILE_HOME"] = str(home)
         os.chdir(ROOT)
         os.execvpe(command[0], command, env)
     else:

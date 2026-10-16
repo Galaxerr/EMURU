@@ -1,4 +1,4 @@
-"""Private proposals and crash recovery; broader publication is synthetic-only."""
+"""Private owner-bound proposals, deterministic approval, and crash recovery."""
 
 import ctypes
 import fcntl
@@ -157,11 +157,28 @@ def load_policy(home: Path) -> dict:
                 os.close(fd)
     if (
         not isinstance(policy, dict)
-        or set(policy) != {"enabled", "roots"}
-        or policy["enabled"] is not False
+        or set(policy) not in ({"enabled", "roots"}, {"enabled", "roots", "vault_path"})
+        or type(policy.get("enabled")) is not bool
         or not isinstance(policy["roots"], list)
     ):
         raise ValueError("Broader writes disabled; mutation policy invalid.")
+    if policy["enabled"]:
+        target = policy.get("vault_path")
+        if (
+            not isinstance(target, str)
+            or not Path(target).is_absolute()
+            or ".." in Path(target).parts
+        ):
+            raise ValueError(
+                "Broader writes disabled; policy requires an absolute vault_path."
+            )
+        from emuru.vault.target import _read_record
+
+        selected = _read_record(home / "vault-target.json")
+        if selected != {"mode": "real", "vault_path": target}:
+            raise ValueError(
+                "Broader writes disabled; policy differs from selected vault."
+            )
     for root in policy["roots"]:
         parts = relative_parts(root)
         if parts[0] not in {"10_Projects", "20_Areas", "30_Resources"}:
@@ -234,6 +251,37 @@ def journal(home: Path):
                     request_digest TEXT NOT NULL, target TEXT NOT NULL,
                     proposal_id TEXT REFERENCES proposals(id),
                     PRIMARY KEY(vault, request_id))
+                """)
+                connection.executescript("""
+                    CREATE TABLE IF NOT EXISTS proposal_edits (
+                        proposal_id TEXT PRIMARY KEY REFERENCES proposals(id),
+                        anchor TEXT NOT NULL, replacement TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS owner_requests (
+                        id TEXT PRIMARY KEY, owner TEXT NOT NULL, bot TEXT NOT NULL,
+                        vault TEXT NOT NULL, text_hash TEXT NOT NULL,
+                        state TEXT NOT NULL DEFAULT 'started');
+                    CREATE INDEX IF NOT EXISTS owner_request_text ON owner_requests(owner,bot,vault,text_hash);
+                    CREATE TABLE IF NOT EXISTS request_updates (
+                        owner TEXT NOT NULL, bot TEXT NOT NULL, vault TEXT NOT NULL,
+                        update_id TEXT NOT NULL, request_id TEXT NOT NULL REFERENCES owner_requests(id),
+                        PRIMARY KEY(owner,bot,vault,update_id));
+                    CREATE TABLE IF NOT EXISTS proposal_bindings (
+                        proposal_id TEXT PRIMARY KEY REFERENCES proposals(id),
+                        request_id TEXT NOT NULL REFERENCES owner_requests(id),
+                        policy_digest TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS active_request (
+                        slot INTEGER PRIMARY KEY CHECK(slot=1), request_id TEXT NOT NULL,
+                        queue_path TEXT NOT NULL, bot INTEGER NOT NULL, update_id INTEGER NOT NULL);
+                    CREATE TABLE IF NOT EXISTS preview_deliveries (
+                        proposal_id TEXT PRIMARY KEY REFERENCES proposals(id),
+                        approval_digest TEXT NOT NULL, complete INTEGER NOT NULL);
+                    CREATE TABLE IF NOT EXISTS application_requests (
+                        proposal_id TEXT NOT NULL REFERENCES proposals(id),
+                        request_id TEXT NOT NULL REFERENCES owner_requests(id),
+                        PRIMARY KEY(proposal_id,request_id));
+                    CREATE TABLE IF NOT EXISTS capture_requests (
+                        request_id TEXT PRIMARY KEY REFERENCES owner_requests(id),
+                        result TEXT NOT NULL);
                 """)
                 connection.commit()
                 os.fsync(parent)
@@ -328,18 +376,275 @@ def require_synthetic(home: Path, vault_root: Path):
         raise ValueError("Broader writes disabled; explicit real targets cannot apply.")
 
 
+def require_authority(home: Path, vault_root: Path):
+    home, vault_root = Path(home).absolute(), Path(vault_root).absolute()
+    policy = load_policy(home)
+    if not policy["enabled"]:
+        require_synthetic(home, vault_root)
+        return policy
+    if policy["vault_path"] != os.path.abspath(vault_root):
+        raise ValueError("Mutation policy belongs to another vault.")
+    if home == vault_root or home in vault_root.parents or vault_root in home.parents:
+        raise ValueError("Mutation profile must be outside the vault.")
+    with directory(vault_root):
+        pass
+    return policy
+
+
+def _policy_digest(policy):
+    return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+
+
+def begin_request(home, vault_root, owner, bot, update_id, text, *, fresh=False):
+    """Trusted adapter/CLI entrypoint. Identity never comes from tool arguments."""
+    vault, owner, bot = os.path.abspath(vault_root), str(owner), str(bot)
+    text_hash = hashlib.sha256(text.encode()).hexdigest()
+    with journal(home) as db:
+        db.execute("BEGIN IMMEDIATE")
+        scope = (owner, bot, vault)
+        previous = db.execute(
+            "SELECT request_id FROM request_updates WHERE owner=? AND bot=? AND vault=? AND update_id=?",
+            (*scope, str(update_id)),
+        ).fetchone()
+        if previous:
+            return previous[0], True
+        previous = (
+            None
+            if fresh
+            else db.execute(
+                """SELECT id FROM owner_requests r WHERE owner=? AND bot=? AND vault=? AND text_hash=?
+            AND (state IN ('started','mutation') OR EXISTS(SELECT 1 FROM proposal_bindings b WHERE b.request_id=r.id))
+            ORDER BY rowid LIMIT 1""",
+                (*scope, text_hash),
+            ).fetchone()
+        )
+        identity = previous[0] if previous else uuid.uuid4().hex
+        if not previous:
+            db.execute(
+                "INSERT INTO owner_requests VALUES(?,?,?,?,?,'started')",
+                (identity, *scope, text_hash),
+            )
+        db.execute(
+            "INSERT INTO request_updates VALUES(?,?,?,?,?)",
+            (*scope, str(update_id), identity),
+        )
+        db.commit()
+        return identity, previous is not None
+
+
+def finish_request(home, identity):
+    with journal(home) as db:
+        db.execute(
+            "UPDATE owner_requests SET state=CASE WHEN state='mutation' THEN state ELSE 'completed' END WHERE id=?",
+            (identity,),
+        )
+        db.execute("DELETE FROM active_request WHERE request_id=?", (identity,))
+        db.commit()
+
+
+def activate_request(home, identity, queue_path, bot, update_id):
+    with journal(home) as db:
+        db.execute(
+            "INSERT OR REPLACE INTO active_request VALUES(1,?,?,?,?)",
+            (identity, str(Path(queue_path).absolute()), bot, update_id),
+        )
+        db.commit()
+
+
+def authenticated_request(home, vault_root):
+    """MCP reads private adapter state and verifies the still-live durable claim."""
+    with journal(home) as db:
+        row = db.execute(
+            "SELECT request_id,queue_path,bot,update_id FROM active_request WHERE slot=1"
+        ).fetchone()
+        if row is None:
+            raise ValueError("An active authenticated request claim is required.")
+        identity, queue_path, bot, update_id = row
+        request = db.execute(
+            "SELECT owner,bot,vault FROM owner_requests WHERE id=?", (identity,)
+        ).fetchone()
+    with directory(Path(queue_path).parent):
+        fd = os.open(queue_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            regular(fd, private=True)
+        finally:
+            os.close(fd)
+    with sqlite3.connect(Path(queue_path).as_uri() + "?mode=ro", uri=True) as queue:
+        claim = queue.execute(
+            "SELECT user_id,chat_id FROM updates WHERE bot_id=? AND update_id=? AND state='started'",
+            (bot, update_id),
+        ).fetchone()
+    if (
+        request is None
+        or claim is None
+        or request != (str(claim[0]), str(bot), os.path.abspath(vault_root))
+        or claim[0] != claim[1]
+    ):
+        raise ValueError("Authenticated request claim is invalid.")
+    return identity
+
+
+def request_previews(home, identity):
+    with journal(home) as db:
+        previews = [
+            _preview(db, row[0])
+            for row in db.execute(
+                "SELECT proposal_id FROM proposal_bindings WHERE request_id=? ORDER BY rowid",
+                (identity,),
+            ).fetchall()
+        ]
+        capture = db.execute(
+            "SELECT result FROM capture_requests WHERE request_id=?", (identity,)
+        ).fetchone()
+        if capture is not None:
+            previews.append(json.loads(capture[0]))
+        if not previews:
+            for vault, target in db.execute(
+                "SELECT vault,target FROM proposal_requests WHERE request_id=? AND proposal_id IS NULL",
+                (identity,),
+            ).fetchall():
+                previews.append(
+                    {
+                        "path": target,
+                        "outcome": "exists",
+                        "message": "Existing note retained; no mutation applied.",
+                    }
+                )
+        return previews
+
+
+def capture_note(home, vault_root, path, content):
+    """Record capture intent before effects; repeated requests never recapture."""
+    from emuru.vault.indexer import vault_write
+
+    identity = authenticated_request(home, vault_root)
+    with writer_lock(vault_root):
+        with journal(home) as db:
+            previous = db.execute(
+                "SELECT result FROM capture_requests WHERE request_id=?", (identity,)
+            ).fetchone()
+            if previous is not None:
+                return json.loads(previous[0])
+            db.execute(
+                "INSERT INTO capture_requests VALUES(?,?)",
+                (
+                    identity,
+                    json.dumps(
+                        {
+                            "path": path,
+                            "outcome": "uncertain",
+                            "message": "Capture attempted; inspect effects before /propose-new.",
+                        }
+                    ),
+                ),
+            )
+            db.execute(
+                "UPDATE owner_requests SET state='mutation' WHERE id=?", (identity,)
+            )
+            db.commit()
+        result = vault_write(vault_root, path, content)
+        with journal(home) as db:
+            db.execute(
+                "UPDATE capture_requests SET result=? WHERE request_id=?",
+                (json.dumps(result), identity),
+            )
+            db.commit()
+        return result
+
+
+def application_outcomes(home, vault_root, owner, bot, update_id):
+    with journal(home) as db:
+        identities = db.execute(
+            """SELECT a.proposal_id FROM application_requests a
+            JOIN request_updates u ON u.request_id=a.request_id
+            WHERE u.owner=? AND u.bot=? AND u.vault=? AND u.update_id=?""",
+            (str(owner), str(bot), os.path.abspath(vault_root), str(update_id)),
+        ).fetchall()
+        return [_receipt(db, row[0]) for row in identities]
+
+
+def owner_preview(home, vault_root, identity, owner, bot):
+    with journal(home) as db:
+        _check_owner(db, identity, vault_root, owner, bot)
+        return _preview(db, identity)
+
+
+def _check_owner(db, identity, vault_root, owner, bot):
+    row = db.execute(
+        """SELECT r.owner,r.bot,r.vault FROM proposal_bindings b
+        JOIN owner_requests r ON r.id=b.request_id WHERE b.proposal_id=?""",
+        (identity,),
+    ).fetchone()
+    if row != (str(owner), str(bot), os.path.abspath(vault_root)):
+        raise ValueError("Proposal has no matching authenticated owner/vault binding.")
+
+
+def record_preview(home, identity, digest, *, complete=False):
+    with journal(home) as db:
+        if _preview(db, identity)["approval_digest"] != digest:
+            raise ValueError("Preview approval digest changed.")
+        db.execute(
+            "INSERT OR REPLACE INTO preview_deliveries VALUES(?,?,?)",
+            (identity, digest, int(complete)),
+        )
+        db.commit()
+
+
+def preview_parts(preview, limit=3500):
+    text = (
+        f"Proposal {preview['proposal_id']}\nPath: {preview['path']}\n"
+        f"Revision: {preview['before_revision'] or 'absent'}\n"
+        f"Outcome: {preview['outcome']}\n"
+    )
+    if "changes" in preview:
+        changes = preview["changes"]
+        text += f"Exact anchor:\n{changes['anchor']}\nExact replacement:\n{changes['replacement']}"
+    else:
+        text += f"Exact creation content:\n{preview['content']}"
+    # UTF-16 bounds also keep astral characters within Telegram's message limit.
+    chunks, chunk, size = [], [], 0
+    for char in text:
+        width = len(char.encode("utf-16-le")) // 2
+        if size + width > limit:
+            chunks.append("".join(chunk))
+            chunk, size = [], 0
+        chunk.append(char)
+        size += width
+    chunks.append("".join(chunk))
+    return [f"Preview {i}/{len(chunks)}\n{part}" for i, part in enumerate(chunks, 1)]
+
+
 def _hash(data: bytes | None):
     return None if data is None else hashlib.sha256(data).hexdigest()
 
 
-def _approval(proposal):
+def _approval(proposal, request_binding=None):
     binding = {
         key: proposal[key]
         for key in ("id", "vault", "target", "before_hash", "after_hash", "digest")
     }
+    if request_binding is not None:
+        binding["request_binding"] = request_binding
     return hashlib.sha256(
         json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _bound_approval(db, proposal):
+    row = db.execute(
+        """SELECT b.request_id,b.policy_digest,r.owner,r.bot,r.vault
+        FROM proposal_bindings b JOIN owner_requests r ON r.id=b.request_id
+        WHERE b.proposal_id=?""",
+        (proposal["id"],),
+    ).fetchone()
+    edit = db.execute(
+        "SELECT anchor,replacement FROM proposal_edits WHERE proposal_id=?",
+        (proposal["id"],),
+    ).fetchone()
+    return _approval(
+        proposal,
+        {"request": row, "edit": edit} if row is not None or edit is not None else None,
+    )
 
 
 def _no_merge_markers(text: str):
@@ -353,7 +658,7 @@ def _preview(db, identity):
         "SELECT approval_digest FROM validated_proposals WHERE proposal_id=?",
         (identity,),
     ).fetchone()
-    if approved is None or approved[0] != _approval(proposal):
+    if approved is None or approved[0] != _bound_approval(db, proposal):
         raise ValueError("Stored proposal approval binding changed.")
     result = {
         "proposal_id": identity,
@@ -364,6 +669,11 @@ def _preview(db, identity):
         "content": proposal["payload"],
         "outcome": "proposed",
     }
+    edit = db.execute(
+        "SELECT anchor,replacement FROM proposal_edits WHERE proposal_id=?", (identity,)
+    ).fetchone()
+    if edit is not None:
+        result["changes"] = {"anchor": edit[0], "replacement": edit[1]}
     receipt = _receipt(db, identity)
     if receipt is not None:
         result.update(receipt)
@@ -396,6 +706,7 @@ def propose_note(
     anchor: str | None = None,
     replacement: str | None = None,
     request_id: str | None = None,
+    authenticated_id: str | None = None,
 ) -> dict:
     """Repeated owner request identities reuse durable proposals or outcomes."""
     if request_id is not None and (
@@ -410,7 +721,26 @@ def propose_note(
         for value in (content, expected_revision, anchor, replacement)
     ):
         raise ValueError("Proposal fields must be strings or null.")
-    policy = load_policy(home)
+    policy = require_authority(home, vault_root)
+    if policy["enabled"] and authenticated_id is None:
+        raise ValueError("Authenticated request required for production proposals.")
+    if authenticated_id is not None:
+        with journal(home) as db:
+            row = db.execute(
+                "SELECT vault,state FROM owner_requests WHERE id=?", (authenticated_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row[0] != os.path.abspath(vault_root)
+                or row[1] not in {"started", "mutation"}
+            ):
+                raise ValueError("Invalid authenticated request.")
+            db.execute(
+                "UPDATE owner_requests SET state='mutation' WHERE id=?",
+                (authenticated_id,),
+            )
+            db.commit()
+        request_id = authenticated_id
     with (
         writer_lock(vault_root),
         mutation_parent(vault_root, path, roots=policy["roots"]) as (parent, name),
@@ -445,7 +775,29 @@ def propose_note(
             vault_root,
             path,
             **{key: value for key, value in fields.items() if key != "path"},
+            reuse_unbound=authenticated_id is None,
         )
+        if authenticated_id is not None and result.get("proposal_id"):
+            with journal(home) as db:
+                bound = db.execute(
+                    "SELECT request_id FROM proposal_bindings WHERE proposal_id=?",
+                    (result["proposal_id"],),
+                ).fetchone()
+                if bound is not None and bound[0] != authenticated_id:
+                    raise ValueError("Proposal already belongs to another request.")
+                db.execute(
+                    "INSERT OR IGNORE INTO proposal_bindings VALUES(?,?,?)",
+                    (result["proposal_id"], authenticated_id, _policy_digest(policy)),
+                )
+                db.execute(
+                    "UPDATE validated_proposals SET approval_digest=? WHERE proposal_id=?",
+                    (
+                        _bound_approval(db, _proposal(db, result["proposal_id"])),
+                        result["proposal_id"],
+                    ),
+                )
+                db.commit()
+                result = _preview(db, result["proposal_id"])
         if request_id is not None:
             with journal(home) as db:
                 db.execute(
@@ -465,6 +817,7 @@ def _prepare_note(
     expected_revision: str | None = None,
     anchor: str | None = None,
     replacement: str | None = None,
+    reuse_unbound=True,
 ) -> dict:
     """One creation or one unique exact replacement; no note is published."""
     if any(
@@ -515,6 +868,7 @@ def _prepare_note(
                 LEFT JOIN receipts r ON r.proposal_id=p.id
                 WHERE p.vault=? AND p.target=? AND p.before_hash IS ?
                 AND p.after_hash=? AND p.outcome='proposed' AND r.proposal_id IS NULL
+                AND NOT EXISTS(SELECT 1 FROM proposal_bindings b WHERE b.proposal_id=p.id)
                 ORDER BY p.rowid LIMIT 1""",
                 (
                     os.path.abspath(vault_root),
@@ -523,27 +877,25 @@ def _prepare_note(
                     _hash(after.encode()),
                 ),
             ).fetchone()
-            if previous is not None:
+            if reuse_unbound and previous is not None:
                 return _preview(db, previous[0])
         identity = store_proposal(
             home, vault_root, path, after, expected_before_hash=_hash(before)
         )
         with journal(home) as db:
             proposal = _proposal(db, identity)
-            approval = _approval(proposal)
+            if anchor is not None:
+                db.execute(
+                    "INSERT INTO proposal_edits VALUES(?,?,?)",
+                    (identity, anchor, replacement),
+                )
+            approval = _bound_approval(db, proposal)
             db.execute(
                 "INSERT INTO validated_proposals VALUES (?, ?)", (identity, approval)
             )
             db.commit()
-        return {
-            "proposal_id": identity,
-            "approval_digest": approval,
-            "path": path,
-            "before_revision": _hash(before),
-            "after_revision": _hash(after.encode()),
-            "content": after,
-            "outcome": "proposed",
-        }
+        with journal(home) as db:
+            return _preview(db, identity)
 
 
 def _proposal(db, identity):
@@ -681,14 +1033,43 @@ def apply_proposal(
     approval_digest: str,
     *,
     writers_paused=False,
+    owner=None,
+    bot=None,
+    application_request=None,
 ) -> dict:
-    require_synthetic(home, vault_root)
+    require_authority(home, vault_root)
     if writers_paused is not True:
         raise ValueError("Confirm other writers are paused before application.")
     with writer_lock(vault_root), journal(home) as db:
         db.execute("BEGIN IMMEDIATE")
         policy = load_policy(home)
         proposal = _proposal(db, identity)
+        bound = db.execute(
+            "SELECT policy_digest FROM proposal_bindings WHERE proposal_id=?",
+            (identity,),
+        ).fetchone()
+        if policy["enabled"] or bound is not None:
+            _check_owner(db, identity, vault_root, owner, bot)
+            if bound is None or bound[0] != _policy_digest(policy):
+                raise ValueError("Mutation policy changed; prepare a new proposal.")
+            delivered = db.execute(
+                "SELECT approval_digest,complete FROM preview_deliveries WHERE proposal_id=?",
+                (identity,),
+            ).fetchone()
+            if delivered != (approval_digest, 1):
+                raise ValueError(
+                    "Complete preview delivery required before application."
+                )
+            request = db.execute(
+                "SELECT owner,bot,vault FROM owner_requests WHERE id=?",
+                (application_request,),
+            ).fetchone()
+            if request != (str(owner), str(bot), os.path.abspath(vault_root)):
+                raise ValueError("Active application request required.")
+            db.execute(
+                "INSERT OR IGNORE INTO application_requests VALUES(?,?)",
+                (identity, application_request),
+            )
         if proposal["vault"] != os.path.abspath(vault_root):
             raise ValueError("Proposal belongs to another vault.")
         validated = db.execute(
@@ -698,9 +1079,10 @@ def apply_proposal(
         if (
             validated is None
             or validated[0] != approval_digest
-            or _approval(proposal) != approval_digest
+            or _bound_approval(db, proposal) != approval_digest
         ):
             raise ValueError("Approval does not bind the exact validated proposal.")
+        db.commit()
         with mutation_parent(vault_root, proposal["target"], roots=policy["roots"]) as (
             parent,
             name,
@@ -742,7 +1124,7 @@ def apply_proposal(
 
 
 def recover_proposals(home: Path, vault_root: Path) -> list[dict]:
-    require_synthetic(home, vault_root)
+    require_authority(home, vault_root)
     results = []
     with writer_lock(vault_root), journal(home) as db:
         policy = load_policy(home)

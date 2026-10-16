@@ -27,7 +27,7 @@ def _call(function, *args, **kwargs):
 def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPServer:
     vault_root = vault_root.expanduser().absolute()
     if proposal_home is not None:
-        mutations.require_synthetic(proposal_home, vault_root)
+        mutations.require_authority(proposal_home, vault_root)
         mutations.recover_proposals(proposal_home, vault_root)
     index.index_vault(vault_root)
     mcp = MCPServer("EMURU Vault")
@@ -102,6 +102,13 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         The path must start with 00_Inbox/ and the tool refuses
         to overwrite existing notes.
         """
+        if (
+            proposal_home is not None
+            and mutations.load_policy(proposal_home)["enabled"]
+        ):
+            return _call(
+                mutations.capture_note, proposal_home, vault_root, path, content
+            )
         return _call(index.vault_write, vault_root, path, content)
 
     if proposal_home is not None:
@@ -133,6 +140,11 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
                 anchor=anchor,
                 replacement=replacement,
                 request_id=request_id,
+                authenticated_id=(
+                    mutations.authenticated_request(proposal_home, vault_root)
+                    if mutations.load_policy(proposal_home)["enabled"]
+                    else None
+                ),
             )
 
     return mcp

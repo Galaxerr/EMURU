@@ -4,17 +4,20 @@ EMURU is a self-hosted personal knowledge assistant. It connects Hermes to an
 Obsidian vault through a constrained MCP server, with owner-only Telegram text
 access, persistent conversation history and searchable Inbox notes.
 
-**v0.4.4 synthetic milestone.** Agent inference uses authenticated local
-LiteLLM exclusively.
-The gateway bounds each request to one cloud attempt and at most one qualified
-local attempt. Unqualified local models remain disabled. Follow this guide for
-setup and the [runbook](docs/RUNBOOK.md) for operation and acceptance gates.
+**v0.5.0 implementation candidate. Production acceptance is pending.** Agent
+inference uses the authenticated LiteLLM gateway, with one cloud attempt and at
+most one qualified local attempt. The release adds owner-approved project and
+task proposals, durable request identity, complete previews and crash recovery.
+See the [runbook](docs/RUNBOOK.md) for operation and the
+[acceptance report](docs/releases/v0.5.0-acceptance.md) for current gates.
 
 ## Capabilities and limits
 
 - Retrieve indexed facts with vault-relative citations and wikilink relationships.
 - Refresh search, maps and links after completed external Markdown edits.
 - Create new Markdown notes under `00_Inbox` and refresh search immediately.
+- With an explicitly enabled private mutation policy, propose one approved-root
+  note creation or exact anchored update; only an owner command can apply it.
 - Serialize Inbox capture and index refresh with a shared vault writer lock.
 - Authenticate one numeric Telegram owner in private text-only chats; serialize
   durable work and suppress duplicate dispatch across restart.
@@ -22,19 +25,28 @@ setup and the [runbook](docs/RUNBOOK.md) for operation and acceptance gates.
 - Select cloud Ollama, Gemini or OpenAI as a LiteLLM upstream explicitly.
   Only the default Ollama cloud route may fall back to a qualified local model.
 
-Broader production writes remain disabled. Disposable `/tmp` fixtures support
-precise proposals, explicit operator application and crash recovery. No apply
-tool is exposed to the model. Default writes remain create-only Inbox capture.
+Broader proposals are disabled when the private mutation policy is missing or
+disabled. When enabled for the selected real vault, proposals still require an
+owner-private complete preview and explicit application. No apply tool is exposed
+to the model. Default `vault_write` remains create-only Inbox capture.
 Saved notes survive index failures and report `saved; indexing pending`.
 The next indexed retrieval attempts repair. Content hashes cover paths and raw
 bytes across all six readable roots; timestamps and file sizes do not determine
 freshness. Unstable scans or refresh failures retry once, then return unavailable.
 A completion record detects interrupted index publication across processes.
 `vault_open` remains a direct read. Real-vault activation remains separately gated.
-Synthetic projects now support stable task/result block links, repeated request
+Project workflows support stable task/result block links, repeated request
 identities and grounded on-demand daily review. Owner approval remains required.
 Ambiguous started turns are reported without replay. Automatic Git synchronization, general vault cleanup,
 physical remote wake and broader automation are outside this release.
+
+In owner-private Telegram, `/apply <proposal-id> writers-paused` applies a
+reviewed, completely delivered preview after other writers are paused;
+`/cancel <proposal-id>` cancels an unstarted proposal; `/propose-new <request>`
+creates an intentional fresh request identity. Bare `/apply` does not mutate.
+Repeated request text reuses its prior proposal or outcome. CLI mutation commands
+share the private policy and durable journal; neither CLI nor Telegram exposes
+application to the model.
 
 ## Project layout
 
@@ -138,6 +150,7 @@ operator diagnostics, separate from guarded inference.
 | `vault_open` | Read an allowed Markdown note, capped at 50,000 characters |
 | `vault_neighbors` | Inspect outgoing links and incoming backlinks |
 | `vault_write` | Create an Inbox note and refresh derived indexes |
+| `vault_propose` | When the selected private policy is enabled, store one approved-root creation or exact anchored update proposal |
 
 Allowed roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
 `40_Journal` and `90_Archive`. `99_Private`, other roots, traversal and symlink
@@ -147,13 +160,17 @@ blocked note cleanup explicitly reports the committed path. Publication is not
 an atomic filesystem transaction against power loss or SIGKILL.
 The persistent `.emuru-writer.lock` serializes cooperating EMURU writers. It
 does not lock Obsidian or other editors. See the
-[synthetic proposals and recovery](docs/RUNBOOK.md#v042-synthetic-proposals-and-recovery)
-for private policy and backup handling.
+[owner-approved proposals](docs/RUNBOOK.md#owner-approved-proposals) section for
+policy, preview, application and recovery handling.
 
-For a real deployment, configure the private `vault-target.json` described in
-[the runbook](docs/RUNBOOK.md#vault-target-and-indexing). An absent record selects
-synthetic mode; invalid explicit records are rejected. The service requires real
-mode. Backend commands can independently index or serve an explicit vault:
+For broader proposal access, configure both private profile records described in
+[the runbook](docs/RUNBOOK.md#owner-approved-proposals). The target must be
+`{"mode":"real","vault_path":"/absolute/selected/vault"}` and the policy must
+enable exactly that same vault and selected approved roots. Missing, disabled,
+malformed, or mismatched records deny proposals. Applying a proposal requires a
+complete delivered preview, owner/request binding, current policy and revision,
+and confirmation that other writers are paused. Backend commands can independently
+index or serve an explicit vault:
 
 ```bash
 uv run --frozen emuru-index --vault /absolute/path/to/vault
@@ -174,7 +191,7 @@ For host diagnostics, `scripts/hermes/telegram.py --check` verifies bot identity
 webhook without polling or inference. It makes Telegram API requests, so it is not
 an offline dry run.
 
-## Upgrading to v0.4.0
+## Upgrading
 
 Follow the ordered [migration and rollback procedure](docs/RUNBOOK.md#systemd-to-compose-migration).
 It separates read-only discovery and disposable checks from operator-only production
@@ -213,9 +230,13 @@ No production state is migrated, and no systemd cutover is included.
 `EMURU_CONTAINER_ROUTE` selects a private owner-only upstream route; agent
 inference remains gateway-only even without that variable. The picker records a
 cloud primary and local candidate. A null, expired, failed, or configuration-mismatched
-qualification prevents local dispatch with `LOCAL_UNQUALIFIED`. The qualification contract covers
-tools, synthetic workloads, context, latency, hardware, faults, identity and
-offline-local routing. Live migration and systemd retirement remain pending operator acceptance.
+qualification prevents local dispatch with `LOCAL_UNQUALIFIED`. The expanded
+workload covers project creation, anchored task updates, stale and repeated
+requests, grounded daily planning and injection resistance in addition to
+retrieval, navigation and Inbox capture. The configured cloud `gemma4:31b` and
+local `qwen3.5:2b-q4_K_M` pair, context settings and thresholds remain fixed.
+Live qualification, migration and systemd retirement remain pending operator
+acceptance.
 
 After fetching the locked images and building `emuru:latest`, run:
 

@@ -9,7 +9,8 @@ from pathlib import Path
 from telegram_helpers import update
 
 from emuru.telegram.queue import TelegramQueue
-from emuru.vault.mutations import cancel_proposal, journal, store_proposal
+from emuru.vault import mutations
+from emuru.vault.mutations import cancel_proposal, journal
 
 
 def _sha256(path):
@@ -61,7 +62,23 @@ def test_stopped_synthetic_vault_backup_restores_uncertainty_without_replay(tmp_
     assert queued is None  # Started work blocks ordinary dispatch.
     queue.close()
 
-    proposal_id = store_proposal(profile, vault, "10_Projects/note.md", "# Proposed\n")
+    request_id, _ = mutations.begin_request(
+        profile, vault, 42, 7, 1, "update synthetic note"
+    )
+    preview = mutations.propose_note(
+        profile,
+        vault,
+        "10_Projects/note.md",
+        expected_revision=_sha256(note),
+        anchor="# Synthetic note",
+        replacement="# Proposed",
+        authenticated_id=request_id,
+    )
+    proposal_id = preview["proposal_id"]
+    mutations.record_preview(
+        profile, proposal_id, preview["approval_digest"], complete=True
+    )
+    mutations.finish_request(profile, request_id)
     cancel_proposal(profile, proposal_id)
 
     files = sorted(path for path in source.rglob("*") if path.is_file())
@@ -125,6 +142,19 @@ def test_stopped_synthetic_vault_backup_restores_uncertainty_without_replay(tmp_
         hashlib.sha256(b"# Proposed\n").hexdigest(),
     )
     assert proposal[1] != str(restored_source / "vault")
+    assert (
+        mutations.request_previews(restored_profile, request_id)[0]["outcome"]
+        == "cancelled"
+    )
+    assert mutations.begin_request(
+        restored_profile, vault, 42, 7, 100, "update synthetic note"
+    ) == (request_id, True)
+    import pytest
+
+    with pytest.raises(ValueError, match="owner/vault"):
+        mutations.owner_preview(
+            restored_profile, restored_source / "vault", proposal_id, 42, 7
+        )
 
     restored_queue = TelegramQueue(
         restored_source / "runtime" / "queue.sqlite3",

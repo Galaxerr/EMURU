@@ -1,4 +1,9 @@
-# EMURU operating runbook — v0.4.4
+# EMURU operating runbook — v0.5.0
+
+This is the v0.5.0 implementation candidate. Production acceptance and rollout
+remain pending; the [acceptance report](releases/v0.5.0-acceptance.md) records
+evidence and outstanding gates. Historical v0.4.x notes below describe earlier
+behavior and do not override the current v0.5.0 policy.
 
 ## Requirements
 
@@ -39,7 +44,7 @@ For a nondefault home, pass `--home /absolute/private/home` to each script.
 Wake/up uses existing images and private configuration. It refuses active or
 inconclusive systemd state, checks infrastructure and authenticated model routing,
 then validates guarded Telegram/profile/vault preflight before starting intake.
-A new worker must reach `EMURU Telegram checkpoint: required guards and five MCP tools READY`.
+A new worker must reach `EMURU Telegram checkpoint: required guards and configured MCP tools READY`.
 Wake prints `EMURU READY` only after that checkpoint and a running-worker check.
 Repeated wake leaves a running worker alone; it is not fresh acceptance evidence.
 
@@ -125,9 +130,9 @@ returns `outcome: index_pending` and `saved; indexing pending`. Repair the index
 rather than repeating capture. `vault_open` returns a SHA-256 revision of the
 complete raw file, even when its returned content is truncated.
 
-Default `vault_write` remains create-only Inbox capture. Broader production
-writes remain disabled; synthetic proposal/application commands are described
-below. Search, map and neighbors hold the shared writer lock while checking
+Default `vault_write` remains create-only Inbox capture. Owner-approved
+proposals are described in [owner-approved proposals](#owner-approved-proposals).
+Search, map and neighbors hold the shared writer lock while checking
 allowed Markdown paths/raw bytes, refreshing and collecting results. Completed
 external creates, edits, deletes and renames appear on the next indexed read.
 Scans use no-follow descriptors across the existing six readable roots, excluding
@@ -160,6 +165,92 @@ do not count as knowledge sources. Restore or add notes under an allowlisted
 root and restart the MCP session. Do not broaden the allowlist or copy the
 synthetic fixture into the private vault as a workaround.
 
+## Owner-approved proposals
+
+Broader proposals remain unavailable unless the selected private profile has a
+valid `mutation-policy.json`. The profile and mutation state directories are
+owner-only (`0700`); the policy and target records are owner-only (`0600`). For
+the production profile, the policy has this exact shape and names the selected
+vault:
+
+```json
+{"enabled":true,"roots":["10_Projects","20_Areas","30_Resources"],"vault_path":"/absolute/path/to/vault"}
+```
+
+`vault-target.json` must be exactly
+`{"mode":"real","vault_path":"/absolute/path/to/vault"}` with the same
+absolute path. `enabled: false`, a missing policy, malformed input, extra roots,
+or any target mismatch denies broader proposals. Inbox capture remains governed
+by the existing `vault_write` path. Do not copy an enabled policy into a synthetic
+qualification fixture or another profile. After separately approved activation,
+reapply the existing profile with
+`uv run --frozen python scripts/hermes/vault-profile.py --apply`, audit by running
+the same command without `--apply`, and manually restart the drained runtime. Registration, inference
+guards and readiness must agree on the six-tool surface. Disabling broader writes
+requires the same drained profile update back to five tools.
+
+`vault_propose` can store one new Markdown note under an approved root or one
+exact anchored update. Updates use the complete SHA-256 revision returned by
+`vault_open`, a unique exact anchor, and replacement text. The backend stores
+the validated payload and expected revision; it does not apply from a model tool.
+Project creation keeps its Inbox source note. Task and result updates preserve
+stable block IDs and unrelated bytes. Deletion, rename, automatic merge, and
+multi-note transactions are unsupported.
+
+Telegram request handling binds owner, bot, selected vault, durable originating
+request and a hash of the exact request text in the private mutation journal. Bindings outlive
+queue receipt pruning. Repeated text returns its existing proposal or outcome;
+it does not start another model turn. `/propose-new <request>` creates an
+intentional fresh identity, while duplicate delivery of that update reuses the
+same identity. Ordinary read-only questions remain uncached.
+
+The owner receives a preview generated from the stored proposal. Long previews
+are numbered and application is blocked until every part is delivered and the
+delivery receipt is complete. Commands are:
+
+```text
+/apply <proposal-id> writers-paused
+/cancel <proposal-id>
+/propose-new <request>
+```
+
+Before `/apply`, pause other vault writers, review the entire preview, and send
+the explicit `writers-paused` confirmation. Bare `/apply` explains the required
+confirmation and performs no mutation. The handler rechecks owner/bot/request,
+policy, vault target, preview digest, proposal revision and durable claim. The
+model has no apply tool. `/cancel` cancels an unstarted proposal; prepared or
+completed effects cannot be cancelled or replayed. A failed or uncertain preview
+delivery blocks application until the complete preview is presented successfully.
+
+Application outcomes are `applied`, `index_pending`, `not_applied`, or
+`quarantined`. Repair `index_pending` by rebuilding derived indexes. Inspect
+`not_applied` before preparing a new request. `quarantined` means disk state
+matches neither the recorded before nor after hash and requires operator review.
+Repeated apply returns its durable receipt without publishing again. Telegram
+delivery outcome is separate from mutation outcome; delivery uncertainty does
+not erase the receipt or authorize replay.
+
+The CLI proposal commands use the same selected-vault and mutation journal:
+`mutation-propose`, `mutation-preview`, `mutation-apply`, `mutation-cancel`, `mutation-recover`, and
+`mutation-serve`. Use the locked `scripts/hermes/vault.py` adapter and supply
+`--vault` and `--profile-home`; do not use arbitrary paths or edit the journal.
+CLI application must satisfy the same stored-preview, request-binding, approval,
+policy and paused-writer boundary as Telegram. `mutation-propose` prints the stored
+preview as JSON and records delivery only after stdout is flushed. Use
+`mutation-preview --proposal-id ID` to present it again after uncertain output.
+CLI proposals bind the local OS owner and CLI scope; they cannot approve a
+Telegram-scoped proposal. The native adapter invokes the internal operator mode
+in EMURU's interpreter, keeping MCP/YAML dependencies outside Hermes.
+
+Back up `mutation-policy.json`, `vault-target.json`, `emuru-mutations/` including
+SQLite sidecars, Telegram queue receipts, native history, runtime/profile state,
+and the vault together while all writers are stopped. Restore into isolated paths
+first; verify checksums, ownership/modes, vault binding, receipt/history continuity,
+and uncertain-effect handling. A restore does not rebind a proposal to a different
+vault. Rollback closes proposal admission, drains services, retains the newest
+vault and journal/history state, and never overwrites newer effects with an older
+queue or backup. Follow the migration and rollback checkpoints below.
+
 ## Queue and history
 
 Fresh supported owner-private text is processed in order. Telegram retains
@@ -179,9 +270,12 @@ curated vault memory. Vault memory does not train model weights.
 
 ## Failures, privacy and recovery
 
-Only start/help/status/new/stop are accepted Telegram commands. Other accounts,
-groups, nontext/media input and unsupported commands cannot start agent work.
-Only the five vault tools are available. Retrieved content is reference data;
+Telegram also accepts `/apply <proposal-id> writers-paused`,
+`/cancel <proposal-id>`, and `/propose-new <request>` when a matching private
+mutation policy is active. Other accounts, groups, nontext/media input and
+unsupported commands cannot start agent work.
+The default five vault tools are available; `vault_propose` is added only when
+the selected private mutation policy is enabled. Retrieved content is reference data;
 it cannot override tool/security policy. MCP failures stop the affected request.
 Eligible inference availability failures
 may use one qualified local attempt through LiteLLM before any result is exposed.
@@ -286,7 +380,7 @@ copy profiles, change credentials or perform live acceptance during a dry run.
 Record each checkpoint privately with UTC time, checkout commit, runtime/image
 identities and outcome. Keep public evidence sanitized.
 
-### Read-only discovery and disposaM1ble preflight
+### Read-only discovery and disposable preflight
 
 Run from the installed checkout, as the service owner:
 
@@ -439,7 +533,9 @@ and starts intake: it is never a dry run.
 5. **Adapt bindings, not receipts.** Retain original host binding/config snapshots.
    Change the destination target to `{"mode":"real","vault_path":"/state/vault"}`;
    apply the existing gateway profile using the container runtime, without a poller.
-   Preserve private policy/history and verify token/owner equality. Do not rotate
+   Preserve private policy/history and verify token/owner equality. If broader
+   proposals are enabled, verify the policy names only approved roots and its
+   `vault_path` matches the real target exactly. Do not rotate
    keys or overwrite source state. Recheck private permissions, UID/GID, real vault
    source, route/config consistency and every Docker volume/secret source. Use saved
    configuration plus `container.py config`. Record receipt identity/state continuity
@@ -450,6 +546,9 @@ and starts intake: it is never a dry run.
    read-only retrieval/navigation request, verify final-only delivery and citations,
    and compare vault changes before/after. Test a controlled eligible primary outage
    through qualified local, then restore primary and prove the next request uses it.
+   After separate approval for real mutations, verify a complete owner-private
+   preview, apply one approved change with writers paused, and read it back. This
+   runbook does not authorize a real mutation.
    Record model/evidence expiry, shutdown/drain/no-replay, pending-receipt continuity
    and target-host reboot/manual wake. Stop on failed acceptance; keep systemd intact.
 7. **Retire only after success.** Record all live results and operator sign-off first.
