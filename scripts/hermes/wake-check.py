@@ -19,6 +19,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def verify():
+    daemon_root = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))[
+        "docker_workspace"
+    ](ROOT)
+
+    def daemon_path(path):
+        return str(daemon_root / Path(path).relative_to(ROOT))
+
     runtime = ROOT / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
     original_run = subprocess.run
@@ -91,12 +98,14 @@ def verify():
         for service in config["services"].values():
             for volume in service.get("volumes", []):
                 if volume["source"].startswith("${EMURU_SOURCE_ROOT"):
-                    volume["source"] = volume["source"].replace("../..", str(ROOT))
+                    volume["source"] = volume["source"].replace(
+                        "../..", str(daemon_root)
+                    )
         config["services"]["emuru"]["build"]["context"] = str(ROOT)
         config["services"]["emuru"]["image"] = "${EMURU_IMAGE:-" + image + "}"
         mount = {
             "type": "bind",
-            "source": str(ROOT / "scripts/hermes/container-check.py"),
+            "source": daemon_path(ROOT / "scripts/hermes/container-check.py"),
             "target": "/check.py",
             "read_only": True,
             "bind": {"create_host_path": False},
@@ -143,8 +152,28 @@ def verify():
             str(compose_file),
         ]
 
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[:3] == ["systemctl", "--user", "is-active"]:
+                return SimpleNamespace(returncode=3, stdout="inactive\n")
+            if args[-2:] == ["scripts/hermes/telegram.sh", "--check"]:
+                args = [*args[:-1], "--runtime-check"]  # No live Telegram getMe.
+            if args[:2] == ["docker", "compose"]:
+                env = {**os.environ, **kwargs.get("env", {})}
+                env.update(
+                    (key, daemon_path(value))
+                    for key, value in values.items()
+                    if isinstance(value, Path)
+                )
+                if "EMURU_SOURCE_ROOT" in env:
+                    env["EMURU_SOURCE_ROOT"] = daemon_path(env["EMURU_SOURCE_ROOT"])
+                kwargs["env"] = env
+            return original_run(args, **kwargs)
+
         def compose(*args):
-            return original_run(
+            return run(
                 [*command, *args], check=True, capture_output=True, text=True
             ).stdout.strip()
 
@@ -177,16 +206,6 @@ def verify():
                 for p in profile.rglob("*")
                 if p.is_file() and p.name not in {"config.yaml", "SOUL.md"}
             }
-            calls = []
-
-            def run(args, **kwargs):
-                calls.append(args)
-                if args[:3] == ["systemctl", "--user", "is-active"]:
-                    return SimpleNamespace(returncode=3, stdout="inactive\n")
-                if args[-2:] == ["scripts/hermes/telegram.sh", "--check"]:
-                    args = [*args[:-1], "--runtime-check"]  # No live Telegram getMe.
-                return original_run(args, **kwargs)
-
             subprocess.run = run
             module["wake"](home)
             print("First disposable wake: PASS", flush=True)

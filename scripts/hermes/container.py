@@ -548,7 +548,13 @@ def verify_release(command, env):
             raise ValueError("Running worker image mismatch")
         if service == "litellm":
             pins = json.loads((ROOT / "infra/docker/deployment-lock.json").read_text())
-            if record["image"] != pins["litellm"].split("@", 1)[1]:
+            expected = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", pins["litellm"]],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if record["image"] != expected:
                 raise ValueError("Running gateway image mismatch")
 
 

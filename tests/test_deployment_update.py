@@ -319,11 +319,21 @@ def test_running_release_checks_images_labels_and_status(monkeypatch, mismatch):
     env = {"EMURU_IMAGE": "sha256:worker", "EMURU_SOURCE_ID": "source"}
 
     def run(command, **kwargs):
+        if command[:3] == ["docker", "image", "inspect"]:
+            assert command == [
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}",
+                pins["litellm"],
+            ]
+            return NS(stdout="sha256:gateway-config\n")
         if command[:2] == ["docker", "compose"]:
             return NS(stdout=command[-1] + "-id")
         worker = command[-1] == "emuru-id"
         record = {
-            "image": env["EMURU_IMAGE"] if worker else pins["litellm"].split("@")[1],
+            "image": env["EMURU_IMAGE"] if worker else "sha256:gateway-config",
             "source": "source",
             "status": "running",
         }

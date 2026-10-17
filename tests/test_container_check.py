@@ -9,6 +9,62 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("mapped", [False, True])
+def test_wake_mounts_use_daemon_paths(tmp_path, monkeypatch, mapped):
+    import shutil
+
+    import yaml
+
+    module = runpy.run_path(str(ROOT / "scripts/hermes/wake-check.py"))
+    monkeypatch.setitem(module["verify"].__globals__, "ROOT", tmp_path)
+    (tmp_path / "infra/docker").mkdir(parents=True)
+    shutil.copyfile(
+        ROOT / "infra/docker/compose.yaml", tmp_path / "infra/docker/compose.yaml"
+    )
+    daemon = Path("/daemon/workspace") if mapped else tmp_path
+    load = runpy.run_path
+
+    def load_script(path):
+        if Path(path).name == "container-check.py":
+            return {"docker_workspace": lambda root: daemon}
+        result = load(ROOT / "scripts/hermes/container.py")
+        result["source_identity"] = lambda root: "source"
+        return result
+
+    monkeypatch.setattr(runpy, "run_path", load_script)
+
+    class MountsChecked(Exception):
+        pass
+
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(stdout="sha256:fixture")
+        if command[-1] == "prepare":
+            import shlex
+
+            env_file = Path(command[command.index("--env-file") + 1])
+            env = dict(line.split("=", 1) for line in shlex.split(env_file.read_text()))
+            env.update(kwargs.get("env", {}))
+            for name in ("EMURU_GATEWAY_KEY_FILE", "EMURU_PROFILE", "EMURU_VAULT"):
+                mounted = Path(env[name])
+                assert mounted.is_relative_to(daemon)
+                assert (tmp_path / mounted.relative_to(daemon)).exists()
+            config = yaml.safe_load(Path(command[command.index("-f") + 1]).read_text())
+            for service in config["services"].values():
+                for volume in service.get("volumes", []):
+                    if volume["source"].startswith("${"):
+                        if volume["source"].startswith("${EMURU_SOURCE_ROOT"):
+                            assert str(daemon) in volume["source"]
+                    else:
+                        assert Path(volume["source"]).is_relative_to(daemon)
+            raise MountsChecked
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    with pytest.raises(MountsChecked):
+        module["verify"]()
+
+
 @pytest.mark.parametrize("source", ["/host/workspace", "/runner/workspace"])
 def test_act_workspace_maps_to_daemon_source(monkeypatch, source):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))
