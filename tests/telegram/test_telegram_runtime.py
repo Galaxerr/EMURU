@@ -50,14 +50,22 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
 
         async def _post(self, endpoint, data=None, **kwargs):
             network.append((endpoint, data))
-            if self.fail_send and endpoint == "sendMessage":
+            if self.fail_send and endpoint in {"sendMessage", "sendDocument"}:
                 raise RuntimeError("SYNTHETIC_TOKEN must not be logged")
             return True
 
-        async def send_message(self, chat_id, text):
+        async def send_message(self, chat_id, text, **kwargs):
             if text.startswith(("I can’t reach", "I couldn’t finish")):
                 reports.append(1)
-            return await self._post("sendMessage", {"chat_id": chat_id, "text": text})
+            return await self._post(
+                "sendMessage", {"chat_id": chat_id, "text": text, **kwargs}
+            )
+
+        async def send_document(self, chat_id, document, **kwargs):
+            return await self._post(
+                "sendDocument",
+                {"chat_id": chat_id, "document": document.getvalue(), **kwargs},
+            )
 
     class Updater:
         async def start_polling(self, **kwargs):
@@ -263,6 +271,259 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
     )
     yield result
     queue.close()
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        "button_accept",
+        "text_accept",
+        "button_reject",
+        "text_reject",
+        "command_reject",
+        "addressed_command_reject",
+        "explicit_command_reject",
+        "large_accept",
+        "expire",
+    ],
+)
+def test_single_proposal_message_revision_and_decisions(boundary, tmp_path, decision):
+    from telegram_helpers import callback_update
+    from vault_helpers import create_vault
+
+    from emuru.vault import mutations as m
+
+    b = boundary
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    policy = home / "mutation-policy.json"
+    policy.write_text('{"enabled":false,"roots":["10_Projects"]}')
+    policy.chmod(0o600)
+    vault = create_vault(tmp_path)
+    b.execution.mutation_target = (home, vault)
+    previews = []
+
+    async def model(event):
+        # Native streaming and final summaries must not escape before the proposal card.
+        draft = await b.bot._post(
+            "sendMessage", {"chat_id": 42, "text": "Draft streaming"}
+        )
+        await b.bot._post(
+            "editMessageText",
+            {
+                "chat_id": 42,
+                "message_id": draft["message_id"],
+                "text": "Updated streaming draft",
+            },
+        )
+        if "What does this mean?" in event.text:
+            return {"final_response": "A draft needs your approval."}
+        result = m.propose_note(
+            home,
+            vault,
+            "10_Projects/new.md",
+            content="# Revised"
+            if previews
+            else "# Original"
+            + ("\n" + "😀" * 9000 if decision == "large_accept" else ""),
+            authenticated_id=m.authenticated_request(home, vault),
+        )
+        previews.append(result)
+        return {"final_response": "Proposal stored; please approve."}
+
+    b.adapter.runner._run_agent = model
+
+    async def request(payload):
+        if "callback_query" in payload:
+            b.bot.batch = [NS(to_json=lambda: json.dumps(payload))]
+            await b.bot.get_updates()
+            assert b.network[-1] == (
+                "answerCallbackQuery",
+                {"callback_query_id": payload["callback_query"]["id"]},
+            )
+        else:
+            b.queue.stage(7, [payload], "emuru")
+        assert await b.bridge.once()
+        assert (
+            b.queue.db.execute(
+                "SELECT state FROM updates WHERE update_id=?", (payload["update_id"],)
+            ).fetchone()[0]
+            == "completed"
+        )
+
+    async def check():
+        await request(raw(1, "create project"))
+        first = previews[0]
+        messages = [
+            data
+            for endpoint, data in b.network
+            if endpoint in {"sendMessage", "sendDocument"}
+        ]
+        assert len(messages) == 1
+        card = messages[0].get("text", messages[0].get("caption"))
+        assert (
+            "# Original" in card or b"# Original" in messages[0]["document"]
+        ) and "Apply these exact changes?" in card
+        buttons = messages[0]["reply_markup"]["inline_keyboard"][0]
+        assert [button["text"] for button in buttons] == ["Accept", "Reject"]
+        assert all(len(button["callback_data"].encode()) <= 64 for button in buttons)
+        if decision == "expire":
+            import time
+
+            with m.journal(home) as db:
+                db.execute(
+                    "UPDATE proposal_lifecycle SET created_at=?", (time.time() - 86401,)
+                )
+                db.commit()
+            b.bot.batch = ()
+            await b.bot.get_updates()
+            assert (
+                m.owner_preview(home, vault, first["proposal_id"], 42, 7)["outcome"]
+                == "expired"
+            )
+            assert not (vault / first["path"]).exists()
+            return
+        await request(raw(2, "What does this mean?"))
+        assert b.network[-1][1]["text"] == "A draft needs your approval."
+        await request(raw(3, "Change the goal"))
+        revised = previews[-1]
+        assert revised["proposal_id"] == first["proposal_id"]
+        assert revised["approval_digest"] != first["approval_digest"]
+        assert b.network[-1][1]["text"].count("# Revised") == 1
+        await request(
+            callback_update(4, first["proposal_id"], first["approval_digest"][:16])
+        )
+        assert "Proposal changed" in b.network[-1][1]["text"]
+        assert not (vault / first["path"]).exists()
+        stale = raw(5, "I accept")
+        stale["message"]["reply_to_message"] = {
+            "message_id": 500,
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 7, "is_bot": True},
+            "text": card,
+        }
+        await request(stale)
+        assert "Proposal changed" in b.network[-1][1]["text"]
+        assert not (vault / first["path"]).exists()
+        if decision.startswith("button"):
+            payload = callback_update(
+                6,
+                revised["proposal_id"],
+                revised["approval_digest"][:16],
+                "a" if decision.endswith("accept") else "r",
+            )
+        else:
+            payload = raw(
+                6,
+                f"/reject {revised['proposal_id']}"
+                if decision == "explicit_command_reject"
+                else "/reject@emuru"
+                if decision == "addressed_command_reject"
+                else "/reject"
+                if decision == "command_reject"
+                else "I accept"
+                if decision.endswith("accept")
+                else "I reject",
+            )
+        await request(payload)
+        outcome = m.owner_preview(home, vault, revised["proposal_id"], 42, 7)
+        assert outcome["outcome"] == (
+            "applied" if decision.endswith("accept") else "cancelled"
+        )
+        if decision.endswith("accept"):
+            assert (vault / revised["path"]).read_text() == "# Revised"
+        else:
+            assert not (vault / revised["path"]).exists()
+            assert (
+                b.network[-1][1]["text"]
+                == f"Proposal {revised['proposal_id']} cancelled."
+            )
+        assert b.queue.stage(7, [payload], "emuru") == ["completed"]
+        assert not await b.bridge.once()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_reject_requires_one_pending_proposal(boundary, tmp_path, count):
+    from vault_helpers import create_vault
+
+    from emuru.vault import mutations as m
+
+    b = boundary
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    policy = home / "mutation-policy.json"
+    policy.write_text('{"enabled":false,"roots":["10_Projects"]}')
+    policy.chmod(0o600)
+    vault = create_vault(tmp_path)
+    b.execution.mutation_target = (home, vault)
+    for uid in range(count):
+        identity, _ = m.begin_request(home, vault, 42, 7, uid, f"project {uid}")
+        m.propose_note(
+            home,
+            vault,
+            f"10_Projects/{uid}.md",
+            content="# Draft",
+            authenticated_id=identity,
+        )
+
+    async def check():
+        b.queue.stage(7, [raw(10, "/reject")], "emuru")
+        assert await b.bridge.once()
+        assert b.network[-1][1]["text"] == (
+            "No pending proposal."
+            if not count
+            else "Several proposals are pending. Use /cancel <proposal-id>."
+        )
+        assert len(m.pending_previews(home, vault, 42, 7)) == count
+        assert not b.adapter.runner.model_histories
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("command", ["/new", "/new@emuru", "/help", "/stop"])
+def test_native_commands_ignore_interrupted_proposal_request(
+    boundary, tmp_path, command
+):
+    from vault_helpers import create_vault
+
+    from emuru.vault import mutations as m
+
+    b = boundary
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    vault = create_vault(tmp_path)
+    b.execution.mutation_target = (home, vault)
+    stale, _ = m.begin_request(home, vault, 42, 7, 100, command)
+    runner = b.adapter.runner
+    runner.histories["A"] = [{"role": "user", "content": "Preserve history"}]
+
+    async def check():
+        for uid in (101, 102):
+            b.queue.stage(7, [raw(uid, command)], "emuru")
+            assert await b.bridge.once()
+            assert b.network[-1][1]["text"].split("\n")[0] == (
+                "New session started. Previous conversation preserved."
+                if command.startswith("/new")
+                else "native command"
+            )
+            assert b.queue.stage(7, [raw(uid, command)], "emuru") == ["completed"]
+            assert not await b.bridge.once()
+        assert runner.resets == (2 if command.startswith("/new") else 0)
+        assert runner.histories["A"] == [
+            {"role": "user", "content": "Preserve history"}
+        ]
+        assert not runner.model_histories
+        with m.journal(home) as db:
+            assert (
+                db.execute(
+                    "SELECT state FROM owner_requests WHERE id=?", (stale,)
+                ).fetchone()[0]
+                == "started"
+            )
+
+    asyncio.run(check())
 
 
 def test_registry_adapter_starts_consumer_and_drains_ingress(
@@ -627,7 +888,10 @@ def test_native_receipts_and_polling_contract_are_reused(boundary):
         assert b.effects == [] and b.queue.status() == {"completed": 1}
         options = await b.Updater().start_polling(drop_pending_updates=True, timeout=99)
         assert options["drop_pending_updates"] is False
-        assert options["timeout"] == 25 and options["allowed_updates"] == ["message"]
+        assert options["timeout"] == 25 and options["allowed_updates"] == [
+            "message",
+            "callback_query",
+        ]
         b.adapter.config.extra["max_concurrent_updates"] = 2
         with pytest.raises(RuntimeError, match="settings changed"):
             await b.adapter.connect()
@@ -1030,16 +1294,15 @@ def test_bound_stdio_proposals_preview_apply_and_repetition(
             b.queue.stage(7, [raw(3, "create project")])
             await b.bridge.once()
             assert model_calls == ["create project"]
-            sent = [
-                data["text"]
-                for endpoint, data in b.network
-                if endpoint == "sendMessage"
-            ]
-            instructions = [
-                i for i, text in enumerate(sent) if text.startswith("EMURU approval:")
-            ]
-            assert instructions and all(
-                sent[i - 1].startswith("Preview ") for i in instructions
+            sent = [data for endpoint, data in b.network if endpoint == "sendDocument"]
+            assert sent and all(
+                data["caption"].startswith("EMURU approval:") for data in sent
+            )
+            assert all(
+                data["document"].endswith(("😀" * 5000).encode()) for data in sent
+            )
+            assert all(
+                len(data["reply_markup"]["inline_keyboard"][0]) == 2 for data in sent
             )
             b.queue.stage(7, [raw(4, "/apply"), raw(5, f"/apply {proposal}")])
             await b.bridge.once()

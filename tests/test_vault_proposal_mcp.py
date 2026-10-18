@@ -51,6 +51,65 @@ def cli(home, vault, mode, *arguments):
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("mcp_environment")
+async def test_stdio_revises_authenticated_proposal_without_new_id(tmp_path):
+    from telegram_helpers import update
+
+    from emuru.telegram.queue import TelegramQueue, load_telegram_settings
+    from emuru.vault import mutations as m
+
+    home, vault = fixture(tmp_path)
+    target = home / "vault-target.json"
+    target.write_text(json.dumps({"mode": "real", "vault_path": str(vault)}))
+    target.chmod(0o600)
+    (home / "mutation-policy.json").write_text(
+        json.dumps(
+            {"enabled": True, "roots": ["10_Projects"], "vault_path": str(vault)}
+        )
+    )
+    queue = TelegramQueue(
+        home / "emuru-telegram/queue.sqlite3",
+        load_telegram_settings(ROOT / "infra/hermes/telegram-settings.json"),
+        42,
+        clock=lambda: 100000,
+    )
+    startup = command(home, vault, "mutation-serve")
+    params = StdioServerParameters(command=startup[0], args=startup[1:], cwd=str(ROOT))
+    try:
+        async with (
+            stdio_client(params) as (read, write),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
+            preview = None
+            for uid, content in [(1, "# Original"), (2, "# Revised")]:
+                queue.stage(7, [update(uid, content)])
+                row = queue.claim(7)
+                request, _ = m.begin_request(home, vault, 42, 7, uid, content)
+                m.activate_request(home, request, queue.path, 7, uid)
+                if preview is not None:
+                    previous = preview
+                    m.begin_revision(home, vault, request, preview, 42, 7)
+                result = await client.call_tool(
+                    "vault_propose",
+                    {"path": "10_Projects/revised.md", "content": content},
+                )
+                assert not result.is_error
+                preview = result.structured_content
+                assert preview["content"] == content
+                assert m.request_previews(home, request) == [preview]
+                m.finish_request(home, request)
+                queue.finish(row["sequence"], True)
+            assert preview["proposal_id"] == previous["proposal_id"]
+            assert preview["approval_digest"] != previous["approval_digest"]
+            assert not (vault / preview["path"]).exists()
+            with m.journal(home) as db:
+                assert db.execute("SELECT count(*) FROM proposals").fetchone()[0] == 1
+    finally:
+        queue.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("mcp_environment")
 async def test_real_stdio_propose_apply_readback(tmp_path):
     home, vault = fixture(tmp_path)
     target = vault / "10_Projects/human.md"

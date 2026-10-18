@@ -121,6 +121,13 @@ async def check(run, adapter, bridge, directory):
         }
         for uid, text in ((31, marker), (32, "/new"), (33, question))
     ]
+    from emuru.vault import mutations
+
+    home, vault = root / "mutation-profile", root / "vault"
+    home.mkdir(mode=0o700)
+    vault.mkdir()
+    mutations.begin_request(home, vault, 42, bot.id, 30, "/new")
+    bridge.execution.mutation_target = (home, vault)
     try:
         bridge.queue.stage(bot.id, updates, bot.username)
         with patch("hermes_cli.lifecycle.invoke_hook"):
@@ -159,6 +166,7 @@ async def check(run, adapter, bridge, directory):
         receipts._load_receipts(replacement, bot.id)
         assert (receipt_path.read_bytes(), receipt_path.stat().st_mtime_ns) == before
     finally:
+        bridge.execution.mutation_target = None
         db.close()
 
 
@@ -271,7 +279,9 @@ async def check_mutations(adapter, execution, directory):
         model_calls.append(event.text)
         identity = mutations.authenticated_request(home, vault)
         number = len(proposals) + 1
-        revising = event.text.startswith("The owner requests a replacement proposal.")
+        revising = event.text.startswith(
+            "The owner is following up on a pending proposal."
+        )
         path = (
             proposals[-1]["path"]
             if revising
@@ -281,6 +291,7 @@ async def check_mutations(adapter, execution, directory):
             "# Revised native project\n- [ ] Revised task ^task-native\n"
             if revising
             else f"# Native owner project {number}\n- [ ] Task ^task-native-{number}\n"
+            + ("Preview context line.\n" * 500 if number == 3 else "")
         )
         result = mutations.propose_note(
             home,
@@ -295,7 +306,7 @@ async def check_mutations(adapter, execution, directory):
     adapter._message_handler = model
     queue, bot = execution.queue, adapter._app.bot
 
-    async def request(uid, text, reply=None):
+    async def request(uid, text, reply=None, button=None):
         payload = {
             "update_id": uid,
             "message": {
@@ -312,7 +323,26 @@ async def check_mutations(adapter, execution, directory):
                 "date": int(queue.now()),
                 "chat": {"id": 42, "type": "private"},
                 "from": {"id": bot.id, "is_bot": True, "first_name": "EMURU"},
-                "text": "EMURU approval: " + reply,
+                "text": "EMURU approval: "
+                + reply
+                + "\nRevision: "
+                + mutations.owner_preview(home, vault, reply, 42, bot.id)[
+                    "approval_digest"
+                ][:16],
+            }
+        if button is not None:
+            payload = {
+                "update_id": uid,
+                "callback_query": {
+                    "id": str(uid),
+                    "chat_instance": "synthetic",
+                    "from": payload["message"]["from"],
+                    "data": f"emuru:{text}:{button['proposal_id']}:{button['approval_digest'][:16]}",
+                    "message": {
+                        **payload["message"],
+                        "from": {"id": bot.id, "is_bot": True},
+                    },
+                },
             }
         queue.stage(bot.id, [payload], bot.username)
         while await execution.worker.once():
@@ -370,18 +400,20 @@ async def check_mutations(adapter, execution, directory):
     await request(111, "Change the first task", reply=pending["proposal_id"])
     revised = proposals[-1]
     assert (
-        revised["proposal_id"] != pending["proposal_id"]
+        revised["proposal_id"] == pending["proposal_id"]
         and revised["path"] == pending["path"]
     )
     assert (
         mutations.owner_preview(home, vault, pending["proposal_id"], owner, bot_id)[
             "outcome"
         ]
-        == "cancelled"
+        == "proposed"
     )
     assert not (vault / revised["path"]).exists()
-    await request(112, "yes", reply=revised["proposal_id"])
+    await request(118, "a", button=pending)
     assert not (vault / revised["path"]).exists()
+    await request(112, "yes", reply=revised["proposal_id"])
+    assert (vault / revised["path"]).read_text() == revised["content"]
     await request(113, "approve, writers paused", reply=revised["proposal_id"])
     assert (vault / revised["path"]).read_text() == revised["content"]
     stamp = (vault / revised["path"]).stat().st_mtime_ns
@@ -389,7 +421,7 @@ async def check_mutations(adapter, execution, directory):
     assert (vault / revised["path"]).stat().st_mtime_ns == stamp
     await request(115, "/propose-new create rejected project")
     rejected = proposals[-1]
-    await request(116, "reject", reply=rejected["proposal_id"])
+    await request(116, "r", button=rejected)
     await request(117, "approve, writers paused", reply=rejected["proposal_id"])
     assert not (vault / rejected["path"]).exists()
     assert (
@@ -398,4 +430,8 @@ async def check_mutations(adapter, execution, directory):
         ]
         == "cancelled"
     )
+    await request(119, "/propose-new create button-accepted project")
+    accepted = proposals[-1]
+    await request(120, "a", button=accepted)
+    assert (vault / accepted["path"]).read_text() == accepted["content"]
     execution.mutation_target = None

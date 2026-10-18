@@ -260,7 +260,9 @@ def main():
                     "SELECT owner,bot FROM owner_requests WHERE id=?", (identity,)
                 ).fetchone()
             envelope = json.loads(sys.stdin.read(4096))
-            if not isinstance(envelope, dict) or set(envelope) != {
+            if not isinstance(envelope, dict) or set(envelope) - {
+                "approval_digest"
+            } != {
                 "operation",
                 "proposal_id",
                 "writers_paused",
@@ -269,12 +271,17 @@ def main():
             preview = mutations.owner_preview(
                 args.profile_home, args.vault, envelope["proposal_id"], owner, bot
             )
+            approval_digest = (
+                envelope.get("approval_digest") or preview["approval_digest"]
+            )
+            if approval_digest != preview["approval_digest"]:
+                parser.error("Proposal changed; use its latest preview")
             if envelope["operation"] == "apply":
                 result = mutations.apply_proposal(
                     args.profile_home,
                     args.vault,
                     envelope["proposal_id"],
-                    preview["approval_digest"],
+                    approval_digest,
                     writers_paused=envelope["writers_paused"],
                     owner=owner,
                     bot=bot,
@@ -282,7 +289,9 @@ def main():
                 )
             elif envelope["operation"] == "cancel":
                 result = mutations.cancel_proposal(
-                    args.profile_home, envelope["proposal_id"]
+                    args.profile_home,
+                    envelope["proposal_id"],
+                    approval_digest=approval_digest,
                 )
             else:
                 parser.error("Unknown operator operation")

@@ -50,6 +50,13 @@ active or inconclusive systemd state and any worker that is not safely stopped.
 Compatible managed profiles receive reviewed stock `SOUL.md`
 updates automatically. Customized or missing guidance is refused for explicit
 review. Wake never enables `mutation-policy.json` or migrates queue/journal state.
+The proposal lifecycle update has a separate, explicit stopped-state upgrade:
+`EMURU_HERMES_PROFILE_HOME=/absolute/container-home/profiles/emuru .venv/bin/python -m emuru.deployment proposal-upgrade`.
+Run it only for an approved update while the worker is stopped. It accepts only
+the exact previous proposal schema, saves a mode-0600 SQLite backup beside the
+journal, and adds proposal lifecycle/revision metadata without changing existing
+rows. Existing proposals receive a 24-hour grace period. Unknown schemas and
+active workers remain blocked. Then run the normal wake command.
 It then checks infrastructure and authenticated model routing, and validates
 guarded Telegram/profile/vault preflight before starting intake.
 A new worker must reach `EMURU Telegram checkpoint: required guards and selected MCP tools READY`.

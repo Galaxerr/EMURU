@@ -153,6 +153,96 @@ def test_same_version_queue_with_missing_schema_is_rejected_unchanged(managed):
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
 
 
+@pytest.fixture
+def legacy_proposals(managed):
+    home, _ = managed
+    with journal(home) as db:
+        payload = "# Pending owner project"
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        db.execute(
+            "INSERT INTO proposals VALUES(?,?,?,?,?,?,?,'proposed')",
+            (
+                "a" * 32,
+                payload,
+                digest,
+                "/state/vault",
+                "10_Projects/pending.md",
+                None,
+                digest,
+            ),
+        )
+        db.execute("DROP TABLE revision_requests")
+        db.execute("DROP TABLE proposal_lifecycle")
+        db.commit()
+    return home
+
+
+def test_previous_proposal_schema_requires_explicit_backed_up_upgrade(legacy_proposals):
+    home = legacy_proposals
+    path = home / "emuru-mutations/mutations.sqlite"
+    before, schema = files(home), deployment._schema(path)
+    with pytest.raises(ValueError, match="Mutation state migration"):
+        deployment.sync_profile(ROOT, home, apply=True)
+    assert files(home) == before
+
+    result = deployment.upgrade_proposals(home)
+    assert result["state_changed"] is True
+    backup = Path(result["backup"])
+    assert backup.stat().st_mode & 0o777 == 0o600
+    assert deployment._schema(backup) == schema
+    with sqlite3.connect(backup) as old, sqlite3.connect(path) as current:
+        tables = [name for kind, name, sql in schema[1] if kind == "table"]
+        for table in tables:
+            assert (
+                old.execute(f'SELECT * FROM "{table}"').fetchall()
+                == current.execute(f'SELECT * FROM "{table}"').fetchall()
+            )
+        assert current.execute(
+            "SELECT proposal_id,interacted,version FROM proposal_lifecycle"
+        ).fetchall() == [("a" * 32, 0, 0)]
+        assert current.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    deployment.sync_profile(ROOT, home, apply=True)
+    after = files(home)
+    assert deployment.upgrade_proposals(home) == {"state_changed": False}
+    assert files(home) == after
+
+
+@pytest.mark.parametrize("custom", ["extra_table", "changed_table", "version", "queue"])
+def test_proposal_upgrade_refuses_unknown_state_without_writes(
+    legacy_proposals, custom
+):
+    home = legacy_proposals
+    path = home / "emuru-mutations/mutations.sqlite"
+    if custom == "queue":
+        path = home / "emuru-telegram/queue.sqlite3"
+        path.parent.mkdir(mode=0o700)
+        path.touch(mode=0o600)
+    with sqlite3.connect(path) as db:
+        if custom == "extra_table":
+            db.execute("CREATE TABLE unknown(value TEXT)")
+        elif custom == "changed_table":
+            db.execute("ALTER TABLE proposals ADD COLUMN unknown TEXT")
+        else:
+            db.execute("PRAGMA user_version=999")
+    before = files(home)
+    with pytest.raises(ValueError, match="migration"):
+        deployment.upgrade_proposals(home)
+    assert files(home) == before
+
+
+def test_proposal_upgrade_refuses_active_profile(legacy_proposals):
+    home = legacy_proposals
+    lock = home / "emuru-telegram/instance.lock"
+    lock.parent.mkdir(mode=0o700)
+    write_private(lock, "")
+    before = files(home)
+    with lock.open("r+") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            deployment.upgrade_proposals(home)
+    assert files(home) == before
+
+
 def test_active_profile_lock_blocks_sync(managed):
     home, _ = managed
     (home / "emuru-telegram").mkdir(mode=0o700)

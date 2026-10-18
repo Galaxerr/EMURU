@@ -8,7 +8,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from emuru.hermes import profile
@@ -105,7 +105,8 @@ def _private_file(path):
     return path.read_bytes()
 
 
-def _schema(path):
+@contextmanager
+def _database_snapshot(path):
     # Inspect a copy, including WAL, without creating sidecars in private state.
     with tempfile.TemporaryDirectory() as temporary:
         copy = Path(temporary) / path.name
@@ -114,13 +115,19 @@ def _schema(path):
             if source.exists():
                 _private_file(source)
                 shutil.copyfile(source, Path(str(copy) + suffix))
-        with sqlite3.connect(copy.as_uri() + "?mode=ro", uri=True) as db:
-            return db.execute("PRAGMA user_version").fetchone()[0], db.execute(
-                "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-            ).fetchall()
+        with closing(sqlite3.connect(copy.as_uri() + "?mode=ro", uri=True)) as db:
+            yield db
 
 
-def check_state(home):
+def _schema(path):
+    with _database_snapshot(path) as db:
+        return db.execute("PRAGMA user_version").fetchone()[0], db.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+        ).fetchall()
+
+
+def check_state(home, *, allow_proposal_upgrade=False):
+    upgrade = False
     queue = home / "emuru-telegram/queue.sqlite3"
     if queue.exists():
         with tempfile.TemporaryDirectory() as temporary:
@@ -141,10 +148,23 @@ def check_state(home):
             reference = Path(temporary)
             with open_journal(reference):
                 pass
-            if _schema(journal) != _schema(
-                reference / "emuru-mutations/mutations.sqlite"
-            ):
-                raise ValueError("Mutation state migration requires explicit approval")
+            actual = _schema(journal)
+            expected = _schema(reference / "emuru-mutations/mutations.sqlite")
+            if actual != expected:
+                legacy = (
+                    expected[0],
+                    [
+                        row
+                        for row in expected[1]
+                        if row[1] not in {"proposal_lifecycle", "revision_requests"}
+                    ],
+                )
+                if not allow_proposal_upgrade or actual != legacy:
+                    raise ValueError(
+                        "Mutation state migration requires explicit approval"
+                    )
+                upgrade = True
+    return upgrade
 
 
 @contextmanager
@@ -162,6 +182,37 @@ def stopped_profile(home):
 def sync_profile(root, home, *, apply=False):
     with stopped_profile(home):
         return _sync_profile(root, home, apply=apply)
+
+
+def upgrade_proposals(home):
+    """Explicitly upgrade only the known proposal schema, preserving a stopped backup."""
+    from emuru.vault.mutations import journal as open_journal
+
+    with stopped_profile(home):
+        if not check_state(home, allow_proposal_upgrade=True):
+            return {"state_changed": False}
+        path = home / "emuru-mutations/mutations.sqlite"
+        fd, backup = tempfile.mkstemp(
+            prefix="before-proposal-upgrade-", suffix=".sqlite", dir=path.parent
+        )
+        try:
+            with (
+                _database_snapshot(path) as source,
+                closing(sqlite3.connect(backup)) as target,
+            ):
+                source.backup(target)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        with open_journal(home):
+            pass
+        check_state(home)
+        return {"state_changed": True, "backup": backup}
 
 
 def _sync_profile(root, home, *, apply=False):
@@ -217,7 +268,8 @@ def _sync_profile(root, home, *, apply=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "command", choices=("identity", "profile-check", "profile-sync")
+        "command",
+        choices=("identity", "profile-check", "profile-sync", "proposal-upgrade"),
     )
     parser.add_argument("--expect")
     args = parser.parse_args()
@@ -227,6 +279,8 @@ def main():
         if args.expect and identity != args.expect:
             raise SystemExit("Image/source identity mismatch")
         print(identity)
+    elif args.command == "proposal-upgrade":
+        print(json.dumps(upgrade_proposals(profile.profile_home())))
     else:
         print(
             json.dumps(

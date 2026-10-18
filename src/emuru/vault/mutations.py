@@ -10,6 +10,7 @@ import re
 import sqlite3
 import stat
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -283,7 +284,20 @@ def journal(home: Path):
                     CREATE TABLE IF NOT EXISTS capture_requests (
                         request_id TEXT PRIMARY KEY REFERENCES owner_requests(id),
                         result TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS proposal_lifecycle (
+                        proposal_id TEXT PRIMARY KEY REFERENCES proposals(id),
+                        created_at REAL NOT NULL, interacted INTEGER NOT NULL DEFAULT 0,
+                        version INTEGER NOT NULL DEFAULT 0);
+                    CREATE TABLE IF NOT EXISTS revision_requests (
+                        request_id TEXT PRIMARY KEY REFERENCES owner_requests(id),
+                        proposal_id TEXT NOT NULL REFERENCES proposals(id),
+                        approval_digest TEXT NOT NULL);
                 """)
+                # Existing proposals have no trusted creation time; start their grace period at migration.
+                connection.execute(
+                    "INSERT OR IGNORE INTO proposal_lifecycle(proposal_id,created_at) SELECT id,? FROM proposals",
+                    (time.time(),),
+                )
                 connection.commit()
                 os.fsync(parent)
                 os.fsync(profile)
@@ -331,14 +345,23 @@ def store_proposal(
                     digest,
                 ),
             )
+            db.execute(
+                "INSERT INTO proposal_lifecycle(proposal_id,created_at) VALUES(?,?)",
+                (identity, time.time()),
+            )
             db.commit()
         return identity
 
 
-def cancel_proposal(home: Path, identity: str):
+def cancel_proposal(home: Path, identity: str, *, approval_digest=None):
     with journal(home) as db:
         db.execute("BEGIN IMMEDIATE")
         proposal = _proposal(db, identity)
+        if (
+            approval_digest is not None
+            and _bound_approval(db, proposal) != approval_digest
+        ):
+            raise ValueError("Proposal changed; use its latest preview.")
         receipt = _receipt(db, identity)
         if receipt is not None:
             if receipt["outcome"] != "cancelled":
@@ -490,8 +513,11 @@ def request_previews(home, identity):
         previews = [
             _preview(db, row[0])
             for row in db.execute(
-                "SELECT proposal_id FROM proposal_bindings WHERE request_id=? ORDER BY rowid",
-                (identity,),
+                """SELECT proposal_id FROM proposal_bindings WHERE request_id=?
+                UNION SELECT proposal_id FROM proposal_requests WHERE request_id=? AND proposal_id IS NOT NULL
+                UNION SELECT x.proposal_id FROM revision_requests x JOIN validated_proposals v ON v.proposal_id=x.proposal_id
+                WHERE x.request_id=? AND x.approval_digest!=v.approval_digest""",
+                (identity, identity, identity),
             ).fetchall()
         ]
         capture = db.execute(
@@ -565,9 +591,103 @@ def application_outcomes(home, vault_root, owner, bot, update_id):
 
 
 def owner_preview(home, vault_root, identity, owner, bot):
+    expire_proposals(home, vault_root)
     with journal(home) as db:
         _check_owner(db, identity, vault_root, owner, bot)
         return _preview(db, identity)
+
+
+def expire_proposals(home, vault_root, *, now=None):
+    """Remove untouched draft content after one day; retain a replay-safe tombstone."""
+    now = time.time() if now is None else now
+    with writer_lock(vault_root), journal(home) as db:
+        db.execute("BEGIN IMMEDIATE")
+        identities = db.execute(
+            """SELECT p.id FROM proposals p JOIN proposal_lifecycle l ON l.proposal_id=p.id
+            WHERE p.vault=? AND p.outcome='proposed' AND l.interacted=0 AND l.created_at<=?
+            AND NOT EXISTS(SELECT 1 FROM receipts r WHERE r.proposal_id=p.id)
+            AND NOT EXISTS(SELECT 1 FROM intents i WHERE i.proposal_id=p.id)""",
+            (os.path.abspath(vault_root), now - 86400),
+        ).fetchall()
+        for (identity,) in identities:
+            proposal = _proposal(db, identity)
+            db.execute(
+                "INSERT INTO receipts VALUES(?, 'expired', ?, ?)",
+                (identity, proposal["before_hash"], proposal["after_hash"]),
+            )
+            empty = _hash(b"")
+            db.execute(
+                "UPDATE proposals SET payload='',digest=?,after_hash=?,outcome='cancelled' WHERE id=?",
+                (empty, empty, identity),
+            )
+            db.execute("DELETE FROM proposal_edits WHERE proposal_id=?", (identity,))
+            db.execute(
+                "DELETE FROM preview_deliveries WHERE proposal_id=?", (identity,)
+            )
+            db.execute(
+                "UPDATE validated_proposals SET approval_digest=? WHERE proposal_id=?",
+                (_bound_approval(db, _proposal(db, identity)), identity),
+            )
+        db.commit()
+        return [row[0] for row in identities]
+
+
+def pending_previews(home, vault_root, owner, bot):
+    with journal(home) as db:
+        identities = db.execute(
+            """SELECT p.id FROM proposals p JOIN proposal_bindings b ON b.proposal_id=p.id
+            JOIN owner_requests r ON r.id=b.request_id
+            WHERE r.owner=? AND r.bot=? AND r.vault=? AND p.outcome='proposed'
+            AND NOT EXISTS(SELECT 1 FROM receipts x WHERE x.proposal_id=p.id)""",
+            (str(owner), str(bot), os.path.abspath(vault_root)),
+        ).fetchall()
+        return [_preview(db, row[0]) for row in identities]
+
+
+def note_owner_activity(home, vault_root, owner, bot, update_id):
+    with journal(home) as db:
+        db.execute(
+            """UPDATE proposal_lifecycle SET interacted=1 WHERE proposal_id IN (
+            SELECT b.proposal_id FROM proposal_bindings b JOIN owner_requests r ON r.id=b.request_id
+            JOIN request_updates u ON u.request_id=r.id
+            WHERE r.owner=? AND r.bot=? AND r.vault=? AND CAST(u.update_id AS INTEGER)<?)
+            AND created_at>?""",
+            (
+                str(owner),
+                str(bot),
+                os.path.abspath(vault_root),
+                update_id,
+                time.time() - 86400,
+            ),
+        )
+        db.commit()
+
+
+def begin_revision(home, vault_root, request_id, preview, owner, bot):
+    with journal(home) as db:
+        db.execute("BEGIN IMMEDIATE")
+        identity = preview["proposal_id"]
+        _check_owner(db, identity, vault_root, owner, bot)
+        current = _preview(db, identity)
+        if (
+            current["outcome"] != "proposed"
+            or current["approval_digest"] != preview["approval_digest"]
+        ):
+            raise ValueError("Only the current pending proposal can be revised.")
+        request = db.execute(
+            "SELECT owner,bot,vault FROM owner_requests WHERE id=?", (request_id,)
+        ).fetchone()
+        if request != (str(owner), str(bot), os.path.abspath(vault_root)):
+            raise ValueError("Revision request belongs to another owner.")
+        db.execute(
+            "INSERT INTO revision_requests VALUES(?,?,?)",
+            (request_id, identity, current["approval_digest"]),
+        )
+        db.execute(
+            "UPDATE proposal_lifecycle SET interacted=1 WHERE proposal_id=?",
+            (identity,),
+        )
+        db.commit()
 
 
 def _check_owner(db, identity, vault_root, owner, bot):
@@ -591,7 +711,7 @@ def record_preview(home, identity, digest, *, complete=False):
         db.commit()
 
 
-def preview_parts(preview, limit=3500):
+def preview_text(preview):
     text = (
         f"Proposal {preview['proposal_id']}\nPath: {preview['path']}\n"
         f"Revision: {preview['before_revision'] or 'absent'}\n"
@@ -602,7 +722,11 @@ def preview_parts(preview, limit=3500):
         text += f"Exact anchor:\n{changes['anchor']}\nExact replacement:\n{changes['replacement']}"
     else:
         text += f"Exact creation content:\n{preview['content']}"
-    return message_parts(text, limit, label="Preview")
+    return text
+
+
+def preview_parts(preview, limit=3500):
+    return message_parts(preview_text(preview), limit, label="Preview")
 
 
 def applied_diff_parts(preview, receipt):
@@ -677,9 +801,18 @@ def _bound_approval(db, proposal):
         "SELECT anchor,replacement FROM proposal_edits WHERE proposal_id=?",
         (proposal["id"],),
     ).fetchone()
+    version = db.execute(
+        "SELECT version FROM proposal_lifecycle WHERE proposal_id=?", (proposal["id"],)
+    ).fetchone()
     return _approval(
         proposal,
-        {"request": row, "edit": edit} if row is not None or edit is not None else None,
+        {
+            "request": row,
+            "edit": edit,
+            **({"version": version[0]} if version and version[0] else {}),
+        }
+        if row is not None or edit is not None or version and version[0]
+        else None,
     )
 
 
@@ -806,14 +939,24 @@ def propose_note(
                     if previous[2] is not None:
                         return _preview(db, previous[2])
                     return _existing(parent, name, previous[1])
+        with journal(home) as db:
+            revision = db.execute(
+                "SELECT proposal_id,approval_digest FROM revision_requests WHERE request_id=?",
+                (authenticated_id,),
+            ).fetchone()
         result = _prepare_note(
             home,
             vault_root,
             path,
             **{key: value for key, value in fields.items() if key != "path"},
             reuse_unbound=authenticated_id is None,
+            revision=revision,
         )
-        if authenticated_id is not None and result.get("proposal_id"):
+        if (
+            authenticated_id is not None
+            and result.get("proposal_id")
+            and revision is None
+        ):
             with journal(home) as db:
                 bound = db.execute(
                     "SELECT request_id FROM proposal_bindings WHERE proposal_id=?",
@@ -854,6 +997,7 @@ def _prepare_note(
     anchor: str | None = None,
     replacement: str | None = None,
     reuse_unbound=True,
+    revision=None,
 ) -> dict:
     """One creation or one unique exact replacement; no note is published."""
     if any(
@@ -897,6 +1041,42 @@ def _prepare_note(
         _no_merge_markers(after)
         if after.encode("utf-8") == before:
             raise ValueError("Proposal has no change.")
+        if revision is not None:
+            identity, expected_digest = revision
+            with journal(home) as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = _preview(db, identity)
+                if (
+                    current["outcome"] != "proposed"
+                    or current["approval_digest"] != expected_digest
+                ):
+                    raise ValueError("Proposal changed during revision.")
+                digest = _hash(after.encode())
+                db.execute(
+                    "UPDATE proposals SET target=?,payload=?,digest=?,before_hash=?,after_hash=? WHERE id=?",
+                    (path, after, digest, _hash(before), digest, identity),
+                )
+                db.execute(
+                    "DELETE FROM proposal_edits WHERE proposal_id=?", (identity,)
+                )
+                if anchor is not None:
+                    db.execute(
+                        "INSERT INTO proposal_edits VALUES(?,?,?)",
+                        (identity, anchor, replacement),
+                    )
+                db.execute(
+                    "UPDATE proposal_lifecycle SET version=version+1,interacted=1 WHERE proposal_id=?",
+                    (identity,),
+                )
+                db.execute(
+                    "DELETE FROM preview_deliveries WHERE proposal_id=?", (identity,)
+                )
+                db.execute(
+                    "UPDATE validated_proposals SET approval_digest=? WHERE proposal_id=?",
+                    (_bound_approval(db, _proposal(db, identity)), identity),
+                )
+                db.commit()
+                return _preview(db, identity)
         with journal(home) as db:
             previous = db.execute(
                 """SELECT p.id FROM proposals p
@@ -1074,6 +1254,7 @@ def apply_proposal(
     application_request=None,
 ) -> dict:
     require_authority(home, vault_root)
+    expire_proposals(home, vault_root)
     if writers_paused is not True:
         raise ValueError("Confirm other writers are paused before application.")
     with writer_lock(vault_root), journal(home) as db:

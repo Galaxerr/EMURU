@@ -202,6 +202,7 @@ def load_telegram_settings(path: Path) -> dict:
             "stop",
             "apply",
             "cancel",
+            "reject",
             "propose-new",
             "revise",
         ],
@@ -230,11 +231,58 @@ class QueueFull(RuntimeError):
 
 
 def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
-    """Return minimal text-only Bot API JSON, or reject before any Hermes handler."""
+    """Normalize owner text or proposal buttons before any Hermes handler."""
     if type(owner_id) is not int or owner_id <= 0:
         raise ValueError("A single positive owner ID is required")
     if type(update) is not dict or type(update.get("update_id")) is not int:
         return None
+    if set(update) == {"update_id", "callback_query"}:
+        query = update["callback_query"]
+        if not isinstance(query, dict):
+            return None
+        message, sender = query.get("message"), query.get("from")
+        author = message.get("from") if isinstance(message, dict) else None
+        action = re.fullmatch(
+            r"emuru:([ar]):([0-9a-f]{32}):([0-9a-f]{16})", str(query.get("data", ""))
+        )
+        if (
+            not action
+            or not isinstance(message, dict)
+            or not isinstance(sender, dict)
+            or not isinstance(author, dict)
+            or sender.get("id") != owner_id
+            or type(sender.get("id")) is not int
+            or sender.get("is_bot") is not False
+            or not isinstance(query.get("id"), str)
+            or not query["id"]
+            or author.get("id") != bot_id
+            or author.get("is_bot") is not True
+            or type(bot_id) is not int
+            or message.get("forward_origin")
+        ):
+            return None
+        text = (
+            f"/apply {action[2]} writers-paused {action[3]}"
+            if action[1] == "a"
+            else f"/cancel {action[2]} {action[3]}"
+        )
+        return admit_update(
+            {
+                "update_id": update["update_id"],
+                "message": {
+                    "message_id": message.get("message_id"),
+                    "date": int(now),
+                    "chat": message.get("chat"),
+                    "from": sender,
+                    "text": text,
+                },
+            },
+            owner_id,
+            settings,
+            now,
+            bot_username,
+            bot_id,
+        )
     if update["update_id"] < 0 or set(update) != {"update_id", "message"}:
         return None
     msg = update.get("message")
@@ -289,9 +337,10 @@ def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
     # Persist a bound command rather than trusting reply metadata after a restart.
     reply = msg.get("reply_to_message")
     if isinstance(reply, dict) and not text.lstrip().startswith("/"):
+        reply_text = str(reply.get("text", reply.get("caption", "")))
         header = re.fullmatch(
             r"EMURU approval: ([0-9a-f]{32})",
-            str(reply.get("text", "")).split("\n", 1)[0],
+            reply_text.split("\n", 1)[0],
         )
         author, reply_chat = reply.get("from", {}), reply.get("chat", {})
         if (
@@ -311,16 +360,26 @@ def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
             and not msg.get("forward_origin")
         ):
             response = text.strip().casefold()
-            if response == "approve, writers paused":
+            version = re.search(r"(?m)^Revision: ([0-9a-f]{16})$", reply_text)
+            if version:
+                text = proposal_response(header[1], version[1], text)
+            elif response == "approve, writers paused":
                 text = f"/apply {header[1]} writers-paused"
             elif response in {"no", "reject", "cancel"}:
                 text = f"/cancel {header[1]}"
-            elif response in {"yes", "approve", "ok", "okay"}:
+            elif response in {"yes", "accept", "approve", "ok", "okay"}:
                 text = f"/apply {header[1]}"  # The existing handler refuses missing paused-writer confirmation.
             else:
                 text = f"/revise {header[1]} {text.strip()}"
             if len(text) > settings["max_input_chars"]:
                 return None
+    # Never reinterpret a forwarded decision or an untrusted reply as approval of the latest draft.
+    if (
+        (reply is not None or msg.get("forward_origin"))
+        and not text.startswith("/")
+        and proposal_response("", "", text).startswith(("/apply", "/cancel"))
+    ):
+        return None
     entities = []
     if text.lstrip().startswith("/"):
         command = re.fullmatch(
@@ -332,7 +391,7 @@ def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
             or command[2]
             and command[2].lower() != bot_username.lower()
             or command is not None
-            and command[1] in {"apply", "cancel", "revise"}
+            and command[1] in {"apply", "cancel", "reject", "revise"}
             and msg.get("forward_origin")
         ):
             return None
@@ -350,6 +409,29 @@ def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
             "entities": entities,
         },
     }
+
+
+def proposal_response(identity, version, text):
+    response = text.strip().casefold().rstrip(".! ")
+    if re.fullmatch(
+        r"(?:yes[, ]+)?(?:i )?(?:accept|approve)(?: (?:the proposal|these changes|the changes|it))?",
+        response,
+    ) or response in {
+        "yes",
+        "ok",
+        "okay",
+        "approve, writers paused",
+    }:
+        return f"/apply {identity} writers-paused {version}"
+    if (
+        re.fullmatch(
+            r"(?:no[, ]+)?(?:i )?(?:reject|decline|cancel)(?: (?:the proposal|these changes|the changes|it))?",
+            response,
+        )
+        or response == "no"
+    ):
+        return f"/cancel {identity} {version}"
+    return f"/revise {identity} {text.strip()}"
 
 
 def as_update(row):

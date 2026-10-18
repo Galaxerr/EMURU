@@ -187,6 +187,15 @@ Compose is the normal operator workflow. Use the lifecycle scripts above; wait f
 not revalidated by repeated wake. Consult current status and private checkpoint evidence.
 Only the guarded launcher provides durable admission. Plain `hermes gateway` bypasses it.
 
+Vault proposals arrive as one message with the draft, proposal ID, approval request,
+and Accept/Reject buttons. Large drafts attach to that message. Pause other vault
+writers before accepting; button or text acceptance confirms they are paused.
+Reply with edits to revise the same proposal ID. With one pending proposal, a plain
+acceptance, rejection, or edit request also works. Untouched drafts expire 24 hours
+after creation; an owner follow-up stops expiry. Expiry removes draft content and
+retains a small receipt so repeated requests cannot recreate expired work. Old
+proposals without a creation timestamp receive a 24-hour grace period on upgrade.
+
 For host diagnostics, `scripts/hermes/telegram.py --check` verifies bot identity and
 webhook without polling or inference. It makes Telegram API requests, so it is not
 an offline dry run.

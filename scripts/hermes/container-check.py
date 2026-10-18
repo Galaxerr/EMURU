@@ -279,6 +279,8 @@ def snapshot():
             "validated_proposals",
             "proposal_edits",
             "proposal_requests",
+            "proposal_lifecycle",
+            "revision_requests",
             "intents",
         ):
             payload["mutation_tables"][table] = db.execute(
@@ -625,6 +627,7 @@ def verify(config_only=False):
                 "-q",
                 "tests/test_vault_apply.py",
                 "tests/test_vault_proposal_mcp.py",
+                "tests/test_proposal_lifecycle.py",
                 "tests/test_vault_recovery.py",
                 "tests/telegram/test_telegram_runtime.py",
             ),

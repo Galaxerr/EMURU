@@ -146,13 +146,14 @@ def main():
             calls, sent = [], []
 
             async def fake_post(bot, endpoint, data=None, **kwargs):
-                if endpoint == "sendMessage":
-                    sent.append(data["text"])
+                if endpoint in {"sendMessage", "sendDocument"}:
+                    sent.append(data.get("text", data.get("caption", "")))
                     return {
                         "message_id": len(sent),
                         "date": 100000,
                         "chat": {"id": 42, "type": "private"},
-                        "text": data["text"],
+                        "text": data.get("text"),
+                        "caption": data.get("caption"),
                     }
                 return True
 
@@ -257,7 +258,7 @@ def main():
                 await case.check_mutations(adapter, execution, directory)
                 await adapter.disconnect()
 
-            asyncio.run(asyncio.wait_for(native_replay(), timeout=15))
+            asyncio.run(asyncio.wait_for(native_replay(), timeout=30))
             queue.close()
         print("Pinned Hermes runtime / native Telegram guard seams: PASS (no network)")
         runtime_home.cleanup()

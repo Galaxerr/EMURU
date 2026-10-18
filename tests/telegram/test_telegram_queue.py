@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from telegram_helpers import update
+from telegram_helpers import callback_update, update
 
 from emuru.telegram import queue as queue_module
 from emuru.telegram.queue import (
@@ -21,6 +21,124 @@ from emuru.telegram.queue import (
     admit_update,
     diagnostics,
 )
+
+
+@pytest.mark.parametrize("text", ["/reject", "/reject@emuru", "/reject " + "a" * 32])
+def test_reject_command_keeps_owner_and_forward_guards(policy, text):
+    payload = update(1, text)
+    assert admit_update(payload, 42, policy, 100000, "emuru", 7) is not None
+    payload["message"]["forward_origin"] = {"type": "hidden_user"}
+    assert admit_update(payload, 42, policy, 100000, "emuru", 7) is None
+    del payload["message"]["forward_origin"]
+    payload["message"]["from"]["id"] = 43
+    assert admit_update(payload, 42, policy, 100000, "emuru", 7) is None
+
+
+@pytest.mark.parametrize(
+    "action,command",
+    [
+        ("a", "/apply " + "a" * 32 + " writers-paused " + "b" * 16),
+        ("r", "/cancel " + "a" * 32 + " " + "b" * 16),
+    ],
+)
+def test_buttons_survive_queue_reopen_without_replay(tmp_path, policy, action, command):
+    payload = callback_update(1, "a" * 32, "b" * 16, action)
+    path = tmp_path / "queue.sqlite3"
+    queue = TelegramQueue(path, policy, 42, clock=lambda: 100000)
+    assert queue.stage(7, [payload], "emuru") == ["queued"]
+    queue.close()
+    queue = TelegramQueue(path, policy, 42, clock=lambda: 100000)
+    try:
+        row = queue.claim(7, "emuru")
+        assert row["text"] == command
+        assert queue.stage(7, [payload], "emuru") == ["started"]
+        assert queue.claim(7, "emuru") is None
+    finally:
+        queue.close()
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        "sender",
+        "bot",
+        "group",
+        "chat",
+        "inline",
+        "data",
+        "forward",
+        "message_id",
+        "missing_author",
+    ],
+)
+def test_button_admission_rejects_untrusted_envelopes(policy, mismatch):
+    payload = callback_update(1, "a" * 32, "b" * 16)
+    query = payload["callback_query"]
+    if mismatch == "sender":
+        query["from"]["id"] = 99
+    elif mismatch == "bot":
+        query["message"]["from"]["id"] = 99
+    elif mismatch == "group":
+        query["message"]["chat"]["type"] = "group"
+    elif mismatch == "chat":
+        query["message"]["chat"]["id"] = 99
+    elif mismatch == "inline":
+        del query["message"]
+    elif mismatch == "data":
+        query["data"] = "emuru:a:anything"
+    elif mismatch == "forward":
+        query["message"]["forward_origin"] = {"type": "hidden_user"}
+    elif mismatch == "missing_author":
+        query["message"]["from"] = None
+    else:
+        query["message"]["message_id"] = 0
+    assert queue_module.admit_update(payload, 42, policy, 100000, "emuru", 7) is None
+
+
+@pytest.mark.parametrize(
+    "response,command",
+    [
+        ("I accept the proposal", "/apply"),
+        ("Yes, I approve these changes.", "/apply"),
+        ("I reject the proposal", "/cancel"),
+        ("I do not accept", "/revise"),
+        ("Accept, but change the goal", "/revise"),
+    ],
+)
+def test_plain_proposal_decisions_are_explicit(response, command):
+    assert queue_module.proposal_response("a" * 32, "b" * 16, response).startswith(
+        command + " "
+    )
+
+
+@pytest.mark.parametrize("response", ["I accept", "reject"])
+def test_forwarded_plain_decisions_cannot_approve_latest_proposal(policy, response):
+    payload = update(text=response)
+    payload["message"]["forward_origin"] = {"type": "hidden_user"}
+    assert queue_module.admit_update(payload, 42, policy, 100000, "emuru", 7) is None
+
+
+@pytest.mark.parametrize("field", ["text", "caption"])
+@pytest.mark.parametrize(
+    "response,expected",
+    [("I accept.", "apply"), ("I reject", "cancel"), ("Change the goal", "revise")],
+)
+def test_versioned_proposal_replies_work_for_text_and_attachments(
+    policy, field, response, expected
+):
+    payload = update(text=response)
+    payload["message"]["reply_to_message"] = {
+        "message_id": 500,
+        "from": {"id": 7, "is_bot": True},
+        "chat": {"id": 42, "type": "private"},
+        field: "EMURU approval: " + "a" * 32 + "\nRevision: " + "b" * 16,
+    }
+    text = queue_module.admit_update(payload, 42, policy, 100000, "emuru", 7)[
+        "message"
+    ]["text"]
+    assert text.startswith(f"/{expected} " + "a" * 32)
+    if expected != "revise":
+        assert text.endswith("b" * 16)
 
 
 def test_admission_rejects_unauthorized_media_commands_and_stale_input(policy):
@@ -561,5 +679,4 @@ def test_untrusted_reply_cannot_become_an_apply_command(policy, mismatch):
     result = admit_update(
         payload, 42, policy, 100000, "emuru", None if mismatch == "bot_id" else 7
     )
-    assert result["message"]["text"] == "approve, writers paused"
-    assert "reply_to_message" not in result["message"]
+    assert result is None

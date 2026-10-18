@@ -80,6 +80,7 @@ jobs:
         run: >-
           uv run --frozen pytest -q
           tests/test_vault_apply.py tests/test_vault_proposal_mcp.py
+          tests/test_proposal_lifecycle.py
           tests/test_vault_recovery.py tests/test_project_workflows.py
       - name: Test private vault target and synthetic isolation
         run: uv run --frozen pytest -q tests/test_vault_target.py
