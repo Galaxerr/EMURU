@@ -9,7 +9,6 @@ import logging
 import os
 import signal
 import subprocess
-import sys
 import time
 import traceback
 from contextlib import contextmanager
@@ -614,14 +613,13 @@ class NativeTelegram:
             except TimeoutError:
                 return TurnResult(False, "turn_timeout", interrupted=True)
             except Exception as error:
-                if "--runtime-check" in sys.argv:
-                    frame = traceback.extract_tb(error.__traceback__)[-1]
-                    logger.warning(
-                        "Native turn check: %s at %s:%d",
-                        type(error).__name__,
-                        Path(frame.filename).name,
-                        frame.lineno,
-                    )
+                frame = traceback.extract_tb(error.__traceback__)[-1]
+                logger.warning(
+                    "Native turn failed: %s at %s:%d",
+                    type(error).__name__,
+                    Path(frame.filename).name,
+                    frame.lineno,
+                )
                 raise
             return TurnResult(
                 not turn.failed, turn.error_code, turn.error_code == "native_cancelled"
@@ -812,6 +810,8 @@ class NativeTelegram:
                 raise TypeError("Non-Telegram update rejected")
             turn = self._current.get()
             if not turn or not turn.open or turn.notice:
+                # Count each fetched update, including filtered input, local status and duplicates.
+                app.adapter._updates_dispatched_total += 1
                 # Polling has already staged this input; only the durable worker can
                 # enter native admission and handlers. Rejections never reach PTB groups.
                 admitted = queue_module.admit_update(
@@ -836,7 +836,10 @@ class NativeTelegram:
                 raise RuntimeError("Telegram dispatch admission changed")
             # Native PTB receipt claims, auth checks, handler groups and context scopes
             # remain underneath the stricter durable gate, with reference media stripped.
-            return await native_update(app, Update.de_json(admitted, app.bot))
+            normalized = Update.de_json(admitted, app.bot)
+            # Pinned native admission increments synchronously; durable execution is not new ingress.
+            app.adapter._updates_dispatched_total -= 1
+            return await native_update(app, normalized)
 
         async def polling(updater, *args, **kwargs):
             if args:
@@ -950,7 +953,20 @@ class NativeTelegram:
             # durable FIFO already waits for active work; retain native reset/cache
             # cleanup, but skip its callback confirmation on this text-only surface.
             self.queue.mark_tools_started(self.identity()[0], turn.uid)
-            await native_reset(runner, event)
+            try:
+                await native_reset(runner, event)
+            except Exception as error:
+                new = runner.session_store._entries.get(key)
+                if new is None or new.session_id == old_id:
+                    raise
+                # Native reset runs optional hooks/banner work after committing the boundary.
+                frame = traceback.extract_tb(error.__traceback__)[-1]
+                logger.warning(
+                    "Native reset committed before %s at %s:%d",
+                    type(error).__name__,
+                    Path(frame.filename).name,
+                    frame.lineno,
+                )
             new = runner.session_store._entries.get(key)
             if new is None or new.session_id == old_id:
                 raise HealthError("session_transition_failed")

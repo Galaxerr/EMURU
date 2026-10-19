@@ -9,6 +9,7 @@ import jsonschema
 import litellm
 from litellm import CustomLLM, Router
 from litellm.llms.custom_llm import CustomLLMError
+from litellm.llms.ollama.chat import transformation as ollama_chat
 
 from emuru.models.gateway import read_route, upstream, valid_qualification
 from emuru.models.observations import emit
@@ -16,6 +17,27 @@ from emuru.models.observations import emit
 CLOUD_SECONDS = 60
 LOCAL_SECONDS = 180
 ROUTED_SECONDS = 245
+
+
+class _OllamaResponseIterator(ollama_chat.OllamaChatCompletionResponseIterator):
+    _next_tool_index = 0
+
+    def chunk_parser(self, chunk):
+        # Pinned LiteLLM loses empty calls and reuses index 0 across Ollama chunks.
+        for call in chunk.get("message", {}).get("tool_calls") or []:
+            function = call.get("function", {})
+            if isinstance(function.get("arguments"), dict):
+                function["arguments"] = json.dumps(function["arguments"])
+        result = super().chunk_parser(chunk)
+        for choice in result.choices:
+            for call in choice.delta.tool_calls or []:
+                if call.id:
+                    call.index = self._next_tool_index
+                    self._next_tool_index += 1
+        return result
+
+
+ollama_chat.OllamaChatCompletionResponseIterator = _OllamaResponseIterator
 
 
 def fail(message, status=400):

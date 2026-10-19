@@ -84,10 +84,14 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             return "owner"
 
         async def _handle_reset_command(self, event):
+            if getattr(self, "reset_error_before", False):
+                raise RuntimeError("SYNTHETIC_SECRET")
             self.resets += 1
             self.session_store._entries["owner"] = NS(session_id=f"B{self.resets}")
             self.histories[f"B{self.resets}"] = []
             self.cached_agent = self.cached_history = None
+            if getattr(self, "reset_error_after", False):
+                raise RuntimeError("SYNTHETIC_SECRET")
             return "native reset notice"
 
         async def _hm_cmd_new(self, event, source, _quick_key):
@@ -146,6 +150,7 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
         async def process_update(self, update):
             # Model the native admission beneath the stricter gate. The installed
             # runtime check separately exercises real PTB claims and handler groups.
+            self.adapter._updates_dispatched_total += 1
             key = f"{self.bot.id}:{update.update_id}"
             if key in self.adapter._seen_update_ids:
                 return
@@ -166,6 +171,7 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
                 {},
             )
             self._seen_update_ids = {}
+            self._updates_dispatched_total = 0
             self._pending_text_batch_tasks = {}
             self.runner = Runner()
             self.gateway_runner = self.runner
@@ -273,6 +279,31 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
     queue.close()
 
 
+def test_ingress_progress_includes_filtered_status_and_duplicate_updates(boundary):
+    b = boundary
+
+    async def check():
+        rejected = raw(1, "text accompanying forbidden media")
+        rejected["message"]["photo"] = [{"file_id": "synthetic"}]
+        b.bot.batch = [
+            b.Update(rejected),
+            b.Update(raw(2, "hello")),
+            b.Update(raw(3, "/status")),
+            b.Update(raw(2, "hello")),
+        ]
+        await b.bot.get_updates()
+        for update in b.bot.batch:
+            await b.app.process_update(update)
+        assert b.adapter._updates_dispatched_total == 4
+        assert not b.effects
+        assert b.queue.status() == {"queued": 1, "completed": 1}
+        assert await b.bridge.once()
+        assert b.adapter._updates_dispatched_total == 4
+        assert b.effects == ["hello"]
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize(
     "decision",
     [
@@ -352,7 +383,9 @@ def test_single_proposal_message_revision_and_decisions(boundary, tmp_path, deci
         )
 
     async def check():
-        await request(raw(1, "create project"))
+        payload = raw(1, "create project at 10_Projects/new.md")
+        payload["message"]["link_preview_options"] = {"is_disabled": True}
+        await request(payload)
         first = previews[0]
         messages = [
             data
@@ -522,6 +555,68 @@ def test_native_commands_ignore_interrupted_proposal_request(
                 ).fetchone()[0]
                 == "started"
             )
+
+    asyncio.run(check())
+
+
+def test_failed_read_can_be_asked_again_without_replaying_updates(boundary, tmp_path):
+    from vault_helpers import create_vault
+
+    from emuru.vault import mutations
+
+    b = boundary
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    vault = create_vault(tmp_path)
+    b.execution.mutation_target = (home, vault)
+    question = (
+        "Identify projects, documented status, and source path. Do not update notes."
+    )
+    before = {p: p.read_bytes() for p in vault.rglob("*.md")}
+
+    async def check():
+        b.adapter.runner.agent_result = {"failed": True}
+        b.queue.stage(7, [raw(1, question)])
+        assert await b.bridge.once()
+        assert await b.bridge.once()  # One failure notice.
+        b.adapter.runner.agent_result = {"final_response": "native reply"}
+        b.queue.stage(7, [raw(2, question), raw(2, question)])
+        assert await b.bridge.once()
+        assert not await b.bridge.once()
+        assert b.network[-1][1]["text"] == "native reply"
+        assert len(b.adapter.runner.model_histories) == 2
+        assert b.queue.stage(7, [raw(1, question)]) == ["failed"]
+        assert not await b.bridge.once()
+        with mutations.journal(home) as db:
+            assert db.execute("SELECT count(*) FROM owner_requests").fetchone()[0] == 2
+        assert {p: p.read_bytes() for p in vault.rglob("*.md")} == before
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("rotated", [False, True])
+def test_reset_reports_actual_session_transition(boundary, rotated, caplog):
+    b = boundary
+    runner = b.adapter.runner
+    runner.reset_error_before, runner.reset_error_after = not rotated, rotated
+
+    async def check():
+        b.queue.stage(7, [raw(1, "/new")], "emuru")
+        assert await b.bridge.once()
+        if rotated:
+            assert (
+                b.network[-1][1]["text"]
+                == "New session started. Previous conversation preserved."
+            )
+            assert b.queue.status() == {"completed": 1}
+        else:
+            assert b.queue.status() == {"failed": 1}
+        assert runner.resets == int(rotated)
+        assert not runner.model_histories
+        assert "SYNTHETIC_SECRET" not in caplog.text
+        b.queue.stage(7, [raw(1, "/new")], "emuru")
+        await b.bridge.once()  # Only an outstanding failure notice may run.
+        assert runner.resets == int(rotated)
 
     asyncio.run(check())
 

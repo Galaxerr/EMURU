@@ -328,6 +328,7 @@ def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
         "from",
         "text",
         "entities",
+        "link_preview_options",
         "reply_to_message",
         "forward_origin",
         "has_protected_content",

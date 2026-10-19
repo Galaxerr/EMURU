@@ -99,7 +99,12 @@ class Upstream(BaseHTTPRequestHandler):
                     {"function": {"name": "probe", "arguments": '{"message":'}}
                 ],
             }
-        if request_mode in {"tool-valid", "tool-invalid"}:
+        if request_mode in {
+            "tool-valid",
+            "tool-invalid",
+            "tool-empty",
+            "tool-multiple",
+        }:
             data["message"] = {
                 "role": "assistant",
                 "content": "",
@@ -107,9 +112,11 @@ class Upstream(BaseHTTPRequestHandler):
                     {
                         "function": {
                             "name": "probe",
-                            "arguments": {
+                            "arguments": {}
+                            if request_mode == "tool-empty"
+                            else {
                                 "message": "ping"
-                                if request_mode == "tool-valid"
+                                if request_mode in {"tool-valid", "tool-multiple"}
                                 else 42
                             },
                         }
@@ -118,6 +125,8 @@ class Upstream(BaseHTTPRequestHandler):
             }
         try:
             self.wfile.write((json.dumps(data) + "\n").encode())
+            if request_mode == "tool-multiple":
+                self.wfile.write((json.dumps(data) + "\n").encode())
             if request_mode in {"reasoning-text", "reasoning-length"}:
                 data["message"] = {"role": "assistant", "content": backend + "-answer"}
                 self.wfile.write((json.dumps(data) + "\n").encode())
@@ -394,6 +403,28 @@ def main():
                     else "Invalid tool arguments" in body
                 ), (status, body)
                 assert counts["local"] == before["local"], counts
+            mode = "tool-multiple"
+            status, body = request(True, tools=tools)
+            assert status == 200 and body.count('"name":"probe"') == 2, (status, body)
+            mode = "tool-empty"
+            empty_tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "probe",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ]
+            status, body = request(True, tools=empty_tools)
+            assert status == 200 and '"arguments":"{}"' in body.replace(" ", ""), (
+                status,
+                body,
+            )
             for stream_flag in (False, True):
                 for response_mode in (
                     "empty",

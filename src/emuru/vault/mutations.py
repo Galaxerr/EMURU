@@ -437,7 +437,7 @@ def begin_request(home, vault_root, owner, bot, update_id, text, *, fresh=False)
             if fresh
             else db.execute(
                 """SELECT id FROM owner_requests r WHERE owner=? AND bot=? AND vault=? AND text_hash=?
-            AND (state IN ('started','mutation') OR EXISTS(SELECT 1 FROM proposal_bindings b WHERE b.request_id=r.id))
+            AND (state='mutation' OR EXISTS(SELECT 1 FROM proposal_bindings b WHERE b.request_id=r.id))
             ORDER BY rowid LIMIT 1""",
                 (*scope, text_hash),
             ).fetchone()

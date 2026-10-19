@@ -621,6 +621,13 @@ def test_request_identity_survives_restart_and_read_questions_stay_fresh(tmp_pat
             home, vault, owner, bot, 2, "create project"
         )[1]
     read, _ = mutations.begin_request(home, vault, 42, 7, 4, "daily planning")
+    # A failed read has no mutation intent; a new owner update may ask again.
+    retry, repeated = mutations.begin_request(home, vault, 42, 7, 6, "daily planning")
+    assert not repeated and retry != read
+    assert mutations.begin_request(home, vault, 42, 7, 4, "daily planning") == (
+        read,
+        True,
+    )
     mutations.finish_request(home, read)
     assert not mutations.begin_request(home, vault, 42, 7, 5, "daily planning")[1]
     assert (

@@ -16,43 +16,69 @@ async def check(run, adapter, bridge, directory):
     from gateway.session import SessionStore
     from hermes_state import SessionDB
 
+    counters = (
+        "_updates_received_total",
+        "_updates_dispatched_total",
+        "_ingress_dispatched_seen",
+        "_ingress_stalled_heartbeats",
+    )
+    saved = {name: getattr(adapter, name, 0) for name in counters}
+    recoveries = []
+    try:
+        for name in counters:
+            setattr(adapter, name, 0)
+        rejected = {
+            "update_id": 30,
+            "message": {
+                "message_id": 30,
+                "date": int(bridge.queue.now()),
+                "chat": {"id": 43, "type": "private"},
+                "from": {"id": 43, "is_bot": False, "first_name": "Other"},
+                "text": "Unauthorized input",
+            },
+        }
+        adapter._record_updates_received([rejected])
+        await adapter._app.process_update(
+            bridge.execution._update.de_json(rejected, adapter._app.bot)
+        )
+        assert adapter._updates_dispatched_total == 1
+        with patch.object(
+            adapter, "_schedule_polling_recovery", lambda *a, **kw: recoveries.append(a)
+        ):
+            for _ in range(8):
+                adapter._check_ingress_dispatch_stall()
+            assert not recoveries
+            adapter._record_updates_received([rejected])
+            for _ in range(8):
+                adapter._check_ingress_dispatch_stall()
+            assert (
+                len(recoveries) == 1
+            )  # An actual undispatched update still trips the watchdog.
+    finally:
+        for name, value in saved.items():
+            setattr(adapter, name, value)
+
     root = Path(directory) / "native-session"
-    db = SessionDB(root / "state.db")
-
-    class IsolatedStore(SessionStore):
-        def _open_session_db_for_active_scope(self, db_path=None):
-            return db
-
+    root.mkdir()
     config = GatewayConfig(sessions_dir=root / "sessions", multiplex_profiles=False)
-    store = IsolatedStore(config.sessions_dir, config)
-    store._db = db  # Pin all native transcript/routing operations to this temporary DB.
     runner = adapter.gateway_runner
-    runner.config, runner.session_store = config, store
-    runner._init_lifecycle_state()
-    runner._init_runtime_caches()
-    runner._session_db = db
+    runner.__init__(config)
+    store = runner.session_store
+    db = SessionDB(get_hermes_home() / "state.db")
+    runner.adapters = {run.Platform.TELEGRAM: adapter}
     captured, agents, transitions = [], [], []
     marker = "UNSAVED_SYNTHETIC_MARKER_984"
     question = "What synthetic marker did I give you?"
 
-    async def no_external_hooks(*args, **kwargs):
-        pass
-
-    # Keep native reset, cache eviction, conversation clearing and history replay;
-    # only resource cleanup, optional lifecycle plugins and the provider are fakes.
-    runner._cleanup_old_agent_for_reset = no_external_hooks
-    runner._fire_session_reset_hooks = no_external_hooks
-    runner._reset_notice_session_info = lambda source: ""
-    runner._telegram_topic_new_header = lambda source: None
-    runner._is_telegram_topic_lane = lambda source: False
-    runner._spawn_release_thread = lambda *args, **kwargs: None
+    # Keep native reset, resource cleanup, hooks, cache eviction and history replay.
+    # Provider, outbound HTTP, and external lifecycle plugins are synthetic.
 
     async def executor(event):
         key = runner._session_key_for_source(event.source)
         if event.text == "/new":
             before = store._entries[key].session_id
-            handled, reply = await runner._hm_cmd_new(event, event.source, key)
-            assert handled and key not in runner._agent_cache
+            reply = await runner._handle_message(event)
+            assert key not in runner._agent_cache
             transitions.append((before, store._entries[key].session_id))
             return reply
         entry = store.get_or_create_session(event.source)
@@ -115,11 +141,16 @@ async def check(run, adapter, bridge, directory):
                 "message_id": uid,
                 "date": now,
                 "chat": {"id": 42, "type": "private"},
-                "from": {"id": 42, "is_bot": False},
+                "from": {"id": 42, "is_bot": False, "first_name": "Owner"},
                 "text": text,
+                "link_preview_options": {"is_disabled": True},
             },
         }
         for uid, text in ((31, marker), (32, "/new"), (33, question))
+    ]
+    updates = [
+        json.loads(bridge.execution._update.de_json(payload, bot).to_json())
+        for payload in updates
     ]
     from emuru.vault import mutations
 
@@ -134,6 +165,7 @@ async def check(run, adapter, bridge, directory):
             while await bridge.once():
                 pass
         assert len(captured) == 2 and len(transitions) == 1
+        assert adapter._updates_dispatched_total == saved["_updates_dispatched_total"]
         old, new = transitions[0]
         assert old != new and captured[0][0] == old and captured[1][0] == new
         assert agents[0] is not agents[1] and agents[1].session_id == new
@@ -144,8 +176,8 @@ async def check(run, adapter, bridge, directory):
         assert not await bridge.once() and len(transitions) == 1
         histories = {sid: store.load_transcript(sid) for sid in (old, new)}
         db.close()
-        db = SessionDB(root / "state.db")
-        recreated = IsolatedStore(config.sessions_dir, config)
+        db = SessionDB(get_hermes_home() / "state.db")
+        recreated = SessionStore(config.sessions_dir, config)
         recreated._db = db
         assert {sid: recreated.load_transcript(sid) for sid in (old, new)} == histories
 
@@ -315,6 +347,7 @@ async def check_mutations(adapter, execution, directory):
                 "chat": {"id": 42, "type": "private"},
                 "from": {"id": 42, "is_bot": False},
                 "text": text,
+                "link_preview_options": {"is_disabled": True},
             },
         }
         if reply is not None:

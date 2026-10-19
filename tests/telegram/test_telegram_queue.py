@@ -23,6 +23,35 @@ from emuru.telegram.queue import (
 )
 
 
+def test_text_with_link_preview_settings_is_staged_without_reference_metadata(
+    tmp_path, policy
+):
+    text = (
+        'Create a project called "EMURU v0.5.0 Cancelled Test" at '
+        "10_Projects/EMURU-v050-Cancelled-Test.md. Its goal is to verify that "
+        "rejecting a proposal prevents file creation. Include one task called "
+        '"This project must not be saved". Show the full proposal for approval '
+        "before making any changes."
+    )
+    payload = update(1, text)
+    payload["message"]["link_preview_options"] = {"is_disabled": True}
+    link = "EMURU-v050-Cancelled-Test.md"
+    payload["message"]["entities"] = [
+        {"type": "url", "offset": text.index(link), "length": len(link)}
+    ]
+    queue = TelegramQueue(tmp_path / "queue.sqlite3", policy, 42, clock=lambda: 100000)
+    try:
+        assert queue.stage(7, [payload], "emuru") == ["queued"]
+        row = queue.claim(7, "emuru")
+        admitted = queue_module.as_update(row)
+        assert admitted["message"]["text"] == text
+        assert admitted["message"]["entities"] == []
+        assert "link_preview_options" not in admitted["message"]
+        assert queue.stage(7, [payload], "emuru") == ["started"]
+    finally:
+        queue.close()
+
+
 @pytest.mark.parametrize("text", ["/reject", "/reject@emuru", "/reject " + "a" * 32])
 def test_reject_command_keeps_owner_and_forward_guards(policy, text):
     payload = update(1, text)

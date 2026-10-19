@@ -230,7 +230,9 @@ request and a hash of the exact request text in the private mutation journal. Bi
 queue receipt pruning. Repeated text returns its existing proposal or outcome;
 it does not start another model turn. `/propose-new <request>` creates an
 intentional fresh identity, while duplicate delivery of that update reuses the
-same identity. Ordinary read-only questions remain uncached.
+same identity. Ordinary read-only questions remain uncached, including newly sent
+questions after a failed read. The journal records mutation intent before any
+write, so failed or uncertain mutations still require inspecting their effects.
 
 The owner receives a preview generated from the stored proposal. Long previews
 are numbered and application is blocked until every part is delivered and the
