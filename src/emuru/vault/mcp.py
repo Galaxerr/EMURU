@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field
 
 from emuru.vault import indexer as index
 from emuru.vault import mutations
@@ -120,17 +121,39 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
                 + ", ".join(mutations.load_policy(proposal_home)["roots"])
                 + ". "
                 "Use this for new projects/resources outside Inbox; do not substitute an unstored draft when this tool is available. "
-                "Creation requires content and an absent target; updates require the full revision from vault_open, one exact anchor, and replacement. "
+                "Creation requires content and an absent target; omit update fields or use JSON null. "
+                "Updates require expected_revision from vault_open, one exact anchor, and replacement; omit content or use JSON null. "
+                "Redundant update content is accepted only if it exactly matches the anchored result. "
                 "Search for duplicates first. A direct owner creation request needs no existing Inbox source. "
                 "Never apply or approve changes. Owner approval is handled by the trusted Telegram transport."
             )
         )
         def vault_propose(
             path: str,
-            content: str | None = None,
-            expected_revision: str | None = None,
-            anchor: str | None = None,
-            replacement: str | None = None,
+            content: Annotated[
+                str | None,
+                Field(
+                    description="Full note text for creation; omit or use JSON null for updates. Redundant update content must exactly match the anchored result."
+                ),
+            ] = None,
+            expected_revision: Annotated[
+                str | None,
+                Field(
+                    description="Full vault_open revision for updates; omit or use JSON null for creation."
+                ),
+            ] = None,
+            anchor: Annotated[
+                str | None,
+                Field(
+                    description="Unique exact text to replace for updates; omit or use JSON null for creation."
+                ),
+            ] = None,
+            replacement: Annotated[
+                str | None,
+                Field(
+                    description="Replacement text for updates; omit or use JSON null for creation."
+                ),
+            ] = None,
             request_id: str | None = None,
         ) -> dict[str, Any]:
             """Preview one approved-root creation or exact anchored update.

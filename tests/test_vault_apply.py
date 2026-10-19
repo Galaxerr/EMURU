@@ -84,6 +84,47 @@ def test_exact_update_preserves_human_bytes(tmp_path):
     assert target.read_bytes() == original.replace(b"- [ ] Task", b"- [x] Task")
 
 
+def test_anchored_task_update_accepts_only_matching_redundant_content(tmp_path):
+    home, vault = setup(tmp_path)
+    target = vault / "10_Projects/EMURU-v050-QA.md"
+    original = (
+        "---\r\ntitle: EMURU v0.5.0 QA\r\ntags: [qa]\r\n---\r\n"
+        "## Goal\r\n- Preserve this goal ^goal-qa\r\n## Tasks\r\n"
+        "- [ ] Verify project persistence — status: todo ^task-verify-persistence\r\n"
+        "## Decision\r\n- Owner approval required ^decision-approval\r\n"
+        "QA_SOURCE_500\r\n[[Other#Block]]\r\nUnrelated human text.\r\n"
+    ).encode()
+    target.write_bytes(original)
+    anchor = "- [ ] Verify project persistence — status: todo ^task-verify-persistence"
+    replacement = (
+        anchor
+        + "\r\n- [ ] Verify Telegram delivery — status: todo ^task-verify-telegram-delivery"
+    )
+    after = original.replace(anchor.encode(), replacement.encode())
+    fields = {
+        "expected_revision": hashlib.sha256(original).hexdigest(),
+        "anchor": anchor,
+        "replacement": replacement,
+    }
+    with pytest.raises(ValueError, match="content|Content"):
+        mutations.propose_note(
+            home,
+            vault,
+            str(target.relative_to(vault)),
+            content=after.decode().replace("QA_SOURCE_500", "changed"),
+            **fields,
+        )
+    proposal = mutations.propose_note(
+        home, vault, str(target.relative_to(vault)), content=after.decode(), **fields
+    )
+    assert proposal["content"].encode() == after
+    assert proposal["changes"] == {"anchor": anchor, "replacement": replacement}
+    assert target.read_bytes() == original
+    assert apply(home, vault, proposal)["outcome"] == "applied"
+    assert target.read_bytes() == after
+    assert list((vault / "10_Projects").glob("*.md")) == [target]
+
+
 @pytest.mark.parametrize(
     "text,anchor",
     [("aaa", "aa"), ("same same", "same"), ("text", "missing"), ("text", "")],
@@ -509,6 +550,42 @@ def bound_proposal(home, vault, *, owner=42, bot=7, update=1, text="create proje
         authenticated_id=request,
     )
     return request, proposal
+
+
+def test_validation_only_proposal_failure_does_not_poison_new_owner_request(tmp_path):
+    home, vault = production_fixture(tmp_path)
+    target = vault / "10_Projects/note.md"
+    target.write_bytes(b"before")
+    text = "Propose an anchored task update."
+    request, _ = mutations.begin_request(home, vault, 42, 7, 1, text)
+    with pytest.raises(ValueError):
+        mutations.propose_note(
+            home,
+            vault,
+            "10_Projects/note.md",
+            content="conflicting full note",
+            expected_revision=hashlib.sha256(b"before").hexdigest(),
+            anchor="before",
+            replacement="after",
+            authenticated_id=request,
+        )
+    assert mutations.request_previews(home, request) == []
+    assert target.read_bytes() == b"before"
+    retry, repeated = mutations.begin_request(home, vault, 42, 7, 2, text)
+    assert not repeated and retry != request
+    assert mutations.begin_request(home, vault, 42, 7, 1, text) == (request, True)
+    preview = mutations.propose_note(
+        home,
+        vault,
+        "10_Projects/note.md",
+        expected_revision=hashlib.sha256(b"before").hexdigest(),
+        anchor="before",
+        replacement="after",
+        authenticated_id=retry,
+    )
+    assert mutations.begin_request(home, vault, 42, 7, 3, text) == (retry, True)
+    assert mutations.request_previews(home, retry) == [preview]
+    assert target.read_bytes() == b"before"
 
 
 def test_production_owner_policy_preview_and_application_binding(tmp_path):

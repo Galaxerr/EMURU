@@ -437,7 +437,12 @@ def begin_request(home, vault_root, owner, bot, update_id, text, *, fresh=False)
             if fresh
             else db.execute(
                 """SELECT id FROM owner_requests r WHERE owner=? AND bot=? AND vault=? AND text_hash=?
-            AND (state='mutation' OR EXISTS(SELECT 1 FROM proposal_bindings b WHERE b.request_id=r.id))
+            AND (EXISTS(SELECT 1 FROM proposal_bindings b WHERE b.request_id=r.id)
+                OR EXISTS(SELECT 1 FROM capture_requests c WHERE c.request_id=r.id)
+                OR EXISTS(SELECT 1 FROM application_requests a WHERE a.request_id=r.id)
+                OR EXISTS(SELECT 1 FROM proposal_requests p WHERE p.request_id=r.id AND p.vault=r.vault)
+                OR EXISTS(SELECT 1 FROM revision_requests x JOIN validated_proposals v ON v.proposal_id=x.proposal_id
+                    WHERE x.request_id=r.id AND x.approval_digest!=v.approval_digest))
             ORDER BY rowid LIMIT 1""",
                 (*scope, text_hash),
             ).fetchone()
@@ -1011,7 +1016,10 @@ def _prepare_note(
         mutation_parent(vault_root, path, roots=policy["roots"]) as (parent, name),
     ):
         before = read_note(parent, name)
-        if content is not None:
+        update_fields = (expected_revision, anchor, replacement)
+        if content is not None and not all(
+            value is not None for value in update_fields
+        ):
             if any(
                 value is not None for value in (expected_revision, anchor, replacement)
             ):
@@ -1036,6 +1044,8 @@ def _prepare_note(
             if start < 0 or text.find(anchor, start + 1) >= 0:
                 raise ValueError("Exact anchor must match once.")
             after = text[:start] + replacement + text[start + len(anchor) :]
+            if content is not None and content != after:
+                raise ValueError("Content must match the exact anchored update.")
         if not after.strip():
             raise ValueError("Cannot propose an empty note.")
         _no_merge_markers(after)

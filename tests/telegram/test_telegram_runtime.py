@@ -1465,6 +1465,59 @@ def test_bound_stdio_proposals_preview_apply_and_repetition(
             assert model_calls.count("capture") == 1
             assert (vault / "00_Inbox/owned-capture.md").read_text() == "idea\n"
 
+            import hashlib
+
+            target = vault / "10_Projects/qa.md"
+            original = "---\nstatus: active\n---\n# QA\nQA_SOURCE_500\n- [ ] Existing ^task-existing\n"
+            target.write_text(original)
+            replacement = "- [ ] Existing ^task-existing\n- [ ] Verify Telegram delivery ^task-telegram"
+            after = original.replace("- [ ] Existing ^task-existing", replacement)
+            attempts = []
+
+            async def update(payload, session):
+                attempts.append(payload["message"]["text"])
+                result = await client.call_tool(
+                    "vault_propose",
+                    {
+                        "path": "10_Projects/qa.md",
+                        "expected_revision": hashlib.sha256(
+                            original.encode()
+                        ).hexdigest(),
+                        "anchor": "- [ ] Existing ^task-existing",
+                        "replacement": replacement,
+                        "content": "conflicting content"
+                        if len(attempts) == 1
+                        else after,
+                    },
+                )
+                assert result.is_error == (len(attempts) == 1)
+                return TurnResult(True)
+
+            monkeypatch.setattr(b.execution, "_execute_native", update)
+            b.queue.stage(7, [raw(14, "update QA"), raw(15, "update QA")])
+            await b.bridge.once()
+            await b.bridge.once()
+            assert attempts == ["update QA", "update QA"]
+            assert target.read_text() == original
+            assert any(
+                replacement in data.get("text", "") and "Exact anchor:" in data["text"]
+                for endpoint, data in b.network
+                if endpoint == "sendMessage"
+            )
+            b.queue.stage(7, [raw(16, "/reject"), raw(17, "update QA")])
+            await b.bridge.once()
+            await b.bridge.once()
+            assert attempts == ["update QA", "update QA"]
+            assert target.read_text() == original
+            with mutations.journal(home) as db:
+                assert (
+                    db.execute(
+                        "SELECT outcome FROM proposals WHERE target=?",
+                        ("10_Projects/qa.md",),
+                    ).fetchone()[0]
+                    == "cancelled"
+                )
+
     asyncio.run(asyncio.wait_for(check(), 60))
 
 

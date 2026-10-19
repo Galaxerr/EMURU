@@ -134,6 +134,11 @@ async def test_real_stdio_propose_apply_readback(tmp_path):
                 "vault_propose",
             }
             assert not any("apply" in name for name in names)
+            schema = next(
+                t for t in tools.tools if t.name == "vault_propose"
+            ).input_schema
+            for field in ("content", "expected_revision", "anchor", "replacement"):
+                assert "JSON null" in schema["properties"][field]["description"]
             opened = await client.call_tool(
                 "vault_open", {"path": "10_Projects/human.md", "max_chars": 10}
             )
@@ -142,6 +147,7 @@ async def test_real_stdio_propose_apply_readback(tmp_path):
                 "vault_propose",
                 {
                     "path": "10_Projects/human.md",
+                    "content": original.decode().replace("- [ ]", "- [x]"),
                     "expected_revision": opened.structured_content["revision"],
                     "anchor": "- [ ] task ^stable",
                     "replacement": "- [x] task ^stable",
