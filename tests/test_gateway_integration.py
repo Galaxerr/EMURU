@@ -217,8 +217,16 @@ def test_compose_preserves_pins_private_network_and_secret_isolation():
     assert re.fullmatch(r"[0-9a-f]{40}", runtime["commit"])
     assert re.fullmatch(r"[0-9a-f]{64}", runtime["installer_sha256"])
     assert f"git fetch --depth=1 origin {runtime['commit']} " in dockerfile
+    assert re.fullmatch(
+        r"docker\.io/library/python:3\.14\.7-slim-bookworm@sha256:[0-9a-f]{64}",
+        lock["python"],
+    )
+    assert re.findall(r"^FROM (\S+)(?: AS \S+)?$", dockerfile, re.MULTILINE) == [
+        lock["uv"],
+        lock["python"],
+    ]
     for name in ("python", "uv"):
-        assert lock[name] in dockerfile
+        assert re.search(r"@sha256:[0-9a-f]{64}$", lock[name])
     services = yaml.safe_load((ROOT / "infra/docker/compose.yaml").read_text())[
         "services"
     ]

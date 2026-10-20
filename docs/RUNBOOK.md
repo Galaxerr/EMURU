@@ -117,6 +117,10 @@ runs native checks once before its lifecycle cycles; each cycle validates the
 target profile. CI runs host pytest only in `quality`; container tests retain their
 separate pinned-runtime coverage. Disposable health polling uses a one-second
 interval with 120 retries; production health settings are unchanged.
+CI builds the application and pinned native runtime once and shares that image
+across the checks. The rollback drill derives a second image by copying one changed
+source file onto the verified release, without reinstalling dependencies or Hermes.
+Repeated container creation and service restarts exercise lifecycle contracts.
 
 MCP integration tests require local socketpair writes for asyncio/AnyIO thread
 wakeups, even when transport uses stdio and no network service is contacted. A

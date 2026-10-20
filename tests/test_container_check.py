@@ -9,6 +9,57 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_rollback_fixture_reuses_built_runtime(tmp_path, monkeypatch):
+    from emuru.deployment import snapshot_source, source_identity
+
+    module = runpy.run_path(str(ROOT / "scripts/hermes/wake-check.py"))
+    original = source_identity(ROOT)
+    source = snapshot_source(ROOT, tmp_path, original)
+    changed = source / "src/emuru/__init__.py"
+    changed.write_text(changed.read_text() + "\n# Disposable rollback fixture.\n")
+    identity = source_identity(source)
+    base = f"emuru:local-{original}"
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["docker", "build"]:
+            context = Path(command[-1])
+            assert sorted(p.name for p in context.iterdir()) == ["__init__.py"]
+            assert (context / "__init__.py").read_bytes() == changed.read_bytes()
+            assert kwargs["input"] == (
+                f"FROM {base}\n"
+                "COPY --chmod=644 __init__.py /opt/emuru/src/emuru/__init__.py\n"
+            )
+            assert "--pull=false" in command
+            assert command[command.index("--tag") + 1] == f"emuru:local-{identity}"
+            assert (
+                command[command.index("--label") + 1] == f"io.emuru.source={identity}"
+            )
+        if command[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "Id": "sha256:fixture",
+                        "Config": {"Labels": {"io.emuru.source": identity}},
+                    }
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    module["build_rollback_fixture"](source, base)
+    deployment = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    assert deployment["ensure_image"](source, build=False) == (
+        identity,
+        "sha256:fixture",
+    )
+    assert sum(c[:2] == ["docker", "build"] for c in calls) == 1
+    assert calls[-1][-2:] == ["--expect", identity]
+    assert source_identity(ROOT) == original
+
+
 @pytest.mark.parametrize("mapped", [False, True])
 def test_wake_mounts_use_daemon_paths(tmp_path, monkeypatch, mapped):
     import shutil

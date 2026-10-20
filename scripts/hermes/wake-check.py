@@ -13,10 +13,38 @@ from types import SimpleNamespace
 
 import yaml
 
-from emuru.deployment import READY_CHECKPOINT
+from emuru.deployment import READY_CHECKPOINT, source_identity
 from emuru.models.gateway import render, write_private
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def build_rollback_fixture(source, base_image):
+    """Derive the changed source image without reinstalling either runtime."""
+    identity = source_identity(source)
+    with tempfile.TemporaryDirectory(dir=source.parent) as temporary:
+        context = Path(temporary)
+        shutil.copyfile(source / "src/emuru/__init__.py", context / "__init__.py")
+        subprocess.run(
+            [
+                "docker",
+                "build",
+                "--pull=false",
+                "--tag",
+                f"emuru:local-{identity}",
+                "--label",
+                f"io.emuru.source={identity}",
+                "--file",
+                "-",
+                str(context),
+            ],
+            input=(
+                f"FROM {base_image}\n"
+                "COPY --chmod=644 __init__.py /opt/emuru/src/emuru/__init__.py\n"
+            ),
+            text=True,
+            check=True,
+        )
 
 
 def verify(*, native_checked=False):
@@ -270,13 +298,16 @@ def verify(*, native_checked=False):
             )
             assert json.loads((home / "release.json").read_text()) == first
             module["sleep"](home)
-            # Build a distinct compatible release, then roll back code while retaining newer effects.
+            # Reuse the verified runtime; only the rollback fixture's source bytes differ.
             newer = home / "newer-source"
             shutil.copytree(home / "sources" / identity, newer)
             with (newer / "src/emuru/__init__.py").open("a") as stream:
                 stream.write("\n# Disposable rollback compatibility fixture.\n")
+            build_rollback_fixture(newer, f"emuru:local-{identity}")
             scope["ROOT"] = newer
+            previous = len(calls)
             module["wake"](home)
+            assert not any(c[:2] == ["docker", "build"] for c in calls[previous:])
             assert json.loads((home / "release.json").read_text())["source"] != identity
             module["sleep"](home)
             effect = """
@@ -292,6 +323,7 @@ assert mutations.apply_proposal(home, vault, proposal['proposal_id'], proposal['
 mutations.finish_request(home, request)
 """
             newer_release = json.loads((home / "release.json").read_text())
+            assert newer_release["image"] != release_image
             run(
                 [
                     *command,
