@@ -373,7 +373,9 @@ def test_image_verification_failure_never_syncs_profile(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(subprocess.CalledProcessError):
-        module["prepare_update"](["docker", "compose"], {})
+        module["prepare_update"](
+            ["docker", "compose"], {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")}
+        )
     assert not any("profile-sync" in c for c in calls)
 
 
@@ -505,3 +507,113 @@ def test_owner_approved_private_policy_survives_normal_wake_sync(managed):
             ((home / name).read_bytes(), (home / name).stat().st_mtime_ns) == value
             for name, value in protected.items()
         )
+
+
+def test_rollback_selects_verified_snapshot_without_sync_or_state_replacement(
+    managed, tmp_path, monkeypatch
+):
+    home, _ = managed
+    identity = deployment.source_identity(ROOT)
+    snapshot = deployment.snapshot_source(ROOT, tmp_path, identity)
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    scope = module["prepare_update"].__globals__
+    calls = []
+
+    def image(root, *, build):
+        assert root == snapshot and build is False
+        return identity, "sha256:verified"
+
+    monkeypatch.setitem(scope, "ensure_image", image)
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: calls.append((args, kw)))
+    before = files(home)
+    env = module["prepare_update"](
+        ["docker", "compose"], {"EMURU_PROFILE": str(home)}, identity
+    )
+    assert env["EMURU_SOURCE_ROOT"] == str(snapshot)
+    assert env["EMURU_IMAGE"] == "sha256:verified"
+    assert calls[0][0][-3:] == ["rollback-check", "--expect", identity]
+    assert "profile-sync" not in calls[0][0]
+    assert files(home) == before
+
+
+@pytest.mark.parametrize("source", ["../escape", "a" * 64])
+def test_rollback_rejects_missing_or_invalid_snapshot(managed, monkeypatch, source):
+    home, _ = managed
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: pytest.fail("Must reject before Docker")
+    )
+    before = files(home)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        module["prepare_update"]([], {"EMURU_PROFILE": str(home)}, source)
+    assert files(home) == before
+
+
+def test_rollback_never_builds_a_missing_image(monkeypatch):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return NS(returncode=1, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(ValueError, match="rollback never builds"):
+        module["ensure_image"](ROOT, build=False)
+    assert len(calls) == 1 and calls[0][:3] == ["docker", "image", "inspect"]
+
+
+def test_rollback_image_requires_matching_profile_without_changing_state(
+    managed, monkeypatch
+):
+    import sys
+
+    home, _ = managed
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["deployment", "rollback-check", "--expect", deployment.source_identity(ROOT)],
+    )
+    before = files(home)
+    deployment.main()
+    assert files(home) == before
+    write_private(home / "SOUL.md", "Unreviewed guidance")
+    before = files(home)
+    with pytest.raises(ValueError, match="Customized or unknown"):
+        deployment.main()
+    assert files(home) == before
+
+
+def test_rollback_refuses_changed_runtime_pins(managed, tmp_path, monkeypatch):
+    home, _ = managed
+    original = deployment.source_identity(ROOT)
+    candidate = deployment.snapshot_source(ROOT, tmp_path, original)
+    (candidate / "infra/hermes/runtime-lock.json").write_text("{}\n")
+    identity = deployment.source_identity(candidate)
+    candidate.rename(candidate.with_name(identity))
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: pytest.fail("Must reject before Docker")
+    )
+    before = files(home)
+    with pytest.raises(ValueError, match="runtime or orchestration is incompatible"):
+        module["prepare_update"]([], {"EMURU_PROFILE": str(home)}, identity)
+    assert files(home) == before
+
+
+def test_rollback_rejects_enabled_fallback_policy(managed, monkeypatch):
+    import sys
+
+    from emuru.models import gateway
+
+    home, _ = managed
+    monkeypatch.setattr(gateway, "LOCAL_FALLBACK_ENABLED", True)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["deployment", "rollback-check", "--expect", deployment.source_identity(ROOT)],
+    )
+    before = files(home)
+    with pytest.raises(SystemExit, match="cloud-primary-only"):
+        deployment.main()
+    assert files(home) == before

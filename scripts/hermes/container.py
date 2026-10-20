@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import shlex
 import stat
@@ -24,6 +25,7 @@ from emuru.deployment import (
 from emuru.environment import load_env, write_env
 from emuru.models import observations
 from emuru.models.gateway import (
+    LOCAL_FALLBACK_ENABLED,
     private_path,
     read_route,
     render,
@@ -393,9 +395,10 @@ def saved_deployment(home=None):
     return values
 
 
-def ensure_image():
+def ensure_image(root=None, *, build=True):
     """Build with Docker's cache and verify bytes, rather than trusting a tag."""
-    identity = source_identity(ROOT)
+    root = ROOT if root is None else root
+    identity = source_identity(root)
     tag = f"emuru:local-{identity}"
 
     def image_record():
@@ -417,6 +420,10 @@ def ensure_image():
 
     image = image_record()
     if image is None:
+        if not build:
+            raise ValueError(
+                "Verified rollback image unavailable; rollback never builds"
+            )
         subprocess.run(
             [
                 "docker",
@@ -426,7 +433,7 @@ def ensure_image():
                 tag,
                 "--label",
                 f"io.emuru.source={identity}",
-                str(ROOT),
+                str(root),
             ],
             check=True,
         )
@@ -454,11 +461,27 @@ def ensure_image():
     return identity, image
 
 
-def prepare_update(command, values):
+def prepare_update(command, values, rollback_source=None):
     """Prepare one release without changing credentials, bindings, or database state."""
-    identity, image = ensure_image()
     home = Path(values["EMURU_PROFILE"]).parents[1]
-    snapshot = snapshot_source(ROOT, home, identity)
+    if rollback_source is None:
+        identity, image = ensure_image()
+        snapshot = snapshot_source(ROOT, home, identity)
+    else:
+        if not re.fullmatch(r"[0-9a-f]{64}", rollback_source):
+            raise ValueError("Invalid rollback source identity")
+        snapshot = private_path(home / "sources" / rollback_source)
+        if source_identity(snapshot) != rollback_source:
+            raise ValueError("Rollback source snapshot mismatch")
+        # Orchestration and runtime must match; schema/guidance checks run in the target image.
+        for name in (
+            "infra/docker/compose.yaml",
+            "infra/docker/deployment-lock.json",
+            "infra/hermes/runtime-lock.json",
+        ):
+            if (snapshot / name).read_bytes() != (ROOT / name).read_bytes():
+                raise ValueError("Rollback runtime or orchestration is incompatible")
+        identity, image = ensure_image(snapshot, build=False)
     env = {
         **os.environ,
         "EMURU_IMAGE": image,
@@ -478,18 +501,20 @@ def prepare_update(command, values):
             "/opt/emuru/.venv/bin/python",
             "-m",
             "emuru.deployment",
-            "profile-sync",
+            "profile-sync" if rollback_source is None else "rollback-check",
+            *([] if rollback_source is None else ["--expect", identity]),
         ],
         check=True,
         env=env,
     )
-    if source_identity(ROOT) != identity:
+    if rollback_source is None and source_identity(ROOT) != identity:
         raise ValueError("Source changed during update; retry wake")
     return env
 
 
 def record_release(values, env):
     home = Path(values["EMURU_PROFILE"])
+    source = Path(env["EMURU_SOURCE_ROOT"])
     record = private_path(home.parents[1] / "release.json")
     payload = (
         json.dumps(
@@ -502,10 +527,10 @@ def record_release(values, env):
                 ).hexdigest(),
                 "guidance": hashlib.sha256((home / "SOUL.md").read_bytes()).hexdigest(),
                 "hermes_commit": json.loads(
-                    (ROOT / "infra/hermes/runtime-lock.json").read_text()
+                    (source / "infra/hermes/runtime-lock.json").read_text()
                 )["commit"],
                 "litellm": json.loads(
-                    (ROOT / "infra/docker/deployment-lock.json").read_text()
+                    (source / "infra/docker/deployment-lock.json").read_text()
                 )["litellm"],
             },
             sort_keys=True,
@@ -575,7 +600,7 @@ def require_systemd_idle():
         raise ValueError("Systemd Telegram poller is active")
 
 
-def wake(home=None):
+def wake(home=None, *, rollback_source=None):
     with lifecycle_lock():
         values = saved_deployment(home)
         require_systemd_idle()
@@ -596,6 +621,8 @@ def wake(home=None):
             text=True,
         )
         if running.stdout.strip() == "emuru":
+            if rollback_source is not None:
+                raise ValueError("Stop the worker before rollback")
             print(
                 "EMURU worker already running; updates deferred until explicit sleep/wake"
             )
@@ -617,7 +644,11 @@ def wake(home=None):
             )
             if any(item.get("State") not in STOPPED_STATES for item in records):
                 raise ValueError("Worker is not safely stopped")
-        env = prepare_update(command, values)
+        env = (
+            prepare_update(command, values)
+            if rollback_source is None
+            else prepare_update(command, values, rollback_source)
+        )
         subprocess.run(
             [
                 *command,
@@ -892,7 +923,9 @@ def status(home=None):
                 report["state"] = "UNKNOWN"
             if invalid_route:
                 report["state"] = "UNAVAILABLE"
-            if report["state"] in {
+            if not LOCAL_FALLBACK_ENABLED and report["state"] == "DEGRADED_PRIMARY":
+                report["state"] = "UNAVAILABLE"
+            if LOCAL_FALLBACK_ENABLED and report["state"] in {
                 "READY",
                 "DEGRADED_PRIMARY",
             }:
@@ -954,6 +987,12 @@ def main():
     subparsers.add_parser(
         "wake", help="Start infrastructure and guarded worker after readiness checks"
     )
+    rollback = subparsers.add_parser(
+        "rollback", help="Start a compatible verified Docker release using newest state"
+    )
+    rollback.add_argument(
+        "--source", required=True, help="Retained source SHA-256 identity"
+    )
     args = parser.parse_args()
     try:
         workspace_env = ROOT / ".env"
@@ -993,10 +1032,13 @@ def main():
                 f" --home {shlex.quote(str(home))} up"
             )
             return
-        if args.command in {"wake", "up"}:
+        if args.command in {"wake", "up", "rollback"}:
             if args.route_source is not None or args.telegram_owner_id is not None:
                 raise ValueError("Route and owner selection belong to initialization")
-            wake(args.home)
+            wake(
+                args.home,
+                rollback_source=args.source if args.command == "rollback" else None,
+            )
             return
         if args.command == "status":
             print(json.dumps(status(args.home), sort_keys=True))

@@ -269,7 +269,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("identity", "profile-check", "profile-sync", "proposal-upgrade"),
+        choices=(
+            "identity",
+            "profile-check",
+            "profile-sync",
+            "proposal-upgrade",
+            "rollback-check",
+        ),
     )
     parser.add_argument("--expect")
     args = parser.parse_args()
@@ -279,6 +285,17 @@ def main():
         if args.expect and identity != args.expect:
             raise SystemExit("Image/source identity mismatch")
         print(identity)
+    elif args.command == "rollback-check":
+        from emuru.models.gateway import LOCAL_FALLBACK_ENABLED
+
+        if not args.expect or source_identity(root) != args.expect:
+            raise SystemExit("Rollback image/source identity mismatch")
+        if LOCAL_FALLBACK_ENABLED:
+            raise SystemExit("Rollback target must preserve cloud-primary-only policy")
+        result = sync_profile(root, profile.profile_home())
+        if result["profile_changed"] or result["guidance_changed"]:
+            raise SystemExit("Rollback requires matching managed profile and guidance")
+        print(json.dumps(result))
     elif args.command == "proposal-upgrade":
         print(json.dumps(upgrade_proposals(profile.profile_home())))
     else:

@@ -15,7 +15,7 @@ Owner Telegram message
   infra/hermes/telegram-runtime.py (Hermes interpreter)
   telegram/native.py ↔ telegram/worker.py ↔ telegram/queue.py
   Hermes sessions → authenticated LiteLLM emuru alias
-  one cloud attempt → at most one qualified local attempt
+  one cloud attempt → validated result or safe failure (no local dispatch)
   validated result → Hermes tool execution
   stdio → scripts/hermes/vault.py serve → emuru-vault-mcp
   vault/mcp.py → vault/indexer.py → separate vault
@@ -43,7 +43,7 @@ All module paths below are relative to `src/emuru/`.
 | `environment.py` | Owner-only root `.env` parsing and atomic secret updates |
 | `models/providers.py`, provider modules | Explicit provider selection and provider-specific configuration/preflight |
 | `hermes/inference.py` | Shared CLI/Telegram SDK, owner deadline, compression and tool dispatch guards |
-| `models/gateway_guard.py` | Bounded upstream attempts, stream validation and qualified local admission |
+| `models/gateway_guard.py` | Cloud-only dispatch, stream validation and retained local qualification checks |
 | `models/gateway.py` | Private route validation, qualification contract, and authenticated bounded proxy rendering |
 | `telegram/queue.py` | SQLite durability, seven states, admission/claims/recovery, permissions, receipt error normalization and read-only diagnostics |
 | `telegram/worker.py` | FIFO orchestration, durable outcomes and worker lifecycle through the execution interface |
@@ -150,7 +150,7 @@ service lifecycle, recovery and live acceptance gates.
 The application image contains separate EMURU and pinned Hermes environments.
 The immutable checkout retains Git metadata and native source hashes. The guarded
 launcher still owns the lifetime flock and execs the native runtime. Startup is
-offline, with lazy installation disabled. The host installation remains independent.
+offline, with lazy installation disabled. Only the Docker runtime is supported.
 
 `models/gateway.py` validates the private route and renders the authenticated
 LiteLLM alias. All agent profiles use that alias; direct provider composition is
@@ -159,8 +159,8 @@ to `https://ollama.com` with the upstream key, independently of the local daemon
 Gemini and OpenAI remain explicitly selected upstream alternatives outside the
 automatic fallback chain.
 
-The gateway owns a bounded primary/local sequence using the pinned LiteLLM
-implementation. `qualify.py` exercises both selected models against a disposable
+The gateway permits one cloud-primary attempt using the pinned LiteLLM
+implementation. Automatic local dispatch is disabled, even with valid evidence. `qualify.py` exercises both selected models against a disposable
 synthetic vault. The five-repetition workload covers fact retrieval, MCP
 navigation, Inbox create/search/readback, project creation, anchored task
 completion, stale proposal rejection, repeated request reuse, grounded daily
@@ -172,14 +172,14 @@ thresholds and context settings remain unchanged.
 
 The private v2 record binds cloud/local identity, digest, Ollama runtime and
 template, effective context, output reserve, workload policy and a canonical
-configuration fingerprint. It expires within 30 days. Local dispatch also checks
-live runtime/model identity and full-request context admission. Missing, stale,
-failed or changed evidence produces `LOCAL_UNQUALIFIED`; cloud remains usable.
+configuration fingerprint. It expires within 30 days. Retained local qualification
+checks live runtime/model identity and full-request context admission. Local
+qualification and qualified fallback acceptance are deferred to a future release.
 Each inference starts with primary. Completed tools are never replayed.
 
 Attempt budgets are 60 seconds cloud and 180 seconds local including loading;
 the routed call is bounded to 245 seconds and an owner turn to 600 seconds.
-Eligible availability failures can fall back only before output reaches Hermes.
+Cloud availability failures fail safely without automatic local inference.
 Authentication, configuration, policy and malformed-response failures stop.
 Cancellation suppresses late results and subsequent tool execution; it does not
 guarantee cancellation of remote compute or billing.
@@ -201,14 +201,14 @@ Compose environment and lifecycle delegation. Private data defaults to
 Initialization is explicit and separate from routine operation. Existing deployment
 metadata is reused and validated; repeated initialization does not rewrite secrets,
 routes or the owner. The interface is `init`, `config`, `wake`, `sleep`, `status`,
-`up` (wake alias), and `down` (drain, stop, then remove containers without deleting
+`rollback --source <sha256>`, `up` (wake alias), and `down` (drain, stop, then remove containers without deleting
 bind state). `scripts/service/{wake,sleep,status}.sh` delegate to this seam.
 
 Wake holds a private lifecycle lock, rejects active or inconclusive systemd state,
-checks infrastructure and authenticated primary routing, selected model and local
-qualification state, checks Telegram/profile/vault bindings, and requires a new
-worker READY checkpoint. An already-running worker is left untouched. Wake uses
-existing images only. Qualification remains an explicit operator action.
+checks infrastructure, authenticated cloud-primary routing and Telegram/profile/vault
+bindings, and requires a new
+worker READY checkpoint. An already-running worker is left untouched. Wake may build missing application images; rollback uses existing verified images only.
+Local qualification remains an explicit operator action, deferred for this release.
 
 Shutdown closes polling admission and new claims before draining the active owner
 turn within its 600-second bound. Compose grants 660 seconds for cleanup. The worker
@@ -222,15 +222,12 @@ stale or inconclusive data yields `UNKNOWN`. States are `READY`, `DEGRADED_PRIMA
 `LOCAL_UNQUALIFIED`, `UNAVAILABLE`, `STOPPED`, and `UNKNOWN`. `last_used` records a
 historical route, not current readiness. Infrastructure health alone is insufficient.
 
-Migration is an operator-controlled transfer of verified stopped state, not an
-initializer feature. Preserve the entire private profile, SQLite sidecars, native
-history, runtime/workspace, bindings, configuration and model-cache identity together.
-Compare existing host and Docker receipts before choosing a source. Divergent histories
-block replacement until reconciled; timestamps and counts alone cannot establish
-receipt continuity. Rollback transfers the newest stopped state and restores only
-host-specific bindings. Never overwrite newer effects with a pre-cutover queue.
-The installed systemd unit remains available until live acceptance; the repository
-template is retained solely as a rollback reference. See the runbook for checkpoints.
+Docker-to-Docker rollback retains the newest vault, profile/history, queues, receipts,
+mutation journal, runtime and credentials. It selects a retained verified image and
+matching source snapshot, checks schema/guidance/runtime compatibility, and performs
+fresh guarded readiness. It never restores an older queue or starts a host poller.
+The competing-poller check remains a transitional guard only. Old private histories
+and archives remain preserved. See the runbook for stopped backup/restore checkpoints.
 
 The container checker replaces Ollama with a deterministic native-chat fixture
 only in its disposable Compose project. Proxy authentication, structured tool

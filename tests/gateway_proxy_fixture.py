@@ -315,10 +315,13 @@ def main():
             }, counts
             mode = "error-503"
             status, body = request(True)
-            assert status == 200 and "local-answer" in body, (status, body)
-            assert counts == {"primary": 3, "local": 1}, counts
-            assert observed()["state"] == "DEGRADED_PRIMARY", observed()
-            assert observed()["last_used"]["route"] == "local"
+            assert "local-answer" not in body and (status >= 400 or "error" in body), (
+                status,
+                body,
+            )
+            assert counts == {"primary": 3, "local": 0}, counts
+            assert observed()["state"] == "UNAVAILABLE", observed()
+            assert observed()["last_used"]["route"] == "primary"
             for code in (401, 400, 403):
                 mode = "error-" + str(code)
                 before = dict(counts)
@@ -332,17 +335,17 @@ def main():
             for code in (429, 529):
                 mode = "error-" + str(code)
                 before = dict(counts)
-                assert request()[0] == 200
+                assert request()[0] >= 400
                 assert counts == {
                     "primary": before["primary"] + 1,
-                    "local": before["local"] + 1,
+                    "local": before["local"],
                 }
             mode = "connection-reset"
             before = dict(counts)
-            assert request()[0] == 200
+            assert request()[0] >= 400
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }
             for stream_flag in (False, True):
                 mode = "cancel"
@@ -463,11 +466,14 @@ def main():
             assert "primary-answer" not in body, (status, body)
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }, counts
             mode = "slow"
             status, body = request()
-            assert status == 200 and "local-answer" in body, (status, body)
+            assert "local-answer" not in body and (status >= 400 or "error" in body), (
+                status,
+                body,
+            )
             mode = "ok"
             before = dict(counts)
             assert request()[0] == 200
@@ -479,7 +485,7 @@ def main():
             route["fallback"]["qualification"] = None
             save()
             assert request()[0] == 200
-            assert observed()["state"] == "LOCAL_UNQUALIFIED", observed()
+            assert observed()["state"] == "READY", observed()
             mode = "error-503"
             before = dict(counts)
             assert request()[0] >= 400
@@ -530,18 +536,18 @@ def main():
             assert request()[0] >= 400
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }
             mode = "local-oom"
             before = dict(counts)
             assert request()[0] >= 400
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }
             assert observed()["state"] == "UNAVAILABLE", observed()
             print(
-                "Pinned proxy HTTP/SSE bounded fallback, retries, eligibility, deadlines, qualification, context, primary recovery: PASS"
+                "Pinned proxy HTTP/SSE cloud-only failures, zero local dispatch, auth, validation, deadlines, primary recovery: PASS"
             )
             proxy.terminate()
             proxy.wait(timeout=20)

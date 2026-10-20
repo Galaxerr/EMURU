@@ -13,6 +13,7 @@ from emuru.models.ollama import OllamaConnection, model_id
 from emuru.models.providers import provider_settings
 
 ENDPOINT = "http://litellm:4000/v1"
+LOCAL_FALLBACK_ENABLED = False  # v0.5.0 is cloud-primary-only.
 QUALIFICATION_DAYS = 30
 WORKLOAD_POLICY_VERSION = "synthetic-vault-v2"
 QUALIFICATION_GATES = {

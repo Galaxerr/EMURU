@@ -27,6 +27,24 @@ def subprocess_detail(error):
     return "\n".join(lines[-3:])
 
 
+def fixture_secrets(config):
+    # Bind daemon-side files directly: act's Compose client cannot stat host paths.
+    secrets = config.pop("secrets", {})
+    for service in config["services"].values():
+        for secret in service.pop("secrets", []):
+            name = secret if isinstance(secret, str) else secret["source"]
+            target = name if isinstance(secret, str) else secret.get("target", name)
+            service.setdefault("volumes", []).append(
+                {
+                    "type": "bind",
+                    "source": secrets[name]["file"],
+                    "target": str(Path("/run/secrets") / target),
+                    "read_only": True,
+                    "bind": {"create_host_path": False},
+                }
+            )
+
+
 def docker_workspace(root):
     if os.environ.get("ACT") != "true":
         return root
@@ -471,12 +489,11 @@ def verify(config_only=False):
 
     if daemon_root != root:
         config = json.loads(compose("--profile", "agent", "config", "--format", "json"))
+        fixture_secrets(config)
         for service in config["services"].values():
             for volume in service.get("volumes", []):
                 if volume["type"] == "bind":
                     volume["source"] = daemon_path(volume["source"])
-        for secret in config["secrets"].values():
-            secret["file"] = daemon_path(secret["file"])
         write_private(private / "compose.json", json.dumps(config))
         command[-1] = str(private / "compose.json")
     subprocess.run(
@@ -530,7 +547,11 @@ def verify(config_only=False):
                     ],
                 ],
             },
-            "litellm": {"ports": ["127.0.0.1::4000"]},
+            "litellm": {
+                "ports": ["127.0.0.1::4000"],
+                "healthcheck": {"interval": "1s", "retries": 120},
+            },
+            "ollama": {"healthcheck": {"interval": "1s", "retries": 120}},
         }
     }
     write_private(private / "check.yaml", yaml.safe_dump(override))
@@ -701,7 +722,9 @@ def verify(config_only=False):
                     "python",
                     "-c",
                     "import urllib.request; urllib.request.urlopen('http://localhost:11434/stats')",
-                ]
+                ],
+                "interval": "1s",
+                "retries": 120,
             },
         }
         write_private(private / "check.yaml", yaml.safe_dump(override))
@@ -885,6 +908,19 @@ def verify(config_only=False):
         print("Disposable containers stopped: PASS", flush=True)
 
 
+def acceptance(config_only=False):
+    started = time.monotonic()
+    verify(config_only)
+    if config_only:
+        return
+    print(f"Container contracts: {time.monotonic() - started:.1f}s", flush=True)
+    started = time.monotonic()
+    runpy.run_path(str(Path(__file__).with_name("wake-check.py")))["verify"](
+        native_checked=True
+    )
+    print(f"Wake/update/rollback: {time.monotonic() - started:.1f}s", flush=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -906,7 +942,7 @@ if __name__ == "__main__":
         sys.path.insert(0, "/opt/emuru/src")
     try:
         {
-            "verify": lambda: verify(args.config_only),
+            "verify": lambda: acceptance(args.config_only),
             "fixture": fixture,
             "seed": seed,
             "snapshot": snapshot,

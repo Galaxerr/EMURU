@@ -26,7 +26,10 @@ def test_wake_mounts_use_daemon_paths(tmp_path, monkeypatch, mapped):
 
     def load_script(path):
         if Path(path).name == "container-check.py":
-            return {"docker_workspace": lambda root: daemon}
+            return {
+                **load(ROOT / "scripts/hermes/container-check.py"),
+                "docker_workspace": lambda root: daemon,
+            }
         result = load(ROOT / "scripts/hermes/container.py")
         result["source_identity"] = lambda root: "source"
         return result
@@ -50,7 +53,9 @@ def test_wake_mounts_use_daemon_paths(tmp_path, monkeypatch, mapped):
                 assert mounted.is_relative_to(daemon)
                 assert (tmp_path / mounted.relative_to(daemon)).exists()
             config = yaml.safe_load(Path(command[command.index("-f") + 1]).read_text())
+            assert "secrets" not in config
             for service in config["services"].values():
+                assert "secrets" not in service
                 for volume in service.get("volumes", []):
                     if volume["source"].startswith("${"):
                         if volume["source"].startswith("${EMURU_SOURCE_ROOT"):
@@ -239,3 +244,66 @@ def test_disposable_checks_do_not_depend_on_shared_uv_cache(
         os.umask(previous)
     assert len(commands) == 6
     assert all("UV_NO_CACHE=1" in command for command in commands)
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_native_acceptance_must_pass_before_wake_reuses_it(monkeypatch, failed):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))
+    calls = []
+
+    def verify(config_only):
+        calls.append("native")
+        if failed:
+            raise RuntimeError("native check failed")
+
+    def wake(*, native_checked):
+        assert native_checked is True
+        calls.append("wake")
+
+    monkeypatch.setitem(module["acceptance"].__globals__, "verify", verify)
+    monkeypatch.setattr(runpy, "run_path", lambda path: {"verify": wake})
+    if failed:
+        with pytest.raises(RuntimeError, match="native check failed"):
+            module["acceptance"]()
+        assert calls == ["native"]
+    else:
+        module["acceptance"]()
+        assert calls == ["native", "wake"]
+
+
+def test_host_regressions_have_one_ci_owner():
+    import shlex
+
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    assert "if" not in workflow["jobs"]["quality"]
+    commands = [
+        shlex.split(step.get("run", ""))
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+    ]
+    pytest_commands = [command for command in commands if "pytest" in command]
+    assert pytest_commands == [["uv", "run", "--frozen", "pytest", "-q"]]
+
+
+@pytest.mark.parametrize("target", ["alias", "/run/secrets/alias"])
+def test_fixture_secrets_keep_read_only_daemon_binds(target):
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))
+    config = {
+        "secrets": {"key": {"file": "/daemon/private/key"}},
+        "services": {"app": {"secrets": [{"source": "key", "target": target}]}},
+    }
+    module["fixture_secrets"](config)
+    assert "secrets" not in config
+    assert config["services"]["app"] == {
+        "volumes": [
+            {
+                "type": "bind",
+                "source": "/daemon/private/key",
+                "target": "/run/secrets/alias",
+                "read_only": True,
+                "bind": {"create_host_path": False},
+            }
+        ]
+    }

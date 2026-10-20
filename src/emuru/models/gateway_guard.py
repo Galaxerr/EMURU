@@ -11,7 +11,12 @@ from litellm import CustomLLM, Router
 from litellm.llms.custom_llm import CustomLLMError
 from litellm.llms.ollama.chat import transformation as ollama_chat
 
-from emuru.models.gateway import read_route, upstream, valid_qualification
+from emuru.models.gateway import (
+    LOCAL_FALLBACK_ENABLED,
+    read_route,
+    upstream,
+    valid_qualification,
+)
 from emuru.models.observations import emit
 
 CLOUD_SECONDS = 60
@@ -216,7 +221,7 @@ class Guard(CustomLLM):
                         "num_ctx": route["fallback"]["context_tokens"],
                     },
                 },
-            ],
+            ][: 2 if LOCAL_FALLBACK_ENABLED else 1],
             num_retries=0,
             max_fallbacks=0,
             fallbacks=[],
@@ -262,7 +267,8 @@ class Guard(CustomLLM):
                         if backend == "primary":
                             state = (
                                 "READY"
-                                if route["primary"]["provider"] == "ollama"
+                                if not LOCAL_FALLBACK_ENABLED
+                                or route["primary"]["provider"] == "ollama"
                                 and valid_qualification(route)
                                 and (
                                     route["fallback"]["qualification"]["provenance"]
@@ -305,7 +311,7 @@ class Guard(CustomLLM):
                         ),
                     ):
                         eligible = False
-                    if backend == "local" or not eligible:
+                    if not LOCAL_FALLBACK_ENABLED or backend == "local" or not eligible:
                         emit(route, "UNAVAILABLE")
                         raise
                     emit(route, "UNKNOWN")

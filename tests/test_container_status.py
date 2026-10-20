@@ -137,7 +137,7 @@ def test_current_observed_states(deployment, monkeypatch, state):
     d.record["used"] = "local" if state == "DEGRADED_PRIMARY" else "primary"
     monkeypatch.setitem(d.globals, "valid_qualification", lambda route: True)
     report = d.module["status"](d.home)
-    assert report["state"] == state
+    assert report["state"] == ("UNAVAILABLE" if state == "DEGRADED_PRIMARY" else state)
     assert report["last_used"]["route"] == d.record["used"]
     assert all("stop" not in call and "run" not in call for call in d.calls)
 
@@ -388,10 +388,10 @@ def test_unconfirmed_worker_stop_keeps_inference(deployment, monkeypatch):
     assert d.calls == [("stop", "--timeout", "660", "emuru")]
 
 
-def test_expired_qualification_cannot_report_local_ready(deployment):
+def test_cloud_readiness_does_not_require_local_qualification(deployment):
     d = deployment
     d.record["state"] = "READY"
-    assert d.module["status"](d.home)["state"] == "LOCAL_UNQUALIFIED"
+    assert d.module["status"](d.home)["state"] == "READY"
     d.record["state"] = "DEGRADED_PRIMARY"
     assert d.module["status"](d.home)["state"] == "UNAVAILABLE"
 
@@ -411,7 +411,7 @@ def test_production_grace_covers_maximum_owner_turn():
 
 @pytest.mark.parametrize(
     "state,expected",
-    [("READY", "LOCAL_UNQUALIFIED"), ("DEGRADED_PRIMARY", "UNAVAILABLE")],
+    [("READY", "READY"), ("DEGRADED_PRIMARY", "UNAVAILABLE")],
 )
 def test_local_outage_does_not_hide_usable_primary(
     deployment, monkeypatch, state, expected
@@ -423,16 +423,14 @@ def test_local_outage_does_not_hide_usable_primary(
     assert d.module["status"](d.home)["state"] == expected
 
 
-def test_local_recreation_invalidates_previous_fallback_success(
-    deployment, monkeypatch
-):
+def test_disabled_fallback_cannot_report_usable_local_success(deployment, monkeypatch):
     d = deployment
     d.record["state"] = "DEGRADED_PRIMARY"
     d.record["used"] = "local"
     d.items["ollama"]["started"] = datetime.now(UTC).isoformat()
     monkeypatch.setitem(d.globals, "valid_qualification", lambda route: True)
     report = d.module["status"](d.home)
-    assert report["state"] == "UNKNOWN"
+    assert report["state"] == "UNAVAILABLE"
     assert report["last_used"]["route"] == "local"
 
 

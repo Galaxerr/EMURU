@@ -1,14 +1,14 @@
 # EMURU operating runbook — v0.5.0
 
-This is the v0.5.0 implementation candidate. Production acceptance and rollout
-remain pending; the [acceptance report](releases/v0.5.0-acceptance.md) records
-evidence and outstanding gates. Historical v0.4.x notes below describe earlier
-behavior and do not override the current v0.5.0 policy.
+v0.5.0 is Docker-only and cloud-primary-only. The owner confirmed all 24 manual
+cloud-primary scenarios on 2026-10-19. The [acceptance report](releases/v0.5.0-acceptance.md)
+distinguishes those results from independent evidence and remaining release gates.
 
 ## Requirements
 
-Use an awake, logged-in Linux PC, the locked EMURU Python environment, the
-pinned installed Hermes checkout, and an available explicitly selected model.
+Use an awake Linux host with Docker Compose, the locked EMURU development
+environment, and an available explicitly selected cloud model. Hermes runs in
+the pinned application image.
 The workspace `.env` owns source credentials and owner ID. The private Hermes
 profile stores runtime token copies, conversation history, queue receipts, and
 the private vault binding. Use one guarded poller and one vault writer.
@@ -73,9 +73,10 @@ Do not bypass the interface with raw Compose up/down during normal operation.
 Status is read-only: no initialization, lock creation, queue recovery/pruning,
 container exec or inference. It reports sanitized counts, services, timestamp and
 historical `last_used`. Fresh observations must match the current container identity.
-`READY` means fresh guarded worker and primary readiness; `DEGRADED_PRIMARY` means
-qualified local remains usable; `LOCAL_UNQUALIFIED` means primary is usable without
-valid local qualification; `UNAVAILABLE` means a known blocking failure;
+`READY` means fresh guarded worker and cloud-primary readiness. Local qualification
+is not required. Historical `LOCAL_UNQUALIFIED` observations describe a usable
+primary; `DEGRADED_PRIMARY` cannot establish readiness in this release.
+`UNAVAILABLE` means a known blocking failure;
 `STOPPED` confirms stopped Compose services; `UNKNOWN` means missing/stale/inconclusive
 evidence. Healthy infrastructure and old READY logs do not prove current readiness.
 All services use `restart: "no"`. After host reboot, inspect status and wake explicitly.
@@ -94,9 +95,7 @@ uv run --frozen python scripts/hermes/vault.py check
 uv run --frozen python scripts/hermes/vault-profile.py --offline
 uv run --frozen python scripts/hermes/telegram.py --offline
 uv run --frozen python scripts/hermes/qualify.py --fixture
-scripts/hermes/telegram.sh --runtime-check
-uv run --frozen python scripts/hermes/wake-check.py
-uv run --frozen pytest tests/test_deployment_update.py tests/test_container_launcher.py
+uv run --frozen python scripts/hermes/container-check.py
 ```
 
 The disposable Docker checks require the existing acceptance image (`emuru:latest`,
@@ -111,7 +110,13 @@ runtime check requires the pinned Hermes installation but makes no provider
 calls. `container-check.py --config-only` validates disposable Compose configuration.
 Run `uv run --frozen python scripts/hermes/container-check.py` for Docker
 acceptance. It needs Docker and pinned images, uses disposable keys and a
-synthetic upstream, and starts no Telegram poller.
+synthetic upstream, and starts no Telegram poller. This command owns the full native
+contract suite and then runs the wake/update/rollback drill. Do not run
+`wake-check.py` again in the same acceptance pass. Standalone `wake-check.py`
+runs native checks once before its lifecycle cycles; each cycle validates the
+target profile. CI runs host pytest only in `quality`; container tests retain their
+separate pinned-runtime coverage. Disposable health polling uses a one-second
+interval with 120 retries; production health settings are unchanged.
 
 MCP integration tests require local socketpair writes for asyncio/AnyIO thread
 wakeups, even when transport uses stdio and no network service is contacted. A
@@ -125,11 +130,14 @@ these permissions. Do not raise timeouts or skip the integration tests.
 
 ## Vault target and indexing
 
-`~/.hermes/profiles/emuru/vault-target.json` is owner-only, mode 0600.
+The saved deployment's `EMURU_PROFILE/vault-target.json` is owner-only, mode 0600.
+The default host storage path is
+`$HOME/.local/state/emuru/container/profiles/emuru/vault-target.json`; Docker mounts
+that profile at `/state/profiles/emuru`.
 Real mode has exactly `mode` and `vault_path`; the latter is the private absolute
 root of the separate vault Git repository. Synthetic mode has only
 `{"mode":"synthetic"}`. An absent file selects synthetic; an invalid explicit
-target is rejected. The installed real service requires real mode before start.
+target is rejected. The Docker worker requires real mode before start.
 Docker requires `EMURU_VAULT_PATH` in the workspace `.env`; initialization
 mounts that validated Git vault at `/state/vault` and writes a real target
 record pointing there. Without this explicit bind, a container must not be
@@ -341,8 +349,7 @@ unsupported commands cannot start agent work.
 The default five vault tools are available; `vault_propose` is added only when
 the selected private mutation policy is enabled. Retrieved content is reference data;
 it cannot override tool/security policy. MCP failures stop the affected request.
-Eligible inference availability failures
-may use one qualified local attempt through LiteLLM before any result is exposed.
+All cloud inference failures fail safely without automatic local dispatch.
 Authentication/configuration/policy errors never trigger fallback. Once any result
 reaches Hermes, no fallback or replay is allowed. Buffered incomplete or malformed
 responses fail validation before exposure.
@@ -361,8 +368,8 @@ Back up the stopped profile and vault privately before deployment. Include the
 mutation database and its SQLite sidecars if present. Preserve current queue
 receipts during rollback; restoring an old queue can replay
 already attempted effects. Restore notes only after comparing newer genuine
-changes. Correct the failure before a manual Compose wake. A legacy rollback uses explicit
-`systemctl --user start emuru-telegram.service`, never the Compose wake script.
+changes. Correct the failure before a manual Compose wake. Rollback uses only
+a compatible verified Docker image with the newest state.
 General vault cleanup, automatic synchronization, physical remote wake and
 broader automation are outside this release. All agent inference requires the
 authenticated LiteLLM gateway described below.
@@ -403,35 +410,12 @@ empty directories. The default home is `$HOME/.local/state/emuru/container`.
    Before starting a worker, verify the installed file matches the reviewed
    checkout with `cmp agents/emuru/SOUL.md /absolute/private/home/SOUL.md`;
    otherwise the worker may run stale safety guidance.
-4. Verify local model-cache identity before any live qualification. Run
-   `uv run --frozen python scripts/hermes/qualify.py --live --route /absolute/private/route.json --base-url http://127.0.0.1:11435`
-   only as an explicit operator action against target hardware and runtime. The
-   qualifier requires loopback. An operator must start the intended Docker Ollama
-   infrastructure without the worker and use a temporary private Compose override
-   publishing only `127.0.0.1:11435:11434`. Verify that endpoint reaches the Docker
-   daemon and preserved cache, not the separate host daemon on port 11434. Remove
-   that diagnostic publication afterward. Never publish on all interfaces. It uses
-   a synthetic vault, performs inference and writes evidence; it is not preflight.
-   Evidence expires within 30 days and binds model digest/runtime/template/context.
-   Re-render `litellm.yaml` from the updated route with the existing
-   `emuru.models.gateway.render` and `write_private` helpers before wake; saved route
-   and config must agree. Repeated init does not refresh this pair. With the poller
-   stopped and `CONTAINER_HOME` verified, render explicitly:
-
-   ```bash
-   .venv/bin/python - "$CONTAINER_HOME/route.json" "$CONTAINER_HOME/litellm.yaml" <<'PY_RENDER'
-   import sys
-   from emuru.models.gateway import read_route, render, write_private
-   write_private(sys.argv[2], render(read_route(sys.argv[1])))
-   PY_RENDER
-   ```
-5. Validate deployment update behavior with the disposable runner and focused tests
-   listed under [Run tests](#run-tests). Run `scripts/service/wake.sh` against a
-   real deployment only after it is stopped, production update is explicitly
-   approved, and no queue or mutation-state migration is required. Require fresh
-   READY and perform live acceptance below. Null/expired/invalid local qualification
-   permits primary-only operation, but does not satisfy qualified-local release
-   acceptance.
+4. Local qualification and qualified fallback acceptance are deferred. Keep existing
+   local selection, cached weights and qualification evidence intact. Never run
+   local qualification as an implicit startup or release requirement.
+5. Run the disposable checks under [Run tests](#run-tests). A production wake requires
+   separate approval and a stopped deployment. Require fresh guarded READY and
+   cloud-primary acceptance; invalid or absent local qualification is not a blocker.
 
 For credential changes, stop through `sleep.sh`, back up stopped state, and update
 only the selected private credential copies and root `.env` consistently. Recreate
@@ -442,227 +426,59 @@ secret values in Compose config/logs or public reports. Do not change provider r
 or credentials during a migration. Root `.env` and process environment are separate:
 existing process variables take precedence during first initialization.
 
-## Systemd-to-Compose migration
+## Docker updates and rollback
 
-Migration is operator-controlled. The commands in the production section below
-are **not** authorized by preflight. Do not disable systemd, stop production,
-copy profiles, change credentials or perform live acceptance during a dry run.
-Record each checkpoint privately with UTC time, checkout commit, runtime/image
-identities and outcome. Keep public evidence sanitized.
+Production stop, backup, wake and rollback require separate owner approval. Local
+or disposable validation does not authorize them. Never restart a host poller.
+The transitional `systemctl --user is-active emuru-telegram.service` check only
+blocks competing pollers; there is no supported systemd runtime or rollback path.
+Unknown poller state fails closed. Retain old private histories and archives.
 
-### Read-only discovery and disposable preflight
+Before an approved update, record the commit, `release.json` source/image IDs,
+source snapshot under `sources/<source>`, pinned Hermes/infrastructure identities,
+Compose bindings, permissions and current credential/route identities privately.
+Keep the verified application image and source snapshot for rollback. A mutable
+tag alone is insufficient. Do not prune retained images during release preparation.
 
-Run from the installed checkout, as the service owner:
-
-```bash
-git rev-parse HEAD
-systemctl --user show emuru-telegram.service \
-  --property=ActiveState,SubState,MainPID,ControlGroup,FragmentPath,WorkingDirectory,KillSignal,TimeoutStopUSec
-systemctl --user is-enabled emuru-telegram.service
-scripts/service/status.sh
-docker ps -a --filter label=com.docker.compose.project=emuru \
-  --format '{{.ID}} {{.Names}} {{.Status}}'
-docker inspect --format '{{.Name}} {{.Image}} {{json .Mounts}}' \
-  emuru-emuru-1 emuru-litellm-1 emuru-ollama-1
-```
-
-Container names above are defaults; use IDs from discovery if names differ. Missing
-services or denied bus/Docker access mean **unconfirmed**, not stopped. Inspect the
-installed unit/drop-ins privately for actual `EMURU_HERMES_PROFILE_HOME`, Hermes
-root, working directory and effective process environment. Never dump environment
-or unit contents into public evidence: custom units can contain credentials.
-Do not assume the checked-in template describes the installed service.
-
-Privately parse `infra/docker/deployment.env` as data, never `source` it. Inspect
-absolute bind sources and UID/GID against actual Docker mounts. Verify:
-
-- Host profile and Docker `EMURU_PROFILE`; queue is `emuru-telegram/queue.sqlite3`
-  with any `-wal`/`-shm`, `turn_effects` and lifetime `instance.lock`.
-- Entire native history, including `state.db` and sidecars, `sessions`, native
-  receipt/session routing files, private `.env`, `SOUL.md`, `config.yaml`, target,
-  and any other profile files. Do not select a few known files and omit the rest.
-- Host workspace (`${XDG_STATE_HOME:-$HOME/.local/state}/emuru/workspace`), Docker
-  `EMURU_STATE`, `EMURU_RUNTIME`, route/qualification evidence, proxy config,
-  private key files, root `.env`, deployment metadata, and vault binding.
-- Real Git vault with `00_Inbox`. The host target must equal the Docker vault
-  source; the container target must be exactly `/state/vault`. Host paths cannot
-  be copied into container profile bindings unchanged.
-- Owner-owned profile/home/runtime/state directories 0700 and private files 0600;
-  correct numeric UID/GID and no symlink substitutions. Inspect nested state too.
-  Ollama runs as root inside its container; root-created cache contents require
-  separate owner/readability checks, not recursive chmod of all state.
-- Actual host Ollama service user, `OLLAMA_MODELS` override and cache path, plus
-  Docker `EMURU_OLLAMA_STATE` mounted at `/root/.ollama`. Default paths are hints,
-  not evidence. Record model manifest/digest and blob identity, runtime version
-  and selected route identity. Empty container cache cannot prove local continuity.
-- Same bot token identity and numeric owner across source, destination and root
-  configuration. Compare privately; print only match/mismatch, never values.
-
-Use `scripts/hermes/telegram.py --status` with the discovered host profile for
-sanitized read-only queue diagnostics. Status takes a private diagnostic snapshot;
-it does not recover or prune. Never open a live `TelegramQueue` during discovery.
-Compare receipt **identities and states** privately, not only counts or file times.
-Compare native histories as well. Live snapshots are discovery evidence only;
-repeat comparison after confirmed stop before any transfer.
-
-Classify the situation before proceeding:
-
-- Host alone has state, destination is empty: transfer the stopped host state.
-- Destination already has all source receipts and current native history: reuse it;
-  do not recopy or initialize. Verify bindings independently.
-- Same paths/inodes: reuse the shared source, never copy onto itself.
-- Both sides have unique receipts or history: **block cutover/rollback replacement**.
-  Retain both stopped snapshots. Require reviewed offline reconciliation preserving
-  every attempted/terminal receipt, uncertainty and matching native history before
-  starting either poller. No automatic merge is supplied. Never mark attempted
-  rows queued, combine SQLite files, or insert rows without preserving sequence
-  references in `turn_effects`. A newer timestamp does not choose a safe winner.
-
-Offline/disposable checks, separate from production:
-
-```bash
-uv run --frozen pytest -q
-uv run --frozen ruff check .
-uv run --frozen ruff format --check .
-uv run --frozen python scripts/hermes/container-check.py --config-only
-uv run --frozen python scripts/hermes/container-check.py
-```
-
-The last two use isolated state and synthetic credentials; full acceptance starts
-and stops only a disposable project. They do not qualify models, poll Telegram,
-download weights or migrate production. Full acceptance needs existing pinned
-images. Production `container.py config` validates saved bindings without polling;
-it is not a simulation of migration. `telegram.sh --check` makes bot/webhook API
-requests and is a separate network preflight. Wake performs inference/readiness
-and starts intake: it is never a dry run.
-
-### Production checkpoints — operator execution only
-
-1. **Approve the window.** Complete automated acceptance and separately record live
-   target-host qualification. Freeze owner requests and other vault writers. Verify
-   no other machine polls this token. Inventory/reconcile state as above. Prepare
-   destination without polling only if genuinely new; otherwise reuse saved state.
-   Back up any existing stopped destination before init/apply. Keep images pinned.
-2. **Quiesce the old poller.** Use the installed unit's graceful stop mechanism.
-   The legacy template has SIGINT and only 120 seconds, shorter than a 600-second
-   turn. Prefer waiting for the active turn to finish before stopping. If drain is
-   needed, an operator can first set a temporary runtime `TimeoutStopSec=660` override
-   on the discovered unit, then stop. Inspect private logs for intake STOPPED and
-   completion. Do not use Telegram `/stop` as proof that process intake has stopped.
+1. Freeze owner intake and pause Obsidian and other vault writers. Keep the newest
+   private policy and managed tool registration as a matching pair. Stopped intake
+   blocks new approvals; rollback never enables a disabled policy.
+2. Drain with `scripts/service/sleep.sh`. Confirm all Compose services stopped and
+   the profile lock released. Never force replay of started or uncertain work.
+3. Take a durable private stopped backup of the **newest** vault, whole profile,
+   native history, queues, receipts, mutation journal and SQLite sidecars,
+   state/runtime, current credentials, route, cache, source snapshots and release
+   metadata. Record checksums and permissions. Keep older archives separately.
+4. Restore that backup into isolated directories. Verify checksums, database
+   integrity, ownership, permissions, history and receipt continuity. Inspect
+   uncertain effects without replay. This restore drill must not touch production.
+5. For rollback, use the retained source SHA-256, not an old backup of state:
 
    ```bash
-   systemctl --user stop emuru-telegram.service
-   systemctl --user show emuru-telegram.service \
-     --property=ActiveState,SubState,MainPID,ControlGroup
+   uv run --frozen python scripts/hermes/container.py --home /absolute/private/home rollback --source VERIFIED_SOURCE_SHA256
    ```
 
-   Require inactive/failed with MainPID=0, empty service cgroup and no surviving
-   poller/children. Verify the existing profile lifetime lock is released without
-   deleting/replacing it; use `flock -n -- "$HOST_PROFILE/emuru-telegram/instance.lock" true`
-   only after confirming the file exists. Lock success alone does not prove all
-   processes stopped. If forced termination occurred, retain uncertain receipts
-   and inspect effects; never replay. Stop any already-running Docker worker with
-   `scripts/service/sleep.sh` before taking its stopped backup or transferring state.
-3. **Back up stopped state privately.** Set the following variables to the discovered
-   absolute sources. This example assumes `BACKUP_PARENT` already exists outside
-   source trees on a private filesystem. Do not use defaults blindly:
+   The command requires a stopped worker, a matching retained source snapshot,
+   an existing content-addressed image, image byte identity, unchanged Compose and
+   runtime pins, cloud-only policy, and exact compatible queue/journal schemas.
+   It runs the target image's read-only `rollback-check`; guidance and managed
+   registration must already match. It never builds, migrates, restores an older
+   database or replaces vault/profile bindings. Missing or incompatible targets
+   block rollback. Pre-cloud-only images are not supported rollback targets.
+6. Require primary and authenticated gateway probes, guarded worker READY, verified
+   running images and owner-private readback. Preserve newest receipts even when
+   delivery failed. Re-enable broader writes only through separately approved policy.
 
-   ```bash
-   umask 077
-   BACKUP_DIR="$(mktemp -d "$BACKUP_PARENT/emuru-cutover.XXXXXXXX")"
-   chmod 700 "$BACKUP_DIR"
-   tar --acls --xattrs -cpf "$BACKUP_DIR/host-profile.tar" -C "$HOST_PROFILE" .
-   tar --acls --xattrs -cpf "$BACKUP_DIR/container-home.tar" -C "$CONTAINER_HOME" .
-   tar --acls --xattrs -cpf "$BACKUP_DIR/host-workspace.tar" -C "$HOST_WORKSPACE" .
-   tar --acls --xattrs -cpf "$BACKUP_DIR/vault.tar" -C "$VAULT" .
-   install -m 600 .env "$BACKUP_DIR/workspace.env"
-   install -m 600 infra/docker/deployment.env "$BACKUP_DIR/deployment.env"
-   sha256sum "$BACKUP_DIR"/*.tar > "$BACKUP_DIR/SHA256SUMS"
-   tar -tf "$BACKUP_DIR/host-profile.tar" >/dev/null
-   tar -tf "$BACKUP_DIR/container-home.tar" >/dev/null
-   sha256sum -c "$BACKUP_DIR/SHA256SUMS"
-   ```
-
-   Archive only existing sources; for a new destination record its absence instead.
-   Also save the installed unit/drop-ins and runtime locks/image IDs privately.
-   Container-home archive includes state/runtime, routes, secrets and cache. Save
-   external host runtime config and actual Ollama cache separately if outside these
-   roots. Stop **all** processes writing a cache before its consistent archive/copy,
-   including a separate host Ollama service when applicable. Record that separate
-   operator outage; do not disable it. Verify every archive and checksum, ownership,
-   permissions, sidecars and restore readability. Keep backups outside Git/CI.
-4. **Transfer only when continuity is proven.** For an empty destination, stage a
-   full stopped profile copy with metadata under a private sibling directory, verify
-   every file, then install it with both pollers stopped. Preserve all SQLite sidecars
-   together; do not copy a running database or just `queue.sqlite3`. Preserve workspace
-   and runtime state according to verified mount mappings. Reuse the cache when its
-   source is already correct; otherwise copy stopped manifests **and blobs** together
-   into the verified bind, retaining the original. Do not reset, prune or pull models.
-   Verify selected digests against the preserved inventory. Requalify if runtime or
-   qualification fingerprint changed; copied qualification is not target-host proof.
-5. **Adapt bindings, not receipts.** Retain original host binding/config snapshots.
-   Change the destination target to `{"mode":"real","vault_path":"/state/vault"}`;
-   apply the existing gateway profile using the container runtime, without a poller.
-   Preserve private policy/history and verify token/owner equality. If broader
-   proposals are enabled, verify the policy names only approved roots and its
-   `vault_path` matches the real target exactly. Do not rotate
-   keys or overwrite source state. Recheck private permissions, UID/GID, real vault
-   source, route/config consistency and every Docker volume/secret source. Use saved
-   configuration plus `container.py config`. Record receipt identity/state continuity
-   and native history checks against the stopped source. Divergence remains a blocker.
-6. **Start and prove acceptance.** Use `scripts/service/wake.sh`, never raw agent up.
-   Require this startup's guarded READY and fresh status. Record actual running image
-   IDs; `emuru:latest` can differ from the worker's image. Send one owner-private
-   read-only retrieval/navigation request, verify final-only delivery and citations,
-   and compare vault changes before/after. Test a controlled eligible primary outage
-   through qualified local, then restore primary and prove the next request uses it.
-   After separate approval for real mutations, verify a complete owner-private
-   preview, apply one approved change with writers paused, and read it back. This
-   runbook does not authorize a real mutation.
-   Record model/evidence expiry, shutdown/drain/no-replay, pending-receipt continuity
-   and target-host reboot/manual wake. Stop on failed acceptance; keep systemd intact.
-7. **Retire only after success.** Record all live results and operator sign-off first.
-   Then `systemctl --user disable emuru-telegram.service` if enabled. Archive its unit
-   and drop-ins before optional removal/daemon-reload. Keep rollback configuration
-   and stopped state. Do not disable the independent Ollama service accidentally.
-   The repository's legacy unit is a rollback reference until live cutover passes;
-   new installation instructions are retired. Never retire based on CI alone.
-
-### Rollback — carry the newest receipts forward
-
-1. Freeze requests; `scripts/service/sleep.sh`. Confirm Docker worker exit, intake
-   closure and released profile lock before any host start. If uncertain, stop here.
-2. Take another private stopped backup of Docker profile, history, state/runtime,
-   current configuration, vault and cache. This is the post-cutover state, including
-   every new receipt and effect. Compare it with the retained host snapshot.
-3. If Docker state includes every host receipt/history, stage that **newest full
-   profile** for the host and verify continuity before replacing the stopped host
-   profile. Preserve both backups. If histories diverge, block restart until audited
-   reconciliation; never restore the old host queue or merge by timestamp. Preserve
-   started/uncertain and terminal outcomes; never manufacture queued work.
-4. Restore only host-specific runtime paths, gateway endpoint and `vault-target.json`
-   from saved bindings. Reapply/verify the host profile with the pinned host runtime.
-   Compose has no published inference port: keep poller stopped while restoring an
-   explicitly authenticated loopback gateway for the host. Verify its readiness,
-   current route/qualification and latest credentials privately. Do not restore stale
-   credential copies or route evidence over newer configuration. Reuse current model
-   cache identity and latest vault notes; never roll back the whole vault to hide effects.
-5. Restore the archived systemd unit/drop-ins if retired; daemon-reload and verify
-   paths and stop timeout. Start explicitly with
-   `systemctl --user start emuru-telegram.service` only after Docker polling is
-   confirmed stopped. Require fresh guards and read-only Telegram acceptance. Do not
-   run `wake.sh`: it starts Docker. Preserve newest receipts even if delivery failed.
-
-No automatic replay, receipt deletion, destructive volume removal or production
-migration belongs in release preparation. Complete the operator checkpoints above
-before production activation.
+If no compatible verified image exists, keep services stopped and prepare a forward
+fix. Do not downgrade schemas, delete receipts, merge histories by timestamps,
+restore an old queue, or revert notes to hide completed effects. Divergent histories
+require an explicit continuation choice; retain both, never overwrite either.
 
 ## Gateway policy
 
 CLI and guarded Telegram use only the authenticated `emuru` alias. In the
-container the endpoint is `http://litellm:4000/v1`. For a host CLI, explicitly
-publish the proxy on loopback and set
-`EMURU_GATEWAY_URL=http://127.0.0.1:4000/v1`; arbitrary URLs are rejected. Supply
+container the endpoint is `http://litellm:4000/v1`. Run supported agent sessions
+in Docker; arbitrary URLs are rejected. Supply
 `EMURU_GATEWAY_KEY` through the private environment and reapply the profile in
 that same environment. The checked-in Compose file publishes no default ports.
 The Ollama inventory picker and explicit `--smoke` probes remain operator tools.
@@ -670,9 +486,9 @@ The Ollama inventory picker and explicit `--smoke` probes remain operator tools.
 The default primary uses Ollama Cloud directly. Gemini/OpenAI are explicit
 upstream alternatives, with no automatic local fallback. Local daemon failure
 must not gate cloud startup or successful primary calls. Each inference starts
-with the primary, regardless of previous failures. Only availability failures
-(rate/quota, refused connections, timeout, upstream 5xx) are eligible for one
-local attempt. Authentication, unsupported arguments, configuration, content
+with the primary, regardless of previous failures. Rate limits, connection failures,
+timeouts and upstream 5xx fail without local inference. Authentication, unsupported
+arguments, configuration, content
 policy, and malformed results fail diagnostically. The gateway buffers upstream
 streams, validates complete results and JSON tool arguments, then exposes one
 model's result. This trades incremental CLI output for a strict validation boundary.
@@ -691,9 +507,11 @@ installed weights or successful chat does not qualify a local model. The v2
 record binds both model identities, digest, Ollama runtime/template, effective
 context, output reserve, workload policy and canonical fingerprint. Tools,
 context, latency, hardware, fault and workload gates must all pass. Missing,
-stale, malformed, changed or failed evidence disables local dispatch without
-truncation and returns `LOCAL_UNQUALIFIED`. Synthetic fixture provenance works
-only in disposable test configuration.
+stale, malformed, changed or failed evidence cannot authorize local dispatch.
+Even valid qualification does not enable automatic local dispatch in v0.5.0.
+Qualification code, selection and original thresholds remain for a future release;
+no live local experiment or qualified-local success is required now. Synthetic
+fixture provenance works only in disposable test configuration.
 
 A failed turn is not requeued or replayed. Terminal notices use durable tool
 start facts: proven no-tool turns say the request could not be carried out;
@@ -701,135 +519,6 @@ completed/uncertain effects or missing historical facts warn that actions may
 already have completed. Inspect committed paths and receipts before resubmitting.
 
 Use [the test commands](#run-tests) for offline checks and the disposable checker
-for pinned-proxy acceptance. For manual Telegram acceptance, send one read-only
-retrieval/navigation request through cloud. Then cause a controlled eligible
-primary outage and repeat it through qualified local. Inspect Git status and the
-Inbox before and after; no real-vault mutation is allowed. Restore primary and
-confirm the next request uses cloud. Record the evidence and remaining live checks.
-
-### v0.4.1 synthetic mutation prerequisites
-
-Broader production writes remain disabled. Default profiles expose no proposal or apply tool.
-Absent private `mutation-policy.json` denies all broader locations. A configured
-record must be owner-owned, mode `0600`, and contain exactly `enabled: false`
-and a `roots` list of selected paths under `10_Projects`, `20_Areas`, or
-`30_Resources`. The policy file is optional and is not needed for Inbox capture.
-Its selected roots permit internal proposal storage only, never publication.
-The profile and `emuru-mutations` directory must have mode `0700`.
-
-Include `emuru-mutations/mutations.sqlite` and any SQLite sidecars in every
-stopped profile backup, alongside vault, native history, Telegram queue/sidecars,
-route configuration and deployment identities. Mutation receipts have no
-Telegram expiry. Restore all components into an isolated directory; verify
-archive checksum, per-file checksums and private modes before opening databases.
-Restored proposals retain the original absolute vault identity; restore does not
-rebind approvals. Preserve `send_unknown` and interrupted effects without replay.
-Never replace newer state with an older queue or receipt database.
-
-Inbox capture and index refresh share `.emuru-writer.lock` in the vault root.
-The lock file must be owner-owned, mode `0600`, and have one link. Never unlink or
-replace it while a writer may run. Locks cover cooperating
-EMURU writers only; exclusive editor windows remain required. The synthetic drill
-is `tests/test_vault_recovery.py`; real backup proof still gates activation.
-
-
-### v0.4.2 synthetic proposals and recovery
-
-Use only disposable `/tmp` vaults and profiles for these commands. Explicit real
-`vault-target.json` records are rejected. Supply `--vault` and `--profile-home`
-on every command; neither defaults to a live profile. The profile must be mode
-`0700`, with a mode `0600` `mutation-policy.json` containing `enabled: false`
-and selected roots. No production enablement switch exists.
-
-`mutation-propose --request /tmp/.../request.json` takes one JSON object:
-creation uses `path` and `content`; updates use `path`, `expected_revision`,
-`anchor`, and `replacement`. Obtain the complete revision from `vault_open`.
-An anchor must match exactly once, including overlapping matches. Revisions,
-merge markers and destination collisions fail closed. Unrelated raw bytes,
-including CRLF, frontmatter and stable links, remain unchanged.
-
-Inspect the returned content and approval digest before invoking
-`mutation-apply --proposal-id ID --approval-digest DIGEST --writers-paused`.
-The digest binds the exact payload, identity, vault, path and before/after
-revisions. `mutation-cancel --proposal-id ID` cancels only an unstarted proposal.
-A prepared intent or completed effect cannot be cancelled or replayed.
-All commands run through `scripts/hermes/vault.py` in the locked environment.
-
-`mutation-serve` exposes `vault_propose` in addition to the five existing tools
-for that isolated fixture. It exposes no apply tool. Default profile tool lists,
-Hermes qualification and Telegram commands remain unchanged.
-
-`mutation-recover` compares prepared intents with disk. Matching after-hashes
-confirm publication and rebuild derived indexes; matching before-hashes become
-`not_applied`; other effects become `quarantined`. Recovery never publishes a
-proposal. Repeated successful application returns the original receipt without
-writing. `index_pending` retries derived indexing only. Complete private staging
-files are cleaned up during recovery; incomplete staging files remain for
-operator inspection and are never replayed. Legacy v0.4.1 drafts lack validated
-approval metadata and cannot apply; prepare a fresh proposal instead.
-
-Synthetic restore proof still applies. Real activation requires separate backup
-proof, paused editors, transport authorization and model qualification.
-
-
-### v0.4.3 synthetic project workflows
-
-The trusted workflow template is embedded in `agents/emuru/SOUL.md`; it is
-original project guidance, not copied third-party playbook material. Project
-notes use the existing six metadata fields, with Goals, Tasks, Decisions,
-Results and Next actions. Ordinary checkboxes carry an explicit task status;
-stable Obsidian block IDs support exact updates and links. Preserve the source
-Inbox capture when proposing a linked project. Search/open exact existing
-projects first; ask the owner about similar names rather than creating silently.
-
-An existing-note edit or project creation/update takes precedence over proactive
-Inbox capture. Open an exact owner-supplied path directly; otherwise resolve it
-with search/map. Open referenced source notes, preserve existing block IDs and
-unrelated content, and propose the requested changes without claiming they were
-applied. Older untagged notes use exact heading/task text. If the registered
-toolset lacks `vault_propose`, or the target is outside approved proposal roots
-(including an Inbox project plan), return a grounded, unstored text draft and
-explicitly say "No update was applied." Do not create a separate decision note
-or a new project version as an update fallback. Standalone capture still uses
-the existing Inbox procedure. Wake may update a managed private `SOUL.md` only
-when its current content matches a reviewed stock version; customized or missing
-guidance requires explicit review. Wake does not enable mutation policy. With no
-proposal capability, new-project requests return an unstored structured Markdown
-draft and intended project path, retaining the Inbox source. Use a fresh `/new`
-session after reviewed guidance installation to verify conversational behavior.
-
-Opt-in synthetic `vault_propose` and `mutation-propose` accept an optional
-owner-supplied `request_id`. Keep the exact request arguments when repeating it.
-The private journal binds identity to vault and request digest, returning the
-prior proposal or receipt; changed inputs fail closed. A new intended change
-needs a fresh owner request identity. Without an identity, exact pending drafts
-are reused. Creation at an existing approved path returns the actual note with
-`outcome: exists`, never an overwrite or a new save. These records are mutation
-recovery metadata, not a task database. Cancellation/prepared/index-pending
-outcomes retain their existing meanings. Open the current note before treating
-a prior receipt as evidence of its present content.
-
-Daily review is read-only and owner-triggered: open notes, cite exact paths and
-block IDs, distinguish recorded facts from suggestions, and leave unknown
-deadlines unknown. The synthetic inference case `workflow_review` in
-`scripts/hermes/qualify.py` checks exact-source facts, citations, separate
-suggestions, and refusal of mutations or unsupported scheduling claims. It is
-an isolated test case; it does not alter live qualification or certify the
-expanded proposal toolset. Live model quality, workload requalification and
-Telegram owner application remain later activation gates.
-
-`tests/test_vault_proposal_mcp.py` exercises idea capture, project proposal,
-owner apply, task completion and result recording through real synthetic stdio.
-`tests/test_project_workflows.py` covers duplicate identities, existing paths,
-competing requests and evidence-only review. No automatic board, scheduled work,
-external synchronization or model apply tool is added.
-
-`tests/test_project_update_conversation.py` retains the three exact owner update
-requests from failed manual acceptance and rejects their observed Inbox
-substitutes before effects. It uses real synthetic MCP with scripted inference
-to test the checker, plus opt-in isolated Ollama inference:
-`EMURU_TEST_PROJECT_UPDATE_MODEL=gemma4:31b-cloud .venv/bin/pytest -q tests/test_project_update_conversation.py -k model`.
-The optional `EMURU_TEST_PROJECT_UPDATE_URL` defaults to local Ollama. This case
-does not use the live gateway, profiles or vault, or change qualification. Its
-JSON draft format and minimized synthetic notes bound the evidence; it does not
-replace owner acceptance of the actual Telegram conversation.
+for pinned-proxy acceptance. Controlled primary failures must expose no local answer
+or automatic replay. Restore primary and confirm the next request uses cloud.
+Owner-confirmed manual acceptance is recorded in the current release matrix.

@@ -5,6 +5,7 @@ import json
 import os
 import runpy
 import shlex
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -18,10 +19,9 @@ from emuru.models.gateway import render, write_private
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def verify():
-    daemon_root = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))[
-        "docker_workspace"
-    ](ROOT)
+def verify(*, native_checked=False):
+    checks = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))
+    daemon_root = checks["docker_workspace"](ROOT)
 
     def daemon_path(path):
         return str(daemon_root / Path(path).relative_to(ROOT))
@@ -94,6 +94,8 @@ def verify():
         ).stdout.strip()
         config = yaml.safe_load((ROOT / "infra/docker/compose.yaml").read_text())
         config["name"] = home.name
+        checks["fixture_secrets"](config)
+        config["services"]["litellm"]["healthcheck"].update(interval="1s", retries=120)
         # Resolve relative source binds without changing any production file.
         for service in config["services"].values():
             for volume in service.get("volumes", []):
@@ -111,12 +113,9 @@ def verify():
             "bind": {"create_host_path": False},
         }
         config["services"]["emuru"]["volumes"].append(mount)
-        # Real pinned native seams and owner proposal flow run first. Only the poller is synthetic.
-        worker = (
-            "scripts/hermes/telegram.sh --runtime-check && exec /opt/emuru/.venv/bin/python -u -c "
-            + shlex.quote(
-                f"import signal,time,sys; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); print({READY_CHECKPOINT!r}, flush=True); time.sleep(3600)"
-            )
+        # Native acceptance runs once; lifecycle cycles exercise a synthetic poller.
+        worker = "exec /opt/emuru/.venv/bin/python -u -c " + shlex.quote(
+            f"import signal,time,sys; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); print({READY_CHECKPOINT!r}, flush=True); time.sleep(3600)"
         )
         config["services"]["emuru"]["command"] = ["bash", "-c", worker]
         config["services"]["litellm"]["environment"].update(
@@ -159,7 +158,14 @@ def verify():
             if args[:3] == ["systemctl", "--user", "is-active"]:
                 return SimpleNamespace(returncode=3, stdout="inactive\n")
             if args[-2:] == ["scripts/hermes/telegram.sh", "--check"]:
-                args = [*args[:-1], "--runtime-check"]  # No live Telegram getMe.
+                # Check each target profile without repeating native tests or calling Telegram.
+                args = [
+                    *args[:-2],
+                    "/opt/emuru/.venv/bin/python",
+                    "-m",
+                    "emuru.deployment",
+                    "profile-check",
+                ]
             if args[:2] == ["docker", "compose"]:
                 env = {**os.environ, **kwargs.get("env", {})}
                 env.update(
@@ -197,6 +203,15 @@ def verify():
                 "/check.py",
                 "seed",
             )
+            if not native_checked:
+                compose(
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "emuru",
+                    "scripts/hermes/telegram.sh",
+                    "--runtime-check",
+                )
             profile = Path(values["EMURU_PROFILE"])
             cfg = yaml.safe_load((profile / "config.yaml").read_text())
             cfg["mcp_servers"]["vault"]["tools"]["include"].remove("vault_propose")
@@ -254,6 +269,74 @@ def verify():
                 for p, data in before.items()
             )
             assert json.loads((home / "release.json").read_text()) == first
+            module["sleep"](home)
+            # Build a distinct compatible release, then roll back code while retaining newer effects.
+            newer = home / "newer-source"
+            shutil.copytree(home / "sources" / identity, newer)
+            with (newer / "src/emuru/__init__.py").open("a") as stream:
+                stream.write("\n# Disposable rollback compatibility fixture.\n")
+            scope["ROOT"] = newer
+            module["wake"](home)
+            assert json.loads((home / "release.json").read_text())["source"] != identity
+            module["sleep"](home)
+            effect = """
+from pathlib import Path
+from emuru.hermes import profile
+from emuru.vault import mutations
+home, vault = profile.profile_home(), Path('/state/vault')
+request, repeated = mutations.begin_request(home, vault, 42, 7, 100, 'newest rollback effect')
+assert not repeated
+proposal = mutations.propose_note(home, vault, '10_Projects/newest.md', content='# Newest effect' + chr(10), authenticated_id=request)
+mutations.record_preview(home, proposal['proposal_id'], proposal['approval_digest'], complete=True)
+assert mutations.apply_proposal(home, vault, proposal['proposal_id'], proposal['approval_digest'], writers_paused=True, owner=42, bot=7, application_request=request)['outcome'] == 'applied'
+mutations.finish_request(home, request)
+"""
+            newer_release = json.loads((home / "release.json").read_text())
+            run(
+                [
+                    *command,
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "emuru",
+                    "/opt/emuru/.venv/bin/python",
+                    "-c",
+                    effect,
+                ],
+                check=True,
+                env={
+                    **os.environ,
+                    "EMURU_IMAGE": newer_release["image"],
+                    "EMURU_SOURCE_ROOT": str(
+                        home / "sources" / newer_release["source"]
+                    ),
+                },
+            )
+            write_private(
+                profile / "synthetic-history.json", '{"newest_history": true}\n'
+            )
+            newest = {
+                p: p.read_bytes()
+                for directory in (
+                    profile,
+                    vault,
+                    Path(values["EMURU_STATE"]),
+                    Path(values["EMURU_RUNTIME"]),
+                )
+                for p in directory.rglob("*")
+                if p.is_file()
+            }
+            previous = len(calls)
+            module["wake"](home, rollback_source=identity)
+            assert not any(c[:2] == ["docker", "build"] for c in calls[previous:])
+            assert json.loads((home / "release.json").read_text())["source"] == identity
+            assert all(p.read_bytes() == data for p, data in newest.items())
+            assert (vault / "10_Projects/newest.md").read_text() == "# Newest effect\n"
+            assert not any(c[:2] == ["systemctl", "start"] for c in calls)
+            print(
+                "Docker-to-Docker rollback: distinct verified images, newest applied effect/history/queue/journal preserved PASS",
+                flush=True,
+            )
             print(
                 "Disposable wake: update, native owner previews/approval/cancel/readback, running no-op, stopped cache reuse, state preservation PASS",
                 flush=True,
