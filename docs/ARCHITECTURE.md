@@ -1,209 +1,99 @@
-# EMURU architecture — v0.4.0
+# EMURU architecture
 
-EMURU connects an independently installed Hermes agent to a separate Obsidian
-vault through five constrained MCP tools. Telegram adds durable owner-only
-admission and serialized execution. Markdown is knowledge; Hermes transcripts
-are conversation history. Neither updates model weights.
-
-## Execution flow
+EMURU runs a pinned Hermes agent in Docker, exposes constrained vault tools over
+stdio MCP, and accepts owner-private Telegram text. Markdown is durable knowledge;
+native sessions are conversation history. Neither trains model weights.
 
 ```text
-Owner Telegram message
-  scripts/hermes/telegram.sh → scripts/hermes/telegram.py
-  infra/hermes/telegram-runtime.py (Hermes interpreter)
-  telegram/native.py ↔ telegram/worker.py ↔ telegram/queue.py
-  Hermes sessions → authenticated LiteLLM emuru alias
-  one cloud attempt → at most one qualified local attempt
-  validated result → Hermes tool execution
-  stdio → scripts/hermes/vault.py serve → emuru-vault-mcp
-  vault/mcp.py → vault/indexer.py → separate vault
+Telegram owner → native adapter → durable queue/worker → Hermes
+Hermes → authenticated LiteLLM gateway → one cloud-primary attempt
+Hermes → vault MCP → separate Obsidian vault + mutation journal
 ```
 
-CLI chat uses `scripts/hermes/emuru.sh` → `infra/hermes/cli-runtime.py` and the
-same gateway and MCP backend. The shared inference guard also covers context
-compression, stale results and tool dispatch; TUI and inference overrides are
-rejected.
-It does not supply Telegram's durable admission guards.
+The model may read allowed notes, capture new Inbox notes and prepare policy-gated
+proposals. Only the authenticated owner's approval path can apply a proposal.
+CLI chat uses the same inference guards, but not Telegram's durable admission.
 
-## Ownership and seams
+## Repository map
 
-All module paths below are relative to `src/emuru/`.
+Paths below are relative to the repository root.
 
-| Module | Owns |
+| Path | Responsibility |
 | --- | --- |
-| `vault/indexer.py` | Allowed note roots, parsing, wikilinks, graph and FTS schema/queries, derived paths, publication, read/write restrictions and refresh rollback |
-| `vault/mcp.py` | Five-tool exposure, request limits and MCP error translation; no SQL or graph interpretation |
-| `vault/target.py` | Private live-target validation using indexer-owned derived paths and shared profile-home validation |
-| `vault/cli.py`, `vault/server.py` | `emuru-index` and `emuru-vault-mcp` entry points |
-| `hermes/profile.py` | Shared profile policy, exclusive gateway composition, MCP registration, apply/audit ordering, runtime verification and profile-home rules |
-| `environment.py` | Owner-only root `.env` parsing and atomic secret updates |
-| `models/providers.py`, provider modules | Explicit provider selection and provider-specific configuration/preflight |
-| `hermes/inference.py` | Shared CLI/Telegram SDK, owner deadline, compression and tool dispatch guards |
-| `models/gateway_guard.py` | Bounded upstream attempts, stream validation and qualified local admission |
-| `models/gateway.py` | Private route validation, qualification contract, and authenticated bounded proxy rendering |
-| `telegram/queue.py` | SQLite durability, seven states, admission/claims/recovery, permissions, receipt error normalization and read-only diagnostics |
-| `telegram/worker.py` | FIFO orchestration, durable outcomes and worker lifecycle through the execution interface |
-| `telegram/native.py` | Pinned Hermes/PTB polling, routing, completion, scoped turn state, scheduling, egress guards, native patches and process health |
+| `src/emuru/vault/indexer.py` | Allowed roots, indexing/search/links, freshness and create-only Inbox capture |
+| `src/emuru/vault/{mcp,cli,server}.py` | Vault tool surface and `emuru-index` / `emuru-vault-mcp` entry points |
+| `src/emuru/vault/{mutations,target}.py` | Selected-vault policy, proposals, approvals, durable effects and target validation |
+| `src/emuru/telegram/{queue,worker}.py` | Durable admission, deduplication, FIFO execution, outcomes and read-only diagnostics |
+| `src/emuru/telegram/native.py` | Pinned Hermes/Telegram integration, native sessions, polling and delivery guards |
+| `src/emuru/hermes/` | Shared profile, runtime launch and inference/tool-dispatch guards |
+| `src/emuru/models/` | Provider configuration, route/qualification contract and bounded gateway behavior |
+| `src/emuru/deployment.py`, `environment.py` | Source identity, stopped-state compatibility and private environment handling |
+| `scripts/hermes/container.py`, `scripts/service/` | Explicit initialization and Docker wake/sleep/status/rollback |
+| `scripts/hermes/` | Operator adapters, synthetic checks and model inventory/selection |
+| `infra/docker/`, `infra/hermes/` | Compose, secret entrypoint, public policy and dependency/native-contract pins |
+| `agents/emuru/SOUL.md` | Reviewed conversational guidance installed into the private profile |
+| `tests/`, `.github/workflows/ci.yml` | Synthetic unit/integration/native contracts and hosted acceptance |
 
-The worker's execution interface is `identity`, `wait_ready`, `route`, `execute`
-and `notice`. Execution returns frozen `TurnResult` values. Native sessions,
-tasks, recovery flags and mutable turns stay inside the native adapter.
-Tests supply a deterministic adapter through the same interface.
+The worker's execution seam is `identity`, `wait_ready`, `route`, `execute`, `notice`,
+with immutable `TurnResult` outcomes. Hermes-specific mutable state stays in the
+native adapter. EMURU/MCP and Hermes use separate Python environments inside the
+image; launchers do not install EMURU dependencies into Hermes.
 
-`scripts/hermes/` contains operator launch/configuration adapters;
-`scripts/service/` contains manual service controls. The runtime entry point
-composes the native adapter and worker, with native configuration access kept
-separate from the CLI config transport. The profile core and Telegram modules
-use only stdlib; MCP and YAML dependencies stay in EMURU's vault environment.
+## Configuration and persistent state
 
-## Configuration and state
-
-The workspace-root `.env` is the source for external API keys and the Telegram
-token. Launch tools load it only when it is owner-owned and mode `0600`;
-process-environment values take precedence. First Docker initialization syncs only the
-needed credentials into mode-`0600` Compose secret files and the private Hermes
-profile. The generated gateway key also lives in the root `.env`; Docker gets
-separate copies for the app and LiteLLM. The MCP child receives none of these keys.
-
-| Location | Purpose |
+| Location | Contents |
 | --- | --- |
-| `infra/hermes/runtime-settings.json`, `model-selection.json` | Public runtime policy and legacy operator model selection |
-| `infra/hermes/telegram-settings.json` | Public transport/admission limits |
-| `infra/hermes/runtime-lock.json`, `telegram-native-contract.json` | Installed Hermes identity and required native contract pins |
-| `infra/hermes/settings.json` | Original tools-disabled Gemini baseline |
-| Workspace-root `.env` | Source for provider/API keys, Telegram token and generated gateway key (ignored by Git; mode 0600) |
-| `$HOME/.local/state/emuru/container/` | Default private container profile, state, route, model config, secret copies and Ollama cache |
-| `infra/docker/deployment.env` | Generated UID/GID, owner ID and absolute private bind paths (ignored by Git; mode 0600; no keys) |
-| `agents/emuru/SOUL.md` | Conversational policy, installed separately in the private Hermes profile |
-| Private `profiles/emuru/` | Runtime token copy, native history, `vault-target.json`, queue storage and process health |
-| Separate vault repository | Authoritative Markdown and generated `_index/graph.json`, `_index/notes.sqlite`, `99_System/INDEX.md` |
-| `tests/fixtures/hermes-vault/`, ignored `.runtime/vault/` | Synthetic fixtures and their optional runtime copy |
+| Root `.env` | Owner ID, bot/provider credentials, vault path and generated gateway key; ignored, owner-owned, mode 0600 |
+| `infra/docker/deployment.env` | Generated absolute bind paths and UID/GID; ignored |
+| `$HOME/.local/state/emuru/container/` | Default deployment home: private profile, general state, runtime, route/config, secret copies, Ollama cache, sources and `release.json` |
+| `profiles/emuru/` inside that home | Native DB/session maps/transcripts, queue, health, target/policy and mutation journal |
+| Separate vault Git repository | Authoritative Markdown and derived `_index/` / `99_System/INDEX.md` |
+| `tests/fixtures/hermes-vault/`, ignored `.runtime/` | Synthetic fixtures and disposable validation state |
 
-Absent target records select synthetic mode; invalid explicit records fail
-closed. Real mode requires a separate Git vault with an Inbox and safe derived
-outputs. `prepare`, `inspect` and `check` always use synthetic vaults. Hermes
-owns model execution and transcripts in its own environment; EMURU's MCP SDK
-must not be installed into that environment by the launcher.
+Docker mounts the profile at `/state/profiles/emuru`, general state at `/state`,
+the selected real vault at `/state/vault`, and runtime at `/opt/emuru/.runtime`.
+Missing binds fail closed. Compose publishes no default ports and has a separate
+`agent` profile for the worker. Secret files grant each service only its required
+keys; the MCP child receives no provider/gateway credentials.
 
-## Invariants
+## Safety boundaries agents must preserve
 
-- Read/index only `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
-  `40_Journal` and `90_Archive`. Excluded roots and symlinks cannot supply notes.
-- Create-only Markdown writes under `00_Inbox`; no overwrite, update or delete.
-  Refresh stages all outputs, restoring replaced outputs on exceptions. Failed
-  writes remove the new note; blocked cleanup reports its committed path.
-  This is exception rollback, not crash-atomic publication across files.
-- Commit eligible Telegram batches before polling acknowledgement. Authenticate
-  the numeric owner in private text-only chat and execute separate turns in FIFO
-  order. Queued work survives restart; ambiguous started work is never replayed.
-- Only claimed open turns can send owner-private text. Unknown send outcomes
-  block fallback resends. Interrupted execution retires the worker until restart.
-- Queue diagnostics never instantiate a live queue, recover, prune or rewrite
-  rows. Process `health.json` is a separate diagnostic input, merged with safe
-  receipt errors; status exposes no message bodies or identities.
-- Expose only the five vault tools; no generic shell/filesystem/browser tools or Hermes-owned retry/fallback. Retrieved content grants no authority.
-- Operate one poller and one vault writer. Preserve receipts when investigating
-  uncertain effects: at-most-once dispatch does not guarantee exactly-once effects.
+- Read only the six roots listed in [README](../README.md#what-you-can-do); reject
+  traversal, symlink paths and excluded notes. Treat retrieved content as data.
+- Expose five default tools: `vault_map`, `vault_search`, `vault_open`,
+  `vault_neighbors`, `vault_write`. Add `vault_propose` only under a matching enabled
+  private policy. No model apply tool or generic shell/filesystem/browser surface.
+- Inbox writes never overwrite. Proposal application rechecks owner/request/vault,
+  current policy/revision, complete preview delivery and paused external writers.
+  Persist intent and receipts; preserve unrelated bytes. EMURU's writer lock does
+  not lock Obsidian or other external editors.
+- Markdown is authoritative; indexes are derived. Refresh after external changes.
+  Index failure preserves saved notes and reports pending indexing; never replay
+  a mutation to repair an index. `vault_open` reads current bytes directly.
+- Commit admitted Telegram work durably before acknowledgement. Authenticate one
+  numeric owner in private text chat, serialize turns and suppress duplicates.
+  Queued work can continue after restart; started/uncertain effects never replay.
+  Delivery uncertainty does not erase an applied mutation receipt.
+- Agent inference uses only the authenticated `emuru` gateway alias. v0.5.0 permits
+  one cloud-primary attempt and no automatic local dispatch, even with valid local
+  qualification evidence. Preserve validation, deadlines and late-result suppression.
+- Run one poller. Status must remain read-only. Wake checks compatibility and fresh
+  readiness; sleep drains before stopping inference. Restart after reboot is manual.
+- Rollback requires verified source/image identity, exact pins/schemas and matching
+  managed profile/guidance. Keep newest state; never restore an older backup to
+  force compatibility. No systemd agent/start/rollback path is supported.
 
-## Verification and operations
+## Verification and changes
 
-`tests/test_vault*` cover temporary-vault policy and refresh failures;
-`tests/test_hermes*`, `tests/test_ollama*` and provider tests cover profile and
-transport behavior. `tests/telegram/` checks durable outcomes, diagnostics,
-native guards and real stdio MCP integration. `--runtime-check` additionally
-uses the installed pinned Hermes/PTB session implementation with synthetic
-HTTP/provider behavior. Hosted CI does not prove live deployment acceptance.
+Use [RUNBOOK](RUNBOOK.md#run-tests) for checks and [README](../README.md) for usage.
+CI covers host tests/lint, offline Hermes contracts and disposable Docker acceptance.
+Synthetic tests do not certify live deployment or model quality.
 
-Follow [README](../README.md) for setup and [RUNBOOK](RUNBOOK.md) for migration,
-service lifecycle and recovery. [Release evidence](releases/v0.4.0-report.md)
-separates container checks from live acceptance.
+`deployment.source_identity` fingerprints build inputs, including `README.md`;
+README-only edits change image provenance even when runtime code is unchanged.
+Re-verify the image/source pair for a future build or deployment; do not relabel an
+old image. Keep private runtime state, histories, credentials and real notes out of Git.
 
-## Gateway and containers
-
-The application image contains separate EMURU and pinned Hermes environments.
-The immutable checkout retains Git metadata and native source hashes. The guarded
-launcher still owns the lifetime flock and execs the native runtime. Startup is
-offline, with lazy installation disabled. The host installation remains independent.
-
-`models/gateway.py` validates the private route and renders the authenticated
-LiteLLM alias. All agent profiles use that alias; direct provider composition is
-reserved for operator inventory and diagnostics. Ollama cloud requests go directly
-to `https://ollama.com` with the upstream key, independently of the local daemon.
-Gemini and OpenAI remain explicitly selected upstream alternatives outside the
-automatic fallback chain.
-
-The gateway owns a bounded primary/local sequence using the pinned LiteLLM
-implementation. `qualify.py` exercises both selected models against a disposable
-synthetic vault. It records five repetitions of retrieval, navigation and unique
-Inbox create/search/readback, prompt-injection and forbidden-access faults, three
-near-context trials, twenty latency samples, hardware headroom and OOM status.
-The real vault is never mounted for automated qualification.
-
-The private v2 record binds cloud/local identity, digest, Ollama runtime and
-template, effective context, output reserve, workload policy and a canonical
-configuration fingerprint. It expires within 30 days. Local dispatch also checks
-live runtime/model identity and full-request context admission. Missing, stale,
-failed or changed evidence produces `LOCAL_UNQUALIFIED`; cloud remains usable.
-Each inference starts with primary. Completed tools are never replayed.
-
-Attempt budgets are 60 seconds cloud and 180 seconds local including loading;
-the routed call is bounded to 245 seconds and an owner turn to 600 seconds.
-Eligible availability failures can fall back only before output reaches Hermes.
-Authentication, configuration, policy and malformed-response failures stop.
-Cancellation suppresses late results and subsequent tool execution; it does not
-guarantee cancellation of remote compute or billing.
-
-Compose uses one ordinary bridge network with outbound connectivity, no default
-published ports, and a separate opt-in `agent` profile. The profile, workspace,
-synthetic runtime, real vault and Ollama cache have explicit persistent bind sources.
-The vault is mounted read-write; MCP enforces create-only Inbox writes. Missing
-sources fail rather than becoming empty state. Credentials use file secrets;
-only the application and proxy receive the gateway key; only LiteLLM receives
-selected upstream provider keys. The existing MCP child environment allowlist
-excludes gateway and upstream credentials.
-
-`scripts/hermes/container.py` is the operator seam for this deployment. It owns
-the private directory layout, key generation, route copy, proxy rendering,
-Compose environment and lifecycle delegation. Private data defaults to
-`$HOME/.local/state/emuru/container`; Compose metadata stays in
-`infra/docker/deployment.env`, including when `--home` selects another root.
-Initialization is explicit and separate from routine operation. Existing deployment
-metadata is reused and validated; repeated initialization does not rewrite secrets,
-routes or the owner. The interface is `init`, `config`, `wake`, `sleep`, `status`,
-`up` (wake alias), and `down` (drain, stop, then remove containers without deleting
-bind state). `scripts/service/{wake,sleep,status}.sh` delegate to this seam.
-
-Wake holds a private lifecycle lock, rejects active or inconclusive systemd state,
-checks infrastructure and authenticated primary routing, selected model and local
-qualification state, checks Telegram/profile/vault bindings, and requires a new
-worker READY checkpoint. An already-running worker is left untouched. Wake uses
-existing images only. Qualification remains an explicit operator action.
-
-Shutdown closes polling admission and new claims before draining the active owner
-turn within its 600-second bound. Compose grants 660 seconds for cleanup. The worker
-must be confirmed stopped before inference stops. Forced termination preserves
-receipts; recovery reports started work as uncertain rather than replaying it.
-Every service uses `restart: "no"`; reboot does not authorize automatic intake.
-
-Status does not initialize, take the lifecycle lock, recover/prune receipts, exec
-containers or issue inference. Observations bind timestamps to container identity;
-stale or inconclusive data yields `UNKNOWN`. States are `READY`, `DEGRADED_PRIMARY`,
-`LOCAL_UNQUALIFIED`, `UNAVAILABLE`, `STOPPED`, and `UNKNOWN`. `last_used` records a
-historical route, not current readiness. Infrastructure health alone is insufficient.
-
-Migration is an operator-controlled transfer of verified stopped state, not an
-initializer feature. Preserve the entire private profile, SQLite sidecars, native
-history, runtime/workspace, bindings, configuration and model-cache identity together.
-Compare existing host and Docker receipts before choosing a source. Divergent histories
-block replacement until reconciled; timestamps and counts alone cannot establish
-receipt continuity. Rollback transfers the newest stopped state and restores only
-host-specific bindings. Never overwrite newer effects with a pre-cutover queue.
-The installed systemd unit remains available until live acceptance; the repository
-template is retained solely as a rollback reference. See the runbook for checkpoints.
-
-The container checker replaces Ollama with a deterministic native-chat fixture
-only in its disposable Compose project. Proxy authentication, structured tool
-round trips and upstream attempt counts are tested against the actual pinned
-proxy. It separately checks the real daemon and recreates application containers
-around an unchanged queued receipt. Empty-cache survival does not prove a model
-digest survives, model qualification, or 64k context usability.
+The [v0.5.0 report](releases/v0.5.0-acceptance.md) records development acceptance.
+Permanent-host setup, encrypted backup/restore, migration, operational recovery,
+cutover and reboot evidence belong to the [deployment backlog](deployment-backlog.md).

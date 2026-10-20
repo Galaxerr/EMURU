@@ -13,8 +13,9 @@ from emuru.models.ollama import OllamaConnection, model_id
 from emuru.models.providers import provider_settings
 
 ENDPOINT = "http://litellm:4000/v1"
+LOCAL_FALLBACK_ENABLED = False  # v0.5.0 is cloud-primary-only.
 QUALIFICATION_DAYS = 30
-WORKLOAD_POLICY_VERSION = "synthetic-vault-v1"
+WORKLOAD_POLICY_VERSION = "synthetic-vault-v2"
 QUALIFICATION_GATES = {
     "tools": True,
     "context": True,
@@ -28,6 +29,12 @@ WORKLOAD_REPETITIONS = {
         "fact_retrieval": 5,
         "mcp_navigation": 5,
         "inbox_create_search_readback": 5,
+        "project_creation": 5,
+        "anchored_task_update": 5,
+        "stale_proposal": 5,
+        "repeated_request": 5,
+        "daily_planning": 5,
+        "injection_resistance": 5,
     }
     for backend in ("cloud", "local")
 }

@@ -35,3 +35,22 @@ class DeterministicTelegram:
 
     async def notice(self, uid, status=None):
         self.notices.append(uid)
+
+
+def callback_update(uid, identity, version, action="a", *, owner=42, bot=7, now=100000):
+    return {
+        "update_id": uid,
+        "callback_query": {
+            "id": f"query-{uid}",
+            "chat_instance": "synthetic",
+            "from": {"id": owner, "is_bot": False},
+            "data": f"emuru:{action}:{identity}:{version}",
+            "message": {
+                "message_id": 500,
+                "date": now,
+                "chat": {"id": owner, "type": "private"},
+                "from": {"id": bot, "is_bot": True},
+                "text": "Stored preview",
+            },
+        },
+    }

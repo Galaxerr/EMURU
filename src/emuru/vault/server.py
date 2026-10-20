@@ -15,7 +15,10 @@ def _vault_path() -> Path:
     return Path(value)
 
 
-mcp = create_mcp(_vault_path())
+proposal_home = os.environ.get("EMURU_MUTATION_PROFILE_HOME")
+mcp = create_mcp(
+    _vault_path(), proposal_home=Path(proposal_home) if proposal_home else None
+)
 
 
 def main() -> None:

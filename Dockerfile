@@ -1,5 +1,5 @@
 FROM ghcr.io/astral-sh/uv:0.12.23@sha256:61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21 AS uv
-FROM public.ecr.aws/docker/library/python:3.14.7-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56
+FROM docker.io/library/python:3.14.7-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56
 COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends git util-linux ca-certificates libatomic1 libcairo2 && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/hermes
@@ -9,24 +9,19 @@ RUN uv sync --locked --no-dev --extra telegram --extra mcp --python /usr/local/b
 RUN git config --system --add safe.directory /opt/hermes
 WORKDIR /opt/emuru
 COPY pyproject.toml uv.lock README.md ./
+COPY Dockerfile .dockerignore ./
 RUN uv sync --locked --no-install-project --python /usr/local/bin/python3.14
 COPY src ./src
 RUN uv sync --locked --python /usr/local/bin/python3.14
 COPY scripts/hermes ./scripts/hermes
 COPY infra/hermes ./infra/hermes
 COPY infra/docker/secret-exec.py ./infra/docker/secret-exec.py
+COPY infra/docker/compose.yaml infra/docker/deployment-lock.json ./infra/docker/
 COPY agents/emuru ./agents/emuru
 COPY tests/fixtures/hermes-vault ./tests/fixtures/hermes-vault
 COPY tests/telegram/native_session_case.py ./tests/telegram/native_session_case.py
 COPY tests/native_inference_case.py ./tests/native_inference_case.py
-RUN chmod -R a+rX /opt/emuru/tests/fixtures
-RUN chmod a+r \
-    /opt/emuru/agents/emuru/SOUL.md \
-    /opt/emuru/infra/hermes/telegram-settings.json \
-    /opt/emuru/infra/hermes/runtime-lock.json \
-    /opt/emuru/infra/hermes/runtime-settings.json \
-    /opt/emuru/infra/hermes/telegram-native-contract.json \
-    /opt/emuru/infra/hermes/settings.json
+RUN chmod -R a+rX /opt/emuru/src /opt/emuru/scripts /opt/emuru/infra /opt/emuru/agents /opt/emuru/tests
 RUN mkdir .runtime
 ENV EMURU_HERMES_ROOT=/opt/hermes HERMES_DISABLE_LAZY_INSTALLS=1 UV_OFFLINE=1 UV_NO_SYNC=1 PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin HOME=/state XDG_STATE_HOME=/state
 USER 1000:1000

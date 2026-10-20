@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field
 
 from emuru.vault import indexer as index
+from emuru.vault import mutations
 
 MAX_OPEN_CHARS = 50_000
 DEFAULT_OPEN_CHARS = 12_000
@@ -15,15 +18,18 @@ DEFAULT_SEARCH_RESULTS = 8
 MAX_MAP_ENTRIES = 200
 
 
-def _call(function, *args):
+def _call(function, *args, **kwargs):
     try:
-        return function(*args)
-    except (ValueError, OSError) as error:
+        return function(*args, **kwargs)
+    except (ValueError, OSError, sqlite3.Error) as error:
         raise ToolError(str(error)) from error
 
 
-def create_mcp(vault_root: Path) -> MCPServer:
-    vault_root = vault_root.expanduser().resolve()
+def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPServer:
+    vault_root = vault_root.expanduser().absolute()
+    if proposal_home is not None:
+        mutations.require_authority(proposal_home, vault_root)
+        mutations.recover_proposals(proposal_home, vault_root)
     index.index_vault(vault_root)
     mcp = MCPServer("EMURU Vault")
 
@@ -97,6 +103,82 @@ def create_mcp(vault_root: Path) -> MCPServer:
         The path must start with 00_Inbox/ and the tool refuses
         to overwrite existing notes.
         """
+        if (
+            proposal_home is not None
+            and mutations.load_policy(proposal_home)["enabled"]
+        ):
+            return _call(
+                mutations.capture_note, proposal_home, vault_root, path, content
+            )
         return _call(index.vault_write, vault_root, path, content)
+
+    if proposal_home is not None:
+
+        @mcp.tool(
+            description=(
+                "Prepare and store a non-mutating preview for an explicit owner creation or edit request. "
+                "Approved roots: "
+                + ", ".join(mutations.load_policy(proposal_home)["roots"])
+                + ". "
+                "Use this for new projects/resources outside Inbox; do not substitute an unstored draft when this tool is available. "
+                "Creation requires content and an absent target; omit update fields or use JSON null. "
+                "Updates require expected_revision from vault_open, one exact anchor, and replacement; omit content or use JSON null. "
+                "Redundant update content is accepted only if it exactly matches the anchored result. "
+                "Search for duplicates first. A direct owner creation request needs no existing Inbox source. "
+                "Never apply or approve changes. Owner approval is handled by the trusted Telegram transport."
+            )
+        )
+        def vault_propose(
+            path: str,
+            content: Annotated[
+                str | None,
+                Field(
+                    description="Full note text for creation; omit or use JSON null for updates. Redundant update content must exactly match the anchored result."
+                ),
+            ] = None,
+            expected_revision: Annotated[
+                str | None,
+                Field(
+                    description="Full vault_open revision for updates; omit or use JSON null for creation."
+                ),
+            ] = None,
+            anchor: Annotated[
+                str | None,
+                Field(
+                    description="Unique exact text to replace for updates; omit or use JSON null for creation."
+                ),
+            ] = None,
+            replacement: Annotated[
+                str | None,
+                Field(
+                    description="Replacement text for updates; omit or use JSON null for creation."
+                ),
+            ] = None,
+            request_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Preview one approved-root creation or exact anchored update.
+
+            Creation requires content and an absent target. Updates require the
+            full revision from vault_open, one exact anchor, and replacement.
+            Reuse an owner-supplied request_id for the same exact request.
+            Existing paths and requests return their prior note/proposal/outcome.
+            This stores a private proposal. It cannot apply or approve it.
+            """
+            return _call(
+                mutations.propose_note,
+                proposal_home,
+                vault_root,
+                path,
+                content=content,
+                expected_revision=expected_revision,
+                anchor=anchor,
+                replacement=replacement,
+                request_id=request_id,
+                authenticated_id=(
+                    mutations.authenticated_request(proposal_home, vault_root)
+                    if mutations.load_policy(proposal_home)["enabled"]
+                    else None
+                ),
+            )
 
     return mcp

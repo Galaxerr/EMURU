@@ -84,6 +84,11 @@ def main():
     parser.add_argument("--runtime-check", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
+    if args.runtime_check:
+        # Native lifecycle hooks also write state outside the fixture queue.
+        runtime_home = tempfile.TemporaryDirectory(prefix="emuru-telegram-native-home-")
+        os.environ["HERMES_HOME"] = runtime_home.name
+        os.environ["EMURU_HERMES_PROFILE_HOME"] = runtime_home.name
     profile.public_contract(ROOT)
     runtime_identity()
 
@@ -141,13 +146,14 @@ def main():
             calls, sent = [], []
 
             async def fake_post(bot, endpoint, data=None, **kwargs):
-                if endpoint == "sendMessage":
-                    sent.append(data["text"])
+                if endpoint in {"sendMessage", "sendDocument"}:
+                    sent.append(data.get("text", data.get("caption", "")))
                     return {
                         "message_id": len(sent),
                         "date": 100000,
                         "chat": {"id": 42, "type": "private"},
-                        "text": data["text"],
+                        "text": data.get("text"),
+                        "caption": data.get("caption"),
                     }
                 return True
 
@@ -249,11 +255,13 @@ def main():
                     raise RuntimeError(
                         "Native session reset/onboarding contract changed"
                     )
+                await case.check_mutations(adapter, execution, directory)
                 await adapter.disconnect()
 
-            asyncio.run(asyncio.wait_for(native_replay(), timeout=15))
+            asyncio.run(asyncio.wait_for(native_replay(), timeout=30))
             queue.close()
         print("Pinned Hermes runtime / native Telegram guard seams: PASS (no network)")
+        runtime_home.cleanup()
         return
     config, owner = private_config()
     audit_live_profile()

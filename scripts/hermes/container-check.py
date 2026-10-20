@@ -1,4 +1,4 @@
-"""Disposable v0.3.2 acceptance: no live bot, credentials, cloud calls or weight pulls."""
+"""Disposable v0.5.0 acceptance: no live bot, credentials, cloud calls or weight pulls."""
 
 import argparse
 import hashlib
@@ -25,6 +25,24 @@ def subprocess_detail(error):
     output = (error.stderr or error.stdout or "").strip()
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     return "\n".join(lines[-3:])
+
+
+def fixture_secrets(config):
+    # Bind daemon-side files directly: act's Compose client cannot stat host paths.
+    secrets = config.pop("secrets", {})
+    for service in config["services"].values():
+        for secret in service.pop("secrets", []):
+            name = secret if isinstance(secret, str) else secret["source"]
+            target = name if isinstance(secret, str) else secret.get("target", name)
+            service.setdefault("volumes", []).append(
+                {
+                    "type": "bind",
+                    "source": secrets[name]["file"],
+                    "target": str(Path("/run/secrets") / target),
+                    "read_only": True,
+                    "bind": {"create_host_path": False},
+                }
+            )
 
 
 def docker_workspace(root):
@@ -147,6 +165,21 @@ def seed():
 
     root = Path("/opt/emuru")
     home = profile.profile_home()
+    from emuru.models.gateway import write_private
+    from emuru.vault import mutations
+
+    vault = Path("/state/vault")
+    write_private(
+        home / "vault-target.json",
+        json.dumps({"mode": "real", "vault_path": str(vault)}),
+    )
+    (vault / "10_Projects").mkdir(mode=0o700, exist_ok=True)
+    write_private(
+        home / "mutation-policy.json",
+        json.dumps(
+            {"enabled": True, "roots": ["10_Projects"], "vault_path": str(vault)}
+        ),
+    )
     config = {"model": {}, "mcp_servers": {}}
 
     def get(key):
@@ -190,6 +223,43 @@ def seed():
         queue.claim(7)
         queue.mark_tools_started(7, 2)
         assert queue.status() == {"completed": 1, "started": 1, "queued": 1}
+        request, repeated = mutations.begin_request(
+            home, vault, 42, 7, 2, "disposable persistence check"
+        )
+        assert not repeated
+        mutations.activate_request(home, request, queue.path, 7, 2)
+        assert mutations.authenticated_request(home, vault) == request
+        proposal = mutations.propose_note(
+            home,
+            vault,
+            "10_Projects/persisted.md",
+            content="# Persisted owner effect\n",
+            authenticated_id=request,
+        )
+        mutations.record_preview(
+            home, proposal["proposal_id"], proposal["approval_digest"], complete=True
+        )
+        assert (
+            mutations.apply_proposal(
+                home,
+                vault,
+                proposal["proposal_id"],
+                proposal["approval_digest"],
+                writers_paused=True,
+                owner=42,
+                bot=7,
+                application_request=request,
+            )["outcome"]
+            == "applied"
+        )
+        mutations.finish_request(home, request)
+        # Model a stopped process with publication durable but its final receipt uncertain.
+        with mutations.journal(home) as db:
+            db.execute(
+                "UPDATE receipts SET outcome='prepared' WHERE proposal_id=?",
+                (proposal["proposal_id"],),
+            )
+            db.commit()
     finally:
         queue.close()
 
@@ -204,6 +274,7 @@ def snapshot():
     assert len(rows) == 3
     payload = {
         "receipts": rows,
+        "mutation_tables": {},
         "files": {
             name: hashlib.sha256((home / name).read_bytes()).hexdigest()
             for name in ("synthetic-history.json", "config.yaml", "SOUL.md")
@@ -212,6 +283,27 @@ def snapshot():
             Path(os.environ["EMURU_CONTAINER_ROUTE"]).read_bytes()
         ).hexdigest(),
     }
+    from emuru.vault.mutations import journal
+
+    with journal(home) as db:
+        for table in (
+            "owner_requests",
+            "request_updates",
+            "proposal_bindings",
+            "preview_deliveries",
+            "application_requests",
+            "proposals",
+            "receipts",
+            "validated_proposals",
+            "proposal_edits",
+            "proposal_requests",
+            "proposal_lifecycle",
+            "revision_requests",
+            "intents",
+        ):
+            payload["mutation_tables"][table] = db.execute(
+                f"SELECT * FROM {table} ORDER BY rowid"
+            ).fetchall()
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     print(digest)
     return digest
@@ -223,6 +315,7 @@ def profile_lifecycle():
     from emuru.hermes import profile
 
     root = Path("/opt/emuru")
+    home = profile.profile_home()
     config = read_user_config_raw()
 
     def get(key):
@@ -245,6 +338,37 @@ def profile_lifecycle():
     assert snapshot() == first
     print(
         "Profile/history, route and completed/uncertain/pending receipts survive application recreation: PASS",
+        flush=True,
+    )
+    from emuru.vault import mutations
+
+    vault = Path(json.loads((home / "vault-target.json").read_text())["vault_path"])
+    request, repeated = mutations.begin_request(
+        home, vault, 42, 7, 4, "disposable persistence check"
+    )
+    assert repeated
+    preview = mutations.request_previews(home, request)[0]
+    assert preview["outcome"] == "prepared"
+    note = vault / preview["path"]
+    before = note.read_bytes(), note.stat().st_mtime_ns
+    subprocess.run(
+        [
+            str(root / ".venv/bin/python"),
+            str(root / "scripts/hermes/vault.py"),
+            "mutation-recover",
+            "--profile-home",
+            str(home),
+            "--vault",
+            str(vault),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert mutations.request_previews(home, request)[0]["outcome"] == "applied"
+    assert (note.read_bytes(), note.stat().st_mtime_ns) == before
+    print(
+        "Owner requests / previews / uncertain publication survive recreation without replay: PASS",
         flush=True,
     )
     subprocess.run(["scripts/hermes/telegram.sh", "--status"], check=True)
@@ -300,6 +424,7 @@ def verify(config_only=False):
     from emuru.models.gateway import render, write_private
 
     root = Path(__file__).resolve().parents[2]
+    image = os.environ.get("EMURU_TEST_IMAGE", "emuru:latest")
     # Keep disposable state in the workspace mount for daemon path translation.
     runtime = root / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
@@ -364,12 +489,11 @@ def verify(config_only=False):
 
     if daemon_root != root:
         config = json.loads(compose("--profile", "agent", "config", "--format", "json"))
+        fixture_secrets(config)
         for service in config["services"].values():
             for volume in service.get("volumes", []):
                 if volume["type"] == "bind":
                     volume["source"] = daemon_path(volume["source"])
-        for secret in config["secrets"].values():
-            secret["file"] = daemon_path(secret["file"])
         write_private(private / "compose.json", json.dumps(config))
         command[-1] = str(private / "compose.json")
     subprocess.run(
@@ -408,6 +532,7 @@ def verify(config_only=False):
     override = {
         "services": {
             "emuru": {
+                "image": image,
                 "volumes": [
                     mount,
                     *[
@@ -418,18 +543,32 @@ def verify(config_only=False):
                             "read_only": True,
                             "bind": {"create_host_path": False},
                         }
-                        for path in ("src", "infra/hermes", "tests")
+                        for path in ("src", "infra/hermes", "tests", "scripts/hermes")
                     ],
-                ]
+                ],
             },
-            "litellm": {"ports": ["127.0.0.1::4000"]},
+            "litellm": {
+                "ports": ["127.0.0.1::4000"],
+                "healthcheck": {"interval": "1s", "retries": 120},
+            },
+            "ollama": {"healthcheck": {"interval": "1s", "retries": 120}},
         }
     }
     write_private(private / "check.yaml", yaml.safe_dump(override))
     extra = ("-f", str(private / "check.yaml"))
 
     def app(*args):
-        return compose("run", "--rm", "--no-deps", "emuru", *args, extra=extra)
+        # Keep transient uv interpreter caches out of shared persistent state.
+        return compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "--env",
+            "UV_NO_CACHE=1",
+            "emuru",
+            *args,
+            extra=extra,
+        )
 
     def run_app_check(label, *args):
         try:
@@ -502,6 +641,18 @@ def verify(config_only=False):
                 "check",
             ),
             (
+                "Owner-bound mutation acceptance",
+                "/opt/emuru/.venv/bin/python",
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_vault_apply.py",
+                "tests/test_vault_proposal_mcp.py",
+                "tests/test_proposal_lifecycle.py",
+                "tests/test_vault_recovery.py",
+                "tests/telegram/test_telegram_runtime.py",
+            ),
+            (
                 "Telegram runtime check",
                 "scripts/hermes/telegram.sh",
                 "--runtime-check",
@@ -562,7 +713,7 @@ def verify(config_only=False):
             "EMURU_TEST_PRIMARY_BASE": "http://ollama:11434",
         }
         override["services"]["ollama"] = {
-            "image": "emuru:latest",
+            "image": image,
             "entrypoint": ["/usr/local/bin/python", "/check.py", "fixture"],
             "volumes": [mount],
             "healthcheck": {
@@ -571,7 +722,9 @@ def verify(config_only=False):
                     "python",
                     "-c",
                     "import urllib.request; urllib.request.urlopen('http://localhost:11434/stats')",
-                ]
+                ],
+                "interval": "1s",
+                "retries": 120,
             },
         }
         write_private(private / "check.yaml", yaml.safe_dump(override))
@@ -755,6 +908,19 @@ def verify(config_only=False):
         print("Disposable containers stopped: PASS", flush=True)
 
 
+def acceptance(config_only=False):
+    started = time.monotonic()
+    verify(config_only)
+    if config_only:
+        return
+    print(f"Container contracts: {time.monotonic() - started:.1f}s", flush=True)
+    started = time.monotonic()
+    runpy.run_path(str(Path(__file__).with_name("wake-check.py")))["verify"](
+        native_checked=True
+    )
+    print(f"Wake/update/rollback: {time.monotonic() - started:.1f}s", flush=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -776,7 +942,7 @@ if __name__ == "__main__":
         sys.path.insert(0, "/opt/emuru/src")
     try:
         {
-            "verify": lambda: verify(args.config_only),
+            "verify": lambda: acceptance(args.config_only),
             "fixture": fixture,
             "seed": seed,
             "snapshot": snapshot,

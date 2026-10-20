@@ -10,7 +10,12 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 import litellm
 
-from emuru.models.gateway import read_route, upstream, valid_qualification
+from emuru.models.gateway import (
+    LOCAL_FALLBACK_ENABLED,
+    read_route,
+    upstream,
+    valid_qualification,
+)
 from emuru.models.gateway_guard import guard, qualified, valid_response
 
 TOOLS = [
@@ -98,7 +103,8 @@ def check():
         raise RuntimeError("Authenticated gateway did not return a tool call")
     PHASE = "fallback"
     local = (
-        route["primary"]["provider"] == "ollama"
+        LOCAL_FALLBACK_ENABLED
+        and route["primary"]["provider"] == "ollama"
         and valid_qualification(route)
         and asyncio.run(
             qualified(
@@ -112,7 +118,14 @@ def check():
     )
     print("Selected primary and authenticated gateway: READY", flush=True)
     print(
-        "Qualified local fallback: " + ("READY" if local else "LOCAL_UNQUALIFIED"),
+        "Qualified local fallback: "
+        + (
+            "DISABLED"
+            if not LOCAL_FALLBACK_ENABLED
+            else "READY"
+            if local
+            else "LOCAL_UNQUALIFIED"
+        ),
         flush=True,
     )
 

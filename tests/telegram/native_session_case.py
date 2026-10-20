@@ -7,49 +7,78 @@ from unittest.mock import patch
 
 
 async def check(run, adapter, bridge, directory):
+    from hermes_constants import get_hermes_home
+
+    assert get_hermes_home().name.startswith("emuru-telegram-native-home-")
     from agent import system_prompt
     from gateway.config import GatewayConfig
     from gateway.run_turn_runner import TurnRunner
     from gateway.session import SessionStore
     from hermes_state import SessionDB
 
+    counters = (
+        "_updates_received_total",
+        "_updates_dispatched_total",
+        "_ingress_dispatched_seen",
+        "_ingress_stalled_heartbeats",
+    )
+    saved = {name: getattr(adapter, name, 0) for name in counters}
+    recoveries = []
+    try:
+        for name in counters:
+            setattr(adapter, name, 0)
+        rejected = {
+            "update_id": 30,
+            "message": {
+                "message_id": 30,
+                "date": int(bridge.queue.now()),
+                "chat": {"id": 43, "type": "private"},
+                "from": {"id": 43, "is_bot": False, "first_name": "Other"},
+                "text": "Unauthorized input",
+            },
+        }
+        adapter._record_updates_received([rejected])
+        await adapter._app.process_update(
+            bridge.execution._update.de_json(rejected, adapter._app.bot)
+        )
+        assert adapter._updates_dispatched_total == 1
+        with patch.object(
+            adapter, "_schedule_polling_recovery", lambda *a, **kw: recoveries.append(a)
+        ):
+            for _ in range(8):
+                adapter._check_ingress_dispatch_stall()
+            assert not recoveries
+            adapter._record_updates_received([rejected])
+            for _ in range(8):
+                adapter._check_ingress_dispatch_stall()
+            assert (
+                len(recoveries) == 1
+            )  # An actual undispatched update still trips the watchdog.
+    finally:
+        for name, value in saved.items():
+            setattr(adapter, name, value)
+
     root = Path(directory) / "native-session"
-    db = SessionDB(root / "state.db")
-
-    class IsolatedStore(SessionStore):
-        def _open_session_db_for_active_scope(self, db_path=None):
-            return db
-
+    root.mkdir()
     config = GatewayConfig(sessions_dir=root / "sessions", multiplex_profiles=False)
-    store = IsolatedStore(config.sessions_dir, config)
-    store._db = db  # Pin all native transcript/routing operations to this temporary DB.
     runner = adapter.gateway_runner
-    runner.config, runner.session_store = config, store
-    runner._init_lifecycle_state()
-    runner._init_runtime_caches()
-    runner._session_db = db
+    runner.__init__(config)
+    store = runner.session_store
+    db = SessionDB(get_hermes_home() / "state.db")
+    runner.adapters = {run.Platform.TELEGRAM: adapter}
     captured, agents, transitions = [], [], []
     marker = "UNSAVED_SYNTHETIC_MARKER_984"
     question = "What synthetic marker did I give you?"
 
-    async def no_external_hooks(*args, **kwargs):
-        pass
-
-    # Keep native reset, cache eviction, conversation clearing and history replay;
-    # only resource cleanup, optional lifecycle plugins and the provider are fakes.
-    runner._cleanup_old_agent_for_reset = no_external_hooks
-    runner._fire_session_reset_hooks = no_external_hooks
-    runner._reset_notice_session_info = lambda source: ""
-    runner._telegram_topic_new_header = lambda source: None
-    runner._is_telegram_topic_lane = lambda source: False
-    runner._spawn_release_thread = lambda *args, **kwargs: None
+    # Keep native reset, resource cleanup, hooks, cache eviction and history replay.
+    # Provider, outbound HTTP, and external lifecycle plugins are synthetic.
 
     async def executor(event):
         key = runner._session_key_for_source(event.source)
         if event.text == "/new":
             before = store._entries[key].session_id
-            handled, reply = await runner._hm_cmd_new(event, event.source, key)
-            assert handled and key not in runner._agent_cache
+            reply = await runner._handle_message(event)
+            assert key not in runner._agent_cache
             transitions.append((before, store._entries[key].session_id))
             return reply
         entry = store.get_or_create_session(event.source)
@@ -112,18 +141,31 @@ async def check(run, adapter, bridge, directory):
                 "message_id": uid,
                 "date": now,
                 "chat": {"id": 42, "type": "private"},
-                "from": {"id": 42, "is_bot": False},
+                "from": {"id": 42, "is_bot": False, "first_name": "Owner"},
                 "text": text,
+                "link_preview_options": {"is_disabled": True},
             },
         }
         for uid, text in ((31, marker), (32, "/new"), (33, question))
     ]
+    updates = [
+        json.loads(bridge.execution._update.de_json(payload, bot).to_json())
+        for payload in updates
+    ]
+    from emuru.vault import mutations
+
+    home, vault = root / "mutation-profile", root / "vault"
+    home.mkdir(mode=0o700)
+    vault.mkdir()
+    mutations.begin_request(home, vault, 42, bot.id, 30, "/new")
+    bridge.execution.mutation_target = (home, vault)
     try:
         bridge.queue.stage(bot.id, updates, bot.username)
         with patch("hermes_cli.lifecycle.invoke_hook"):
             while await bridge.once():
                 pass
         assert len(captured) == 2 and len(transitions) == 1
+        assert adapter._updates_dispatched_total == saved["_updates_dispatched_total"]
         old, new = transitions[0]
         assert old != new and captured[0][0] == old and captured[1][0] == new
         assert agents[0] is not agents[1] and agents[1].session_id == new
@@ -134,8 +176,8 @@ async def check(run, adapter, bridge, directory):
         assert not await bridge.once() and len(transitions) == 1
         histories = {sid: store.load_transcript(sid) for sid in (old, new)}
         db.close()
-        db = SessionDB(root / "state.db")
-        recreated = IsolatedStore(config.sessions_dir, config)
+        db = SessionDB(get_hermes_home() / "state.db")
+        recreated = SessionStore(config.sessions_dir, config)
         recreated._db = db
         assert {sid: recreated.load_transcript(sid) for sid in (old, new)} == histories
 
@@ -156,6 +198,7 @@ async def check(run, adapter, bridge, directory):
         receipts._load_receipts(replacement, bot.id)
         assert (receipt_path.read_bytes(), receipt_path.stat().st_mtime_ns) == before
     finally:
+        bridge.execution.mutation_target = None
         db.close()
 
 
@@ -236,3 +279,192 @@ def check_tools(execution, directory):
     assert queue.terminal_notice(bot, 90).startswith("I couldn’t finish")
     assert queue.stage(bot, [payload], username) == ["failed"]
     assert queue.claim(bot, username) is None
+
+
+async def check_mutations(adapter, execution, directory):
+    """Pinned PTB command admission and final preview/application; no provider or network."""
+    import shutil
+
+    from emuru.vault import mutations
+
+    home = Path(directory) / "mutation-profile"
+    home.mkdir(mode=0o700)
+    vault = Path(directory) / "mutation-vault"
+    shutil.copytree(
+        Path(__file__).resolve().parents[1] / "fixtures/hermes-vault", vault
+    )
+    for name, data in {
+        "mutation-policy.json": {
+            "enabled": True,
+            "roots": ["10_Projects"],
+            "vault_path": str(vault),
+        },
+        "vault-target.json": {"mode": "real", "vault_path": str(vault)},
+    }.items():
+        record = home / name
+        record.write_text(json.dumps(data))
+        record.chmod(0o600)
+    execution.mutation_target = (home, vault)
+    proposals, model_calls = [], []
+
+    async def model(event):
+        model_calls.append(event.text)
+        identity = mutations.authenticated_request(home, vault)
+        number = len(proposals) + 1
+        revising = event.text.startswith(
+            "The owner is following up on a pending proposal."
+        )
+        path = (
+            proposals[-1]["path"]
+            if revising
+            else f"10_Projects/native-owner-{number}.md"
+        )
+        content = (
+            "# Revised native project\n- [ ] Revised task ^task-native\n"
+            if revising
+            else f"# Native owner project {number}\n- [ ] Task ^task-native-{number}\n"
+            + ("Preview context line.\n" * 500 if number == 3 else "")
+        )
+        result = mutations.propose_note(
+            home,
+            vault,
+            path,
+            content=content,
+            authenticated_id=identity,
+        )
+        proposals.append(result)
+        return "Stored proposal; no mutation applied."
+
+    adapter._message_handler = model
+    queue, bot = execution.queue, adapter._app.bot
+
+    async def request(uid, text, reply=None, button=None):
+        payload = {
+            "update_id": uid,
+            "message": {
+                "message_id": uid,
+                "date": int(queue.now()),
+                "chat": {"id": 42, "type": "private"},
+                "from": {"id": 42, "is_bot": False},
+                "text": text,
+                "link_preview_options": {"is_disabled": True},
+            },
+        }
+        if reply is not None:
+            payload["message"]["reply_to_message"] = {
+                "message_id": 500,
+                "date": int(queue.now()),
+                "chat": {"id": 42, "type": "private"},
+                "from": {"id": bot.id, "is_bot": True, "first_name": "EMURU"},
+                "text": "EMURU approval: "
+                + reply
+                + "\nRevision: "
+                + mutations.owner_preview(home, vault, reply, 42, bot.id)[
+                    "approval_digest"
+                ][:16],
+            }
+        if button is not None:
+            payload = {
+                "update_id": uid,
+                "callback_query": {
+                    "id": str(uid),
+                    "chat_instance": "synthetic",
+                    "from": payload["message"]["from"],
+                    "data": f"emuru:{text}:{button['proposal_id']}:{button['approval_digest'][:16]}",
+                    "message": {
+                        **payload["message"],
+                        "from": {"id": bot.id, "is_bot": True},
+                    },
+                },
+            }
+        queue.stage(bot.id, [payload], bot.username)
+        while await execution.worker.once():
+            pass
+        assert (
+            queue.db.execute(
+                "SELECT state FROM updates WHERE update_id=?", (uid,)
+            ).fetchone()[0]
+            == "completed"
+        )
+
+    await request(100, "create native project")
+    proposal = proposals[0]
+    identity = proposal["proposal_id"]
+    assert not (vault / proposal["path"]).exists()
+    await request(101, "create native project")
+    assert model_calls == ["create native project"]
+    await request(102, "/apply")
+    await request(103, f"/apply {identity}")
+    assert not (vault / proposal["path"]).exists()
+    await request(104, f"/apply {identity} writers-paused")
+    assert (vault / proposal["path"]).read_text() == proposal["content"]
+    modified = (vault / proposal["path"]).stat().st_mtime_ns
+    await request(105, f"/apply {identity} writers-paused")
+    assert (vault / proposal["path"]).stat().st_mtime_ns == modified
+    await request(106, "/propose-new create native project")
+    assert model_calls == ["create native project", "create native project"]
+    cancelled = proposals[1]
+    assert cancelled["proposal_id"] != identity
+    assert not (vault / cancelled["path"]).exists()
+    owner, bot_id = execution.queue.owner_id, execution.identity()[0]
+    assert (
+        mutations.owner_preview(home, vault, cancelled["proposal_id"], owner, bot_id)[
+            "proposal_id"
+        ]
+        == cancelled["proposal_id"]
+    )
+    try:
+        mutations.owner_preview(
+            home, vault, cancelled["proposal_id"], owner + 1, bot_id
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Proposal preview was not bound to its owner")
+    await request(108, f"/cancel {cancelled['proposal_id']}")
+    await request(109, f"/apply {cancelled['proposal_id']} writers-paused")
+    assert not (vault / cancelled["path"]).exists()
+    await request(107, f"/cancel {identity}")
+    assert (vault / proposal["path"]).stat().st_mtime_ns == modified
+    # Exercise real PTB admission, durable normalization and native operator commands.
+    await request(110, "/propose-new create conversational project")
+    pending = proposals[-1]
+    assert not (vault / pending["path"]).exists()
+    await request(111, "Change the first task", reply=pending["proposal_id"])
+    revised = proposals[-1]
+    assert (
+        revised["proposal_id"] == pending["proposal_id"]
+        and revised["path"] == pending["path"]
+    )
+    assert (
+        mutations.owner_preview(home, vault, pending["proposal_id"], owner, bot_id)[
+            "outcome"
+        ]
+        == "proposed"
+    )
+    assert not (vault / revised["path"]).exists()
+    await request(118, "a", button=pending)
+    assert not (vault / revised["path"]).exists()
+    await request(112, "yes", reply=revised["proposal_id"])
+    assert (vault / revised["path"]).read_text() == revised["content"]
+    await request(113, "approve, writers paused", reply=revised["proposal_id"])
+    assert (vault / revised["path"]).read_text() == revised["content"]
+    stamp = (vault / revised["path"]).stat().st_mtime_ns
+    await request(114, "approve, writers paused", reply=revised["proposal_id"])
+    assert (vault / revised["path"]).stat().st_mtime_ns == stamp
+    await request(115, "/propose-new create rejected project")
+    rejected = proposals[-1]
+    await request(116, "r", button=rejected)
+    await request(117, "approve, writers paused", reply=rejected["proposal_id"])
+    assert not (vault / rejected["path"]).exists()
+    assert (
+        mutations.owner_preview(home, vault, rejected["proposal_id"], owner, bot_id)[
+            "outcome"
+        ]
+        == "cancelled"
+    )
+    await request(119, "/propose-new create button-accepted project")
+    accepted = proposals[-1]
+    await request(120, "a", button=accepted)
+    assert (vault / accepted["path"]).read_text() == accepted["content"]
+    execution.mutation_target = None

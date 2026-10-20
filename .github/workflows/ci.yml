@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   quality:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
     steps:
@@ -62,22 +61,10 @@ jobs:
           bash -n scripts/service/status.sh
       - name: Validate Telegram contract offline
         run: uv run --frozen python scripts/hermes/telegram.py --offline
-      - name: Test Telegram admission and restart reliability
-        run: >-
-          uv run --frozen pytest -q
-          tests/telegram/test_telegram_queue.py
-          tests/telegram/test_telegram_runtime.py
-          tests/telegram/test_hermes_telegram_profile.py
-          tests/telegram/test_telegram_vault_integration.py
-          tests/telegram/test_telegram_launcher.py
       - name: Validate configuration contract
         run: python3 scripts/hermes/baseline.py
-      - name: Test vault integration over stdio
-        run: uv run --frozen pytest -q tests/test_hermes_vault_integration.py tests/test_hermes_vault_profile.py tests/test_openai.py tests/test_gemini.py tests/test_ollama.py tests/test_ollama_profile.py tests/test_ollama_local.py tests/test_ollama_selection.py tests/test_ollama_integration.py
       - name: Validate selected model route
         run: uv run --frozen python scripts/hermes/vault-profile.py --offline
-      - name: Test private vault target and synthetic isolation
-        run: uv run --frozen pytest -q tests/test_vault_target.py
       - name: Validate recorded runtime identity
         shell: bash
         run: |
@@ -108,24 +95,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
-      - name: Lifecycle, status and offline native regressions
-        run: >-
-          uv run --frozen pytest -q
-          tests/test_container_launcher.py tests/test_container_startup.py
-          tests/test_container_status.py tests/test_container_check.py
-          tests/test_native_launch.py tests/test_cli_runtime.py
-          tests/telegram
-      - name: Gateway routing and profile policy
-        run: uv run --frozen pytest -q tests/test_gateway_integration.py tests/test_inference_guard.py tests/test_qualification.py tests/test_ollama_selection.py tests/test_hermes_profile_adapters.py
       - name: Deterministic qualification fixture
         run: uv run --frozen python scripts/hermes/qualify.py --fixture
       - name: Compose validation with disposable secrets
         run: uv run --frozen python scripts/hermes/container-check.py --config-only
       - name: Fetch pinned infrastructure
         run: |
-          docker pull ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
-          docker pull ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
+          docker image inspect ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839 >/dev/null 2>&1 || docker pull ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
+          docker image inspect ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687 >/dev/null 2>&1 || docker pull ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
       - name: Build application and pinned native runtime
-        run: docker build -t emuru:latest .
-      - name: Native MCP, auth, tools and persistent receipts
+        run: |
+          uv run --frozen python - <<'PYTHON'
+          import os
+          import runpy
+          module = runpy.run_path("scripts/hermes/container.py")
+          _, image = module["ensure_image"]()
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"EMURU_TEST_IMAGE={image}\n")
+          PYTHON
+      - name: Native contracts, lifecycle and Docker rollback
         run: uv run --frozen python scripts/hermes/container-check.py

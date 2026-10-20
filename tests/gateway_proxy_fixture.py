@@ -81,6 +81,16 @@ class Upstream(BaseHTTPRequestHandler):
             "message": {"role": "assistant", "content": backend + "-answer"},
             "done": False,
         }
+        if request_mode in {
+            "empty",
+            "reasoning-only",
+            "reasoning-text",
+            "reasoning-length",
+            "terminal-text",
+        }:
+            data["message"]["content"] = ""
+            if request_mode != "empty":
+                data["message"]["thinking"] = "synthetic reasoning"
         if request_mode == "partial-tool":
             data["message"] = {
                 "role": "assistant",
@@ -89,7 +99,12 @@ class Upstream(BaseHTTPRequestHandler):
                     {"function": {"name": "probe", "arguments": '{"message":'}}
                 ],
             }
-        if request_mode in {"tool-valid", "tool-invalid"}:
+        if request_mode in {
+            "tool-valid",
+            "tool-invalid",
+            "tool-empty",
+            "tool-multiple",
+        }:
             data["message"] = {
                 "role": "assistant",
                 "content": "",
@@ -97,9 +112,11 @@ class Upstream(BaseHTTPRequestHandler):
                     {
                         "function": {
                             "name": "probe",
-                            "arguments": {
+                            "arguments": {}
+                            if request_mode == "tool-empty"
+                            else {
                                 "message": "ping"
-                                if request_mode == "tool-valid"
+                                if request_mode in {"tool-valid", "tool-multiple"}
                                 else 42
                             },
                         }
@@ -108,6 +125,11 @@ class Upstream(BaseHTTPRequestHandler):
             }
         try:
             self.wfile.write((json.dumps(data) + "\n").encode())
+            if request_mode == "tool-multiple":
+                self.wfile.write((json.dumps(data) + "\n").encode())
+            if request_mode in {"reasoning-text", "reasoning-length"}:
+                data["message"] = {"role": "assistant", "content": backend + "-answer"}
+                self.wfile.write((json.dumps(data) + "\n").encode())
             self.wfile.flush()
         except BrokenPipeError:
             return
@@ -124,6 +146,10 @@ class Upstream(BaseHTTPRequestHandler):
             "prompt_eval_count": 10,
             "eval_count": 5,
         }
+        if request_mode == "terminal-text":
+            data["message"]["content"] = backend + "-answer"
+        if request_mode == "reasoning-length":
+            data["done_reason"] = "length"
         try:
             self.wfile.write((json.dumps(data) + "\n").encode())
         except BrokenPipeError:
@@ -289,10 +315,13 @@ def main():
             }, counts
             mode = "error-503"
             status, body = request(True)
-            assert status == 200 and "local-answer" in body, (status, body)
-            assert counts == {"primary": 3, "local": 1}, counts
-            assert observed()["state"] == "DEGRADED_PRIMARY", observed()
-            assert observed()["last_used"]["route"] == "local"
+            assert "local-answer" not in body and (status >= 400 or "error" in body), (
+                status,
+                body,
+            )
+            assert counts == {"primary": 3, "local": 0}, counts
+            assert observed()["state"] == "UNAVAILABLE", observed()
+            assert observed()["last_used"]["route"] == "primary"
             for code in (401, 400, 403):
                 mode = "error-" + str(code)
                 before = dict(counts)
@@ -306,17 +335,17 @@ def main():
             for code in (429, 529):
                 mode = "error-" + str(code)
                 before = dict(counts)
-                assert request()[0] == 200
+                assert request()[0] >= 400
                 assert counts == {
                     "primary": before["primary"] + 1,
-                    "local": before["local"] + 1,
+                    "local": before["local"],
                 }
             mode = "connection-reset"
             before = dict(counts)
-            assert request()[0] == 200
+            assert request()[0] >= 400
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }
             for stream_flag in (False, True):
                 mode = "cancel"
@@ -377,6 +406,58 @@ def main():
                     else "Invalid tool arguments" in body
                 ), (status, body)
                 assert counts["local"] == before["local"], counts
+            mode = "tool-multiple"
+            status, body = request(True, tools=tools)
+            assert status == 200 and body.count('"name":"probe"') == 2, (status, body)
+            mode = "tool-empty"
+            empty_tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "probe",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ]
+            status, body = request(True, tools=empty_tools)
+            assert status == 200 and '"arguments":"{}"' in body.replace(" ", ""), (
+                status,
+                body,
+            )
+            for stream_flag in (False, True):
+                for response_mode in (
+                    "empty",
+                    "reasoning-only",
+                    "reasoning-text",
+                    "reasoning-length",
+                    "terminal-text",
+                ):
+                    mode = response_mode
+                    before = dict(counts)
+                    status, body = request(stream_flag)
+                    if mode == "reasoning-text":
+                        assert status == 200 and "primary-answer" in body, (
+                            status,
+                            body,
+                        )
+                    else:
+                        error = {
+                            "reasoning-length": "Unsafe or incomplete inference response",
+                            # Pinned Router hides the real finish marker on terminal content.
+                            "terminal-text": "Incomplete upstream stream",
+                        }.get(mode, "Empty inference response")
+                        assert error in body, (status, body)
+                        assert "primary-answer" not in body, (status, body)
+                    if stream_flag or mode != "reasoning-text":
+                        assert "synthetic reasoning" not in body, (status, body)
+                    assert counts == {
+                        "primary": before["primary"] + 1,
+                        "local": before["local"],
+                    }, counts
             mode = "interchunk"
             before = dict(counts)
             started = time.monotonic()
@@ -385,11 +466,14 @@ def main():
             assert "primary-answer" not in body, (status, body)
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }, counts
             mode = "slow"
             status, body = request()
-            assert status == 200 and "local-answer" in body, (status, body)
+            assert "local-answer" not in body and (status >= 400 or "error" in body), (
+                status,
+                body,
+            )
             mode = "ok"
             before = dict(counts)
             assert request()[0] == 200
@@ -401,7 +485,7 @@ def main():
             route["fallback"]["qualification"] = None
             save()
             assert request()[0] == 200
-            assert observed()["state"] == "LOCAL_UNQUALIFIED", observed()
+            assert observed()["state"] == "READY", observed()
             mode = "error-503"
             before = dict(counts)
             assert request()[0] >= 400
@@ -452,18 +536,18 @@ def main():
             assert request()[0] >= 400
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }
             mode = "local-oom"
             before = dict(counts)
             assert request()[0] >= 400
             assert counts == {
                 "primary": before["primary"] + 1,
-                "local": before["local"] + 1,
+                "local": before["local"],
             }
             assert observed()["state"] == "UNAVAILABLE", observed()
             print(
-                "Pinned proxy HTTP/SSE bounded fallback, retries, eligibility, deadlines, qualification, context, primary recovery: PASS"
+                "Pinned proxy HTTP/SSE cloud-only failures, zero local dispatch, auth, validation, deadlines, primary recovery: PASS"
             )
             proxy.terminate()
             proxy.wait(timeout=20)

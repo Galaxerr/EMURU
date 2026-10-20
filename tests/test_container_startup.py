@@ -107,7 +107,7 @@ def test_startup_requires_primary_tool_call_before_gateway(
     module["check"]()
     assert [name for name, _ in calls] == ["router", "primary", "gateway"]
     assert calls[0][1]["model_list"][0]["litellm_params"]["api_key"] == "synthetic-key"
-    assert "LOCAL_UNQUALIFIED" in capsys.readouterr().out
+    assert "Qualified local fallback: DISABLED" in capsys.readouterr().out
 
     calls.clear()
     monkeypatch.setitem(
@@ -118,7 +118,6 @@ def test_startup_requires_primary_tool_call_before_gateway(
         "router",
         "primary",
         "gateway",
-        "qualification",
     ]
 
     calls.clear()
