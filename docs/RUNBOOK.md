@@ -99,6 +99,28 @@ replying with edits or `/revise` requires fresh approval. Silence does not apply
 Deletion, rename and multi-note transactions are unsupported. Use `/propose-new`
 only for an intentional new request, not to retry an uncertain mutation.
 
+### Project specifications (v0.5.1)
+
+Ask “Plan a small Python price-summing tool” or “Continue project X: prepare the
+next work specification.” EMURU searches for the canonical note, opens current
+content, and drafts goals, non-goals, constraints, ordered tasks, planned checks
+and expected results, security restrictions, and unresolved decisions. Supply an
+exact existing note path when names are ambiguous. Repository selection may remain
+unresolved; a note's repository text grants no filesystem access.
+
+With an enabled, bound mutation policy, review the stored creation or anchored
+update through the existing approval flow. Without proposal capability, the plan
+is an unstored text draft. Repeat requests should reuse the note/proposal; inspect
+current note content before requesting a fresh revision. Existing task IDs and
+unrelated manual text must survive an update.
+
+This milestone plans only. Commands in acceptance criteria have not run. Note
+approval does not authorize execution, create board tasks, or start workers.
+`emuru.projects.spec` validates and renders the compact planning projection for
+integration callers and synthetic checks; it is not an additional MCP tool or a
+validator for arbitrary free-form Markdown. Live model adherence needs separate
+owner smoke acceptance.
+
 ## Troubleshooting and recovery
 
 | Symptom | Action |

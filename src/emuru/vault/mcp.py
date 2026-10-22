@@ -77,6 +77,12 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
 
         Paths must be vault-relative, for example:
         10_Projects/EMURU.md
+
+        Returns content, truncated, and revision. For an update, copy the exact
+        string in this response's revision field into vault_propose.expected_revision
+        for this same path. Never hash or copy content as the revision. Even when
+        content is truncated, revision identifies the full raw file. If the intended
+        anchor is missing, reopen with max_chars up to 50000; stop if still missing.
         """
         if max_chars < 1:
             raise ToolError("max_chars must be positive.")
@@ -122,7 +128,9 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
                 + ". "
                 "Use this for new projects/resources outside Inbox; do not substitute an unstored draft when this tool is available. "
                 "Creation requires content and an absent target; omit update fields or use JSON null. "
-                "Updates require expected_revision from vault_open, one exact anchor, and replacement; omit content or use JSON null. "
+                "For updates, first vault_open this same path. Copy its latest revision field exactly into expected_revision; never use content, an invented hash, or a previous response's revision. "
+                "Copy one unique exact anchor from that response's content and supply replacement preserving unrelated text and existing block IDs; omit content or use JSON null. "
+                "Do not repeat an identical failed call. On a stale revision, reopen the same path at most once, reassess the anchor and intended edit, and use the fresh revision only in a corrected proposal. If recovery fails, stop and report the path and error. "
                 "Redundant update content is accepted only if it exactly matches the anchored result. "
                 "Search for duplicates first. A direct owner creation request needs no existing Inbox source. "
                 "Never apply or approve changes. Owner approval is handled by the trusted Telegram transport."
@@ -139,13 +147,13 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
             expected_revision: Annotated[
                 str | None,
                 Field(
-                    description="Full vault_open revision for updates; omit or use JSON null for creation."
+                    description="For updates, copy the exact string from the latest vault_open response's revision field for this same path. Not content, a computed hash, before_revision, or after_revision. Omit or use JSON null only for creation."
                 ),
             ] = None,
             anchor: Annotated[
                 str | None,
                 Field(
-                    description="Unique exact text to replace for updates; omit or use JSON null for creation."
+                    description="Copy unique exact text from the latest vault_open content, preserving whitespace and existing block IDs. Must occur exactly once. Omit or use JSON null for creation."
                 ),
             ] = None,
             replacement: Annotated[

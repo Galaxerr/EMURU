@@ -1033,7 +1033,13 @@ def _prepare_note(
                 or expected_revision is None
                 or expected_revision != _hash(before)
             ):
-                raise ValueError("Stale or missing full-file revision.")
+                raise ValueError(
+                    "Stale or missing full-file revision. "
+                    "Do not repeat this failed proposal. Reopen the same path at most once; "
+                    "copy the exact revision field from that vault_open response into "
+                    "expected_revision and reassess the unique anchor before a corrected proposal. "
+                    "If recovery fails, stop and report the path and error."
+                )
             text = before.decode("utf-8")
             _no_merge_markers(text)
             if not anchor or replacement is None:

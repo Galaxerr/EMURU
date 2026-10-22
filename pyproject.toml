@@ -1,6 +1,6 @@
 [project]
 name = "emuru"
-version = "0.5.0"
+version = "0.5.1"
 description = "Self-hosted knowledge assistant with constrained vault MCP and durable Telegram execution"
 readme = "README.md"
 authors = [
