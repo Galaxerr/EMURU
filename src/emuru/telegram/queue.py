@@ -205,6 +205,7 @@ def load_telegram_settings(path: Path) -> dict:
             "reject",
             "propose-new",
             "revise",
+            "project",
         ],
         "ambiguous_turn_recovery": "report_without_replay",
     }
@@ -392,7 +393,7 @@ def admit_update(update, owner_id, settings, now, bot_username="", bot_id=None):
             or command[2]
             and command[2].lower() != bot_username.lower()
             or command is not None
-            and command[1] in {"apply", "cancel", "reject", "revise"}
+            and command[1] in {"apply", "cancel", "reject", "revise", "project"}
             and msg.get("forward_origin")
         ):
             return None

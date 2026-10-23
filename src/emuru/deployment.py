@@ -34,6 +34,7 @@ BUILD_FILES = (
     "tests/fixtures/hermes-vault",
     "tests/telegram/native_session_case.py",
     "tests/native_inference_case.py",
+    "tests/project_board_case.py",
 )
 
 
@@ -245,13 +246,19 @@ def _sync_profile(root, home, *, apply=False):
         return cursor
 
     settings, server = profile.expected_settings(root), profile.expected_server(root)
-    # v0.4.x settings are unchanged; only the policy-selected tool include list grows.
+    # Older profiles predate the explicit no-worker Kanban allowlist.
+    kanban = config.get("kanban", {})
+    if not isinstance(kanban, dict):
+        raise TypeError("Customized Kanban configuration; explicit review required")
+    add_dispatch_fence = "dispatch_profiles" not in kanban
+    if add_dispatch_fence:
+        config.setdefault("kanban", {})["dispatch_profiles"] = []
     previous = profile.expected_server(root, tools=profile.TOOLS)
     registered = get("mcp_servers")
     if registered not in ({"vault": server}, {"vault": previous}):
         raise ValueError("Customized MCP registration; explicit review required")
     profile.verify_profile(settings, registered["vault"], get)
-    updated = registered != {"vault": server}
+    updated = registered != {"vault": server} or add_dispatch_fence
     if apply:
         if updated:
             config["mcp_servers"] = {"vault": server}

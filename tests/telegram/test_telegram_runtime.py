@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from contextlib import suppress
 from enum import Enum
 from types import SimpleNamespace as NS
 
@@ -44,12 +45,18 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
         username = "emuru"
         batch = ()
         fail_send = False
+        action_error = None
 
         async def get_updates(self, *args, **kwargs):
             return self.batch
 
         async def _post(self, endpoint, data=None, **kwargs):
             network.append((endpoint, data))
+            if (
+                endpoint in {"sendChatAction", "setMessageReaction"}
+                and self.action_error
+            ):
+                raise self.action_error
             if self.fail_send and endpoint in {"sendMessage", "sendDocument"}:
                 raise RuntimeError("SYNTHETIC_TOKEN must not be logged")
             return True
@@ -84,6 +91,11 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             return "owner"
 
         async def _handle_reset_command(self, event):
+            if getattr(self, "reset_typing", False):
+                with suppress(RuntimeError, asyncio.CancelledError):
+                    await bot._post(
+                        "sendChatAction", {"chat_id": 42, "action": "typing"}
+                    )
             if getattr(self, "reset_error_before", False):
                 raise RuntimeError("SYNTHETIC_SECRET")
             self.resets += 1
@@ -617,6 +629,29 @@ def test_reset_reports_actual_session_transition(boundary, rotated, caplog):
         b.queue.stage(7, [raw(1, "/new")], "emuru")
         await b.bridge.once()  # Only an outstanding failure notice may run.
         assert runner.resets == int(rotated)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("SYNTHETIC_SECRET"), asyncio.CancelledError()]
+)
+def test_reset_survives_failed_typing_indicator(boundary, error, caplog):
+    b = boundary
+    b.bot.action_error = error
+    b.adapter.runner.reset_typing = True
+
+    async def check():
+        b.queue.stage(7, [raw(1, "/new")], "emuru")
+        assert await b.bridge.once()
+        assert b.queue.status() == {"completed": 1}
+        assert b.adapter.runner.resets == 1
+        assert (
+            b.network[-1][1]["text"]
+            == "New session started. Previous conversation preserved."
+        )
+        assert not b.adapter.runner.model_histories
+        assert "SYNTHETIC_SECRET" not in caplog.text
 
     asyncio.run(check())
 
@@ -1539,3 +1574,40 @@ def test_model_and_previews_share_one_turn_budget(boundary, monkeypatch):
     assert phases == ["model completed"]
     assert b.queue.status() == {"interrupted": 1}
     assert b.bridge.retired
+
+
+@pytest.mark.parametrize("addressed", [False, True])
+def test_project_command_uses_owner_turn_fences(
+    boundary, tmp_path, monkeypatch, addressed
+):
+    from emuru.projects import board
+    from emuru.vault import mutations
+
+    b = boundary
+    home, vault = tmp_path / "profile", tmp_path / "vault"
+    home.mkdir(mode=0o700)
+    vault.mkdir()
+    b.execution.mutation_target = (home, vault)
+    calls = []
+
+    def project(home_arg, vault_arg, root, text, owner, bot):
+        assert (home_arg, vault_arg, owner, bot) == (home, vault, 42, 7)
+        mutations.authenticated_request(home, vault)
+        assert (
+            b.queue.db.execute("SELECT tools_started FROM turn_effects").fetchone()[0]
+            == 1
+        )
+        calls.append(text)
+        return "Tracking only; execution not authorized."
+
+    monkeypatch.setattr(board, "project_command", project)
+    text = "/project" + ("@emuru" if addressed else "") + " track " + "a" * 32
+    b.queue.stage(7, [raw(1, text), raw(1, text), raw(2, text, owner_id=43)], "emuru")
+    asyncio.run(b.bridge.once())
+    assert calls == [text]
+    assert b.effects == []
+    assert b.queue.status() == {"completed": 1}
+    assert any(
+        data.get("text") == "Tracking only; execution not authorized."
+        for _, data in b.network
+    )

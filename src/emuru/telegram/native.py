@@ -347,7 +347,14 @@ class NativeTelegram:
 
         text = payload["message"]["text"]
         command = text.split(maxsplit=1)[0].split("@")[0]
-        controls = {"/apply", "/cancel", "/reject", "/propose-new", "/revise"}
+        controls = {
+            "/apply",
+            "/cancel",
+            "/reject",
+            "/propose-new",
+            "/revise",
+            "/project",
+        }
         if self.mutation_target is None:
             if command in controls:
                 with self._turn_scope(payload["update_id"], session_key, notice=True):
@@ -447,6 +454,25 @@ class NativeTelegram:
         mutations.activate_request(home, identity, self.queue.path, bot, uid)
         try:
             mutations.authenticated_request(home, vault)
+            if command == "/project":
+                from emuru.projects.board import project_command
+
+                with self._turn_scope(uid, session_key, notice=True):
+                    try:
+                        self.queue.mark_tools_started(bot, uid)
+                        result = project_command(
+                            home, vault, self.root, text, owner, bot
+                        )
+                    except ValueError as error:
+                        result = str(error)
+                    except OSError:
+                        result = "Project request refused. Check the applied spec receipt, current note, bound vault, and pinned board contract. Use /project track <applied-spec-proposal-id> or /project status <applied-spec-proposal-id>."
+                    for offset in range(0, len(result), 3500):
+                        await self._app.bot.send_message(
+                            chat_id=owner, text=result[offset : offset + 3500]
+                        )
+                mutations.finish_request(home, identity)
+                return TurnResult(True)
             if command in {"/apply", "/cancel"}:
                 with self._turn_scope(uid, session_key, notice=True):
                     fields = text.split()
@@ -1103,12 +1129,13 @@ class NativeTelegram:
                 try:
                     return await post(bot, endpoint, data, *args, **kwargs)
                 except asyncio.CancelledError:
-                    turn.failed = True
+                    # Typing refresh cancellation does not make reply delivery uncertain.
+                    turn.failed |= endpoint != "sendChatAction"
                     raise
                 except Exception:  # noqa: BLE001 -- suppress credential-bearing SDK errors
                     # Native formatting/thread/network fallbacks may try again. An
                     # unknown send outcome latches the whole turn against resends.
-                    turn.failed = True
+                    turn.failed |= endpoint != "sendChatAction"
                     raise RuntimeError(
                         "Telegram egress outcome is uncertain; no retry"
                     ) from None

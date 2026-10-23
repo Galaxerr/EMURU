@@ -1,11 +1,13 @@
 """M1 projections through real synthetic vault tools; no model or code execution."""
 
 import copy
+from pathlib import Path
 
 import pytest
 from mcp import Client
 from vault_helpers import create_vault
 
+from emuru.projects.board import spec_tasks
 from emuru.projects.spec import spec_markdown, validate_spec
 from emuru.vault import indexer, mutations
 from emuru.vault.mcp import create_mcp
@@ -45,6 +47,29 @@ def test_projection_is_bounded_planning_text(spec):
     assert "^task-sum-prices-sum" in markdown
     for heading in ("Goals", "Tasks", "Decisions", "Results", "Next actions"):
         assert f"## {heading}\n" in markdown
+
+
+def test_model_guidance_uses_the_existing_renderer_format(spec):
+    """Check published guidance and its example, not arbitrary model output."""
+    guidance = (
+        (Path(__file__).resolve().parents[1] / "agents/emuru/SOUL.md")
+        .read_text()
+        .split("### Execution specifications (planning only)", 1)[1]
+    )
+    assert "emuru.projects.spec.spec_markdown" in guidance
+    assert "exactly one `## Tasks` section" in guidance
+    example = guidance.split("```markdown\n", 1)[1].split("```", 1)[0]
+    task = spec["tasks"][0]
+    for placeholder, value in {
+        "<spec-id>": spec["spec_id"],
+        "<task-id>": task["id"],
+        "<description>": task["description"],
+        "<command>": task["acceptance"][0]["command"],
+        "<expected-result>": task["acceptance"][0]["expected_result"],
+    }.items():
+        example = example.replace(placeholder, value)
+    assert example in spec_markdown(spec)
+    assert spec_tasks(example) == spec["tasks"]
 
 
 @pytest.mark.parametrize(

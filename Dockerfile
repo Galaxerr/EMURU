@@ -21,6 +21,7 @@ COPY agents/emuru ./agents/emuru
 COPY tests/fixtures/hermes-vault ./tests/fixtures/hermes-vault
 COPY tests/telegram/native_session_case.py ./tests/telegram/native_session_case.py
 COPY tests/native_inference_case.py ./tests/native_inference_case.py
+COPY tests/project_board_case.py ./tests/project_board_case.py
 RUN chmod -R a+rX /opt/emuru/src /opt/emuru/scripts /opt/emuru/infra /opt/emuru/agents /opt/emuru/tests
 RUN mkdir .runtime
 ENV EMURU_HERMES_ROOT=/opt/hermes HERMES_DISABLE_LAZY_INSTALLS=1 UV_OFFLINE=1 UV_NO_SYNC=1 PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin HOME=/state XDG_STATE_HOME=/state

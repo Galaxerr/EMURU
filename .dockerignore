@@ -28,6 +28,7 @@
 !tests/telegram/
 !tests/telegram/native_session_case.py
 !tests/native_inference_case.py
+!tests/project_board_case.py
 **/.env*
 **/*.key
 **/*.pem

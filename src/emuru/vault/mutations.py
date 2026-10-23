@@ -602,6 +602,28 @@ def owner_preview(home, vault_root, identity, owner, bot):
         return _preview(db, identity)
 
 
+def approved_project(home, vault_root, identity, owner, bot):
+    """Read an owner-bound applied snapshot; Markdown cannot assert approval."""
+    policy = require_authority(home, vault_root)
+    if not policy["enabled"]:
+        raise ValueError("Project tracking requires a bound vault and enabled policy.")
+    with journal(home) as db:
+        _check_owner(db, identity, vault_root, owner, bot)
+        preview = _preview(db, identity)
+    if preview["outcome"] not in {"applied", "index_pending"}:
+        raise ValueError("Project tracking requires an applied approved spec receipt.")
+    with mutation_parent(vault_root, preview["path"], roots=policy["roots"]) as (
+        parent,
+        name,
+    ):
+        current = read_note(parent, name)
+    preview["current"] = (
+        current is not None
+        and hashlib.sha256(current).hexdigest() == preview["after_revision"]
+    )
+    return preview
+
+
 def expire_proposals(home, vault_root, *, now=None):
     """Remove untouched draft content after one day; retain a replay-safe tombstone."""
     now = time.time() if now is None else now

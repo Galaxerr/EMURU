@@ -121,6 +121,47 @@ integration callers and synthetic checks; it is not an additional MCP tool or a
 validator for arbitrary free-form Markdown. Live model adherence needs separate
 owner smoke acceptance.
 
+### Manual project tracking (v0.5.2)
+
+After the owner applies a project spec proposal, send
+`/project track <applied-spec-proposal-id>` in the owner's private chat.
+This separate action creates native Hermes Kanban cards; note approval alone
+does not create cards. Use `/project status <applied-spec-proposal-id>` to see
+durable card IDs, task labels, native states and parent IDs. `/status` still
+reports Telegram queue/health. No model turn or second poller handles these controls.
+
+Tracking requires an enabled mutation policy bound to the selected vault, an
+owner/bot-bound applied receipt, and a canonical note under a policy-approved root. The approved snapshot
+must contain one `- Spec: <id>` line and one `## Tasks` section in M1's format:
+
+```markdown
+- [ ] Task description — status: todo ^task-example-first
+  - Planned check: python -m unittest; expected: Zero exit
+```
+
+Each task needs a unique ID and at least one planned check. Unsupported or
+ambiguous Markdown fails closed; prepare and approve a suitable spec first.
+Tracking checks that the current note still matches the receipt's full revision.
+A changed spec for an already tracked project requires explicit reconciliation;
+M2 refuses it rather than rewriting existing cards. Status flags changed notes.
+
+The sole tracking board is private `<profile-home>/emuru-projects/kanban.db`
+(including native SQLite sidecars), persisted by the existing profile bind.
+Card bodies hold schema-1 receipt/revision/task bindings; native Kanban owns all
+task state. Repeated tracking reuses IDs, including archived cards. A retry after
+an interrupted partial creation fills missing cards. There is no global transaction
+with the vault. Back up the whole stopped profile, never only the main DB file.
+
+Cards start blocked and unassigned. `kanban.dispatch_profiles: []` permits no
+worker claims. Model-facing Kanban, shell, file and coding tools remain disabled.
+Existing dependency edges appear in status; M1's ordered tasks do not imply edges.
+Native `done` does not prove tests, independent review or project completion.
+For diagnostics, inspect the command's refusal and current receipt/note first;
+do not edit native SQLite tables, unblock cards or enable dispatch to bypass it.
+The normal stopped-profile update adds the empty allowlist to older stock
+profiles and refuses an existing nonempty allowlist. No live profile is modified
+by implementation tests.
+
 ## Troubleshooting and recovery
 
 | Symptom | Action |

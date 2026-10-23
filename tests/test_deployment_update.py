@@ -69,6 +69,29 @@ def test_current_profile_is_noop_and_state_is_untouched(managed):
     assert not (home / "mutation-policy.json").exists()
 
 
+def test_older_profile_gets_no_worker_dispatch_fence(managed):
+    home, config = managed
+    del config["kanban"]
+    write_private(home / "config.yaml", yaml.safe_dump(config))
+    before = files(home)
+    assert deployment.sync_profile(ROOT, home)["profile_changed"]
+    assert files(home) == before
+    deployment.sync_profile(ROOT, home, apply=True)
+    actual = yaml.safe_load((home / "config.yaml").read_text())
+    assert actual["kanban"]["dispatch_profiles"] == []
+    assert not deployment.sync_profile(ROOT, home, apply=True)["profile_changed"]
+
+
+def test_custom_dispatch_allowlist_blocks_profile_upgrade(managed):
+    home, config = managed
+    config["kanban"]["dispatch_profiles"] = ["default"]
+    write_private(home / "config.yaml", yaml.safe_dump(config))
+    before = files(home)
+    with pytest.raises(ValueError):
+        deployment.sync_profile(ROOT, home, apply=True)
+    assert files(home) == before
+
+
 def test_reviewed_guidance_and_policy_selected_tools_upgrade(managed, monkeypatch):
     home, config = managed
     old = b"Previous reviewed stock guidance.\n"

@@ -14,6 +14,13 @@ The model may read allowed notes, capture new Inbox notes and prepare policy-gat
 proposals. Only the authenticated owner's approval path can apply a proposal.
 CLI chat uses the same inference guards, but not Telegram's durable admission.
 
+`/project track <applied-spec-proposal-id>` is a deterministic owner transport
+control. It validates a bound applied spec receipt, then calls pinned native
+Kanban APIs to create blocked, unassigned cards. `/project status` projects
+native task states and dependency IDs; `/status` keeps its queue/health meaning.
+The model has no board tools. Dispatch profiles are explicitly empty; M2 adds no
+execution worker, execution grant or second scheduling database.
+
 ## Repository map
 
 Paths below are relative to the repository root.
@@ -26,6 +33,7 @@ Paths below are relative to the repository root.
 | `src/emuru/telegram/{queue,worker}.py` | Durable admission, deduplication, FIFO execution, outcomes and read-only diagnostics |
 | `src/emuru/telegram/native.py` | Pinned Hermes/Telegram integration, native sessions, polling and delivery guards |
 | `src/emuru/hermes/` | Shared profile, runtime launch and inference/tool-dispatch guards |
+| `src/emuru/projects/{spec,board}.py` | Bounded planning projection and receipt-bound native Kanban tracking |
 | `src/emuru/models/` | Provider configuration, route/qualification contract and bounded gateway behavior |
 | `src/emuru/deployment.py`, `environment.py` | Source identity, stopped-state compatibility and private environment handling |
 | `scripts/hermes/container.py`, `scripts/service/` | Explicit initialization and Docker wake/sleep/status/rollback |
@@ -47,6 +55,7 @@ image; launchers do not install EMURU dependencies into Hermes.
 | `infra/docker/deployment.env` | Generated absolute bind paths and UID/GID; ignored |
 | `$HOME/.local/state/emuru/container/` | Default deployment home: private profile, general state, runtime, route/config, secret copies, Ollama cache, sources and `release.json` |
 | `profiles/emuru/` inside that home | Native DB/session maps/transcripts, queue, health, target/policy and mutation journal |
+| `profiles/emuru/emuru-projects/` | Single native tracking board, SQLite sidecars and serialized binder lock; card bodies retain schema-1 receipt/revision/task bindings |
 | Separate vault Git repository | Authoritative Markdown and derived `_index/` / `99_System/INDEX.md` |
 | `tests/fixtures/hermes-vault/`, ignored `.runtime/` | Synthetic fixtures and disposable validation state |
 

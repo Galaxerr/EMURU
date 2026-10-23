@@ -128,6 +128,7 @@ def expected_settings(root: Path, *, model: dict | None = None):
         is not int
         or settings.get("platforms.telegram.extra.max_concurrent_updates") != 1
         or settings.get("gateway.standalone") is not True
+        or settings.get("kanban.dispatch_profiles") != []
     ):
         raise ProfileError("Fallback, tool exposure or secret-redaction policy changed")
     settings.update(route)

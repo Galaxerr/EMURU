@@ -4,7 +4,7 @@ EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately
 with your Telegram bot to find notes, follow links, save Inbox notes, and review
 proposed project or task changes. Conversation history persists across restarts.
 
-**v0.5.1 is a Docker-only, cloud-primary-only development release.** Inference uses
+**v0.5.2 is a Docker-only, cloud-primary-only development release.** Inference uses
 an authenticated LiteLLM gateway with one cloud attempt and no automatic local
 fallback. Permanent-host production certification is a separate milestone.
 
@@ -15,7 +15,9 @@ fallback. Permanent-host production certification is a separate milestone.
 - With an explicitly enabled mutation policy, preview and approve a note creation
   or an exact update under approved roots. The model cannot apply proposals.
 - Plan a new project or continue an existing project with scoped tasks and planned
-  acceptance checks. v0.5.1 prepares specifications; it does not execute code.
+  acceptance checks. Track an applied spec with `/project track <proposal-id>`;
+  inspect native Kanban IDs/status with `/project status <proposal-id>`.
+  Cards remain blocked and unassigned; no code workers run.
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
@@ -96,4 +98,6 @@ runtime, gateway, lifecycle and rollback without a live Telegram poller.
 - [ARCHITECTURE](docs/ARCHITECTURE.md): repository map, state and safety boundaries.
 - [v0.5.1 acceptance](docs/releases/v0.5.1-acceptance.md): owner-confirmed M1 results,
   automated evidence and remaining release gates.
+- [v0.5.2 acceptance](docs/releases/v0.5.2-acceptance.md): native project tracking,
+  pinned contracts and remaining acceptance gates.
 - [Deployment backlog](docs/deployment-backlog.md): future permanent-host setup and recovery tooling.

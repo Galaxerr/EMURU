@@ -41,6 +41,7 @@ _index/
 
 # Private Telegram runtime state (normally outside the repository)
 emuru-telegram/
+emuru-projects/
 queue.sqlite*
 
 # Owner-only live vault binding; normally outside this repository
