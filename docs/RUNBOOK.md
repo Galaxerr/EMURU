@@ -162,6 +162,75 @@ The normal stopped-profile update adds the empty allowlist to older stock
 profiles and refuses an existing nonempty allowlist. No live profile is modified
 by implementation tests.
 
+### Read-only repository scout (v0.5.3)
+
+Scout execution is an explicit local owner action. Telegram tracking and note
+approval do not authorize it. Run the dispatcher as your normal unprivileged
+Docker-capable user against the existing M2 profile. The separate
+`infra/docker/scout.compose.yaml` is opt-in; normal wake/sleep is unchanged.
+It runs fixed first-party inspection code, without model calls or project tooling.
+
+Prepare a private, owner-owned mode-0600 JSON policy outside the repository:
+
+```json
+{
+  "schema": 1,
+  "repository": "sample",
+  "path": "/absolute/path/to/approved-repository",
+  "baseline": "REPLACE_WITH_EXACT_40_CHARACTER_HEAD",
+  "files": ["README.md", "src/app.py"],
+  "tasks": ["REPLACE_WITH_TRACKED_NATIVE_CARD_ID"],
+  "timeout_seconds": 30
+}
+```
+
+Use the task ID from `/project status`, not an ID inferred from note prose.
+Set baseline from `git -C /absolute/path/to/approved-repository rev-parse HEAD`.
+Review every selected file: select no credentials or private notes. Dotfiles,
+secret-key extensions, traversal, symlinks, submodules and linked Git worktrees
+are refused. Files must be committed UTF-8 text, at most 100 selections, 256 KiB
+per file and 2 MiB total. Working-tree edits are excluded. Repository HEAD must
+still match the policy. Changes to task/baseline/selection/budget require explicit
+policy review. No install, test, shell command or remote Git operation is authorized.
+
+Build the current source-verified image through the normal image/update workflow
+first. Scout refuses an absent/mismatched image; it never silently builds or pulls.
+Then run:
+
+```bash
+uv run --frozen python scripts/hermes/scout.py \
+  --home /absolute/path/to/existing/profiles/emuru \
+  --policy /absolute/path/to/private/scout-policy.json \
+  --task t_REPLACE_WITH_NATIVE_CARD_ID
+```
+
+The JSON result distinguishes `done` reconnaissance from `blocked`/`uncertain`.
+Only the new reconnaissance card completes; the coding task remains blocked.
+Reports contain selected file paths, sizes, line counts, SHA-256 hashes, directory
+map and bounded suggested next steps. They contain no source text, semantic review
+or test results. The result includes repository label, exact baseline, report hash,
+native run and attachment IDs. `/project status` shows this evidence separately.
+Reports persist at `<profile-home>/emuru-projects/scout-artifacts/<sha256>.json`;
+back up the whole stopped profile, including board sidecars and artifacts.
+
+Repeat delivery returns the existing card/receipt without another inspection.
+After interruption, inspect the native claim and report files before any operator
+reconciliation. A running/ready scout anywhere on the board prevents another
+claim, even with a changed grant. A blocked scout also prevents new grants until
+the owner independently confirms no scout container is running and reconciles
+the reconnaissance card through native APIs (for example, archives that card).
+The same archived grant is never re-executed. No automatic expiry/reclaim, retries or general
+dispatcher is enabled. A handled failure blocks its exact run. A killed runner
+can leave an uncertain native run even after the bounded worker has exited.
+Do not edit SQLite, reuse stale run IDs or mark code complete to clear the block.
+Full hold/continue/recovery controls belong to M6.
+
+Disposable acceptance (no real profile/vault or provider needed):
+
+```bash
+uv run --frozen python scripts/hermes/scout-check.py
+```
+
 ## Troubleshooting and recovery
 
 | Symptom | Action |

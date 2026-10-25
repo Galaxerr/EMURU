@@ -18,8 +18,28 @@ CLI chat uses the same inference guards, but not Telegram's durable admission.
 control. It validates a bound applied spec receipt, then calls pinned native
 Kanban APIs to create blocked, unassigned cards. `/project status` projects
 native task states and dependency IDs; `/status` keeps its queue/health meaning.
-The model has no board tools. Dispatch profiles are explicitly empty; M2 adds no
-execution worker, execution grant or second scheduling database.
+The model has no board tools. Native automatic dispatch profiles remain empty.
+
+M3 adds an operator-run, one-shot `scripts/hermes/scout.py` dispatcher. A private
+policy authorizes exact tracked task IDs, repository path/label, immutable HEAD,
+selected file paths and a 1..120 second worker budget. It exports bounded committed
+Git blobs without executing project scripts, filters or hooks. The host controls
+Docker; the fixed scout container receives only a read-only snapshot, with no
+network, board, vault, credentials or Docker socket. It has a separate ephemeral
+Hermes home, an unprivileged UID, dropped capabilities and resource limits.
+
+A separate trusted, offline ledger container mounts only the existing native
+board directory. Native APIs create and claim an `emuru-scout` reconnaissance card
+bound to its original tracked task/spec and grant digest. The original task stays
+blocked. No second queue or SQLite schema is added. A host flock permits one
+dispatcher per board; any persisted running/ready/blocked scout prevents new claims.
+The trusted host independently computes expected file metadata, compares the
+worker report, and supplies only a matching report to native attachment/completion
+APIs. Reports are private content-addressed JSON files under the board directory.
+`/project status` distinguishes reconnaissance from coding and checks report hashes.
+Interrupted work is blocked or uncertain; expired claims are never automatically
+reclaimed. The fixed worker and ledger have their own process deadlines, including
+when their Docker client dies. No model capability is qualified by this milestone.
 
 ## Repository map
 
@@ -34,6 +54,7 @@ Paths below are relative to the repository root.
 | `src/emuru/telegram/native.py` | Pinned Hermes/Telegram integration, native sessions, polling and delivery guards |
 | `src/emuru/hermes/` | Shared profile, runtime launch and inference/tool-dispatch guards |
 | `src/emuru/projects/{spec,board}.py` | Bounded planning projection and receipt-bound native Kanban tracking |
+| `src/emuru/projects/{scout,scout_board}.py`, `scripts/hermes/scout.py` | Fixed inspection, native run/evidence fences and owner-operated isolated dispatch |
 | `src/emuru/models/` | Provider configuration, route/qualification contract and bounded gateway behavior |
 | `src/emuru/deployment.py`, `environment.py` | Source identity, stopped-state compatibility and private environment handling |
 | `scripts/hermes/container.py`, `scripts/service/` | Explicit initialization and Docker wake/sleep/status/rollback |
@@ -55,7 +76,7 @@ image; launchers do not install EMURU dependencies into Hermes.
 | `infra/docker/deployment.env` | Generated absolute bind paths and UID/GID; ignored |
 | `$HOME/.local/state/emuru/container/` | Default deployment home: private profile, general state, runtime, route/config, secret copies, Ollama cache, sources and `release.json` |
 | `profiles/emuru/` inside that home | Native DB/session maps/transcripts, queue, health, target/policy and mutation journal |
-| `profiles/emuru/emuru-projects/` | Single native tracking board, SQLite sidecars and serialized binder lock; card bodies retain schema-1 receipt/revision/task bindings |
+| `profiles/emuru/emuru-projects/` | Native board/sidecars, binder/scout locks and private `scout-artifacts/`; schema-1 card bodies retain receipt/revision/task/grant bindings |
 | Separate vault Git repository | Authoritative Markdown and derived `_index/` / `99_System/INDEX.md` |
 | `tests/fixtures/hermes-vault/`, ignored `.runtime/` | Synthetic fixtures and disposable validation state |
 

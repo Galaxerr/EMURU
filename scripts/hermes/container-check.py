@@ -707,6 +707,15 @@ def verify(config_only=False):
         )
         print(
             app(
+                "/opt/hermes/.venv/bin/python",
+                "/opt/emuru/tests/scout_board_case.py",
+                "seed",
+                "/state/scout-board-acceptance",
+            ),
+            flush=True,
+        )
+        print(
+            app(
                 "/opt/emuru/.venv/bin/python",
                 "/opt/emuru/tests/telegram_shutdown_fixture.py",
             ),
@@ -723,6 +732,15 @@ def verify(config_only=False):
                 "/opt/emuru/tests/project_board_case.py",
                 "reopen",
                 "/state/project-board-acceptance",
+            ),
+            flush=True,
+        )
+        print(
+            app(
+                "/opt/hermes/.venv/bin/python",
+                "/opt/emuru/tests/scout_board_case.py",
+                "reopen",
+                "/state/scout-board-acceptance",
             ),
             flush=True,
         )

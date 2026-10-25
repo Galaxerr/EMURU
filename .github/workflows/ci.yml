@@ -28,14 +28,23 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked
 
-      - name: Format with Ruff
-        run: uv run --frozen ruff format --check .
-
-      - name: Verify lint
-        run: uv run --frozen ruff check .
-
       - name: Run tests
         run: uv run --frozen pytest -q
+
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - name: Format with Ruff
+        run: uv run --frozen ruff format --check .
+      - name: Verify lint
+        run: uv run --frozen ruff check .
 
   hermes-baseline:
     name: Hermes baseline contract
@@ -59,12 +68,8 @@ jobs:
           bash -n scripts/service/wake.sh
           bash -n scripts/service/sleep.sh
           bash -n scripts/service/status.sh
-      - name: Validate Telegram contract offline
-        run: uv run --frozen python scripts/hermes/telegram.py --offline
       - name: Validate configuration contract
         run: python3 scripts/hermes/baseline.py
-      - name: Validate selected model route
-        run: uv run --frozen python scripts/hermes/vault-profile.py --offline
       - name: Validate recorded runtime identity
         shell: bash
         run: |
@@ -88,30 +93,174 @@ jobs:
           print("Runtime identity: PASS")
           PY
 
-  container-foundation:
-    name: Disposable bounded gateway contract
+  hermes-offline:
+    name: Offline Telegram and vault contracts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - name: Validate Telegram contract offline
+        run: uv run --frozen python scripts/hermes/telegram.py --offline
+      - name: Validate selected model route
+        run: uv run --frozen python scripts/hermes/vault-profile.py --offline
+
+  qualification:
+    name: Deterministic qualification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv python install 3.12
       - run: uv sync --locked
       - name: Deterministic qualification fixture
         run: uv run --frozen python scripts/hermes/qualify.py --fixture
+
+  container-config:
+    name: Compose configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv python install 3.12
+      - run: uv sync --locked
       - name: Compose validation with disposable secrets
         run: uv run --frozen python scripts/hermes/container-check.py --config-only
-      - name: Fetch pinned infrastructure
-        run: |
-          docker image inspect ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839 >/dev/null 2>&1 || docker pull ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
-          docker image inspect ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687 >/dev/null 2>&1 || docker pull ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
+
+  container-build:
+    name: Build shared acceptance image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv python install 3.12
+      - run: uv sync --locked
       - name: Build application and pinned native runtime
         run: |
           uv run --frozen python - <<'PYTHON'
           import os
           import runpy
           module = runpy.run_path("scripts/hermes/container.py")
-          _, image = module["ensure_image"]()
+          source, image = module["ensure_image"]()
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"EMURU_IMAGE_TAG=emuru:local-{source}\n")
+          PYTHON
+      - name: Export verified image
+        shell: bash
+        run: docker save "$EMURU_IMAGE_TAG" | gzip -1 > "$RUNNER_TEMP/emuru-image.tar.gz"
+      # act 0.2.89 supports the v4 artifact protocol.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emuru-acceptance-image
+          path: ${{ runner.temp }}/emuru-image.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  container-foundation:
+    name: Disposable bounded gateway contract
+    needs: container-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: emuru-acceptance-image
+          path: ${{ runner.temp }}/emuru-image
+      - name: Load and verify acceptance image
+        run: |
+          docker load --input "$RUNNER_TEMP/emuru-image/emuru-image.tar.gz"
+          uv run --frozen python - <<'PYTHON'
+          import os
+          import runpy
+          _, image = runpy.run_path("scripts/hermes/container.py")["ensure_image"](build=False)
           with open(os.environ["GITHUB_ENV"], "a") as output:
               output.write(f"EMURU_TEST_IMAGE={image}\n")
           PYTHON
-      - name: Native contracts, lifecycle and Docker rollback
-        run: uv run --frozen python scripts/hermes/container-check.py
+      - name: Fetch pinned infrastructure
+        run: |
+          docker image inspect ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839 >/dev/null 2>&1 || docker pull ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
+          docker image inspect ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687 >/dev/null 2>&1 || docker pull ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
+      - name: Native container contracts
+        run: uv run --frozen python -c 'import runpy; runpy.run_path("scripts/hermes/container-check.py")["verify"]()'
+
+  lifecycle-acceptance:
+    name: Wake, update and rollback
+    needs: container-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: emuru-acceptance-image
+          path: ${{ runner.temp }}/emuru-image
+      - name: Load and verify acceptance image
+        run: |
+          docker load --input "$RUNNER_TEMP/emuru-image/emuru-image.tar.gz"
+          uv run --frozen python - <<'PYTHON'
+          import os
+          import runpy
+          _, image = runpy.run_path("scripts/hermes/container.py")["ensure_image"](build=False)
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"EMURU_TEST_IMAGE={image}\n")
+          PYTHON
+      - name: Fetch pinned infrastructure
+        run: |
+          docker image inspect ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839 >/dev/null 2>&1 || docker pull ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839
+          docker image inspect ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687 >/dev/null 2>&1 || docker pull ollama/ollama@sha256:1bef639749741b375e9a1eb2c1346fb57ce52f5432de1f74846e44ccc18e1687
+      - name: Independent lifecycle acceptance
+        run: uv run --frozen python scripts/hermes/wake-check.py
+
+  scout-acceptance:
+    name: Isolated read-only scout acceptance
+    needs: container-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Install Python accessible to the acceptance user
+        run: |
+          export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/scout-python"
+          echo "UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR" >> "$GITHUB_ENV"
+          uv python install 3.12
+      - run: uv sync --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: emuru-acceptance-image
+          path: ${{ runner.temp }}/emuru-image
+      - name: Load and verify acceptance image
+        run: |
+          docker load --input "$RUNNER_TEMP/emuru-image/emuru-image.tar.gz"
+          uv run --frozen python - <<'PYTHON'
+          import os
+          import runpy
+          _, image = runpy.run_path("scripts/hermes/container.py")["ensure_image"](build=False)
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"EMURU_TEST_IMAGE={image}\n")
+          PYTHON
+      - name: Scout acceptance
+        run: |
+          mkdir -p .runtime
+          if [ "$(id -u)" -eq 0 ]; then
+            scout_uid=$(id -u nobody)
+            scout_gid=$(id -g nobody)
+            # Never change ownership of a host user's bind-mounted runtime directory.
+            test "$(stat -c %u .runtime)" -eq 0
+            install -d -o "$scout_uid" -g "$scout_gid" -m 700 .runtime
+            scout_home=$(mktemp -d "$RUNNER_TEMP/scout-home.XXXXXX")
+            chown "$scout_uid:$scout_gid" "$scout_home"
+            trap 'rm -rf -- "$scout_home"' EXIT
+            HOME="$scout_home" setpriv \
+              --reuid="$scout_uid" --regid="$scout_gid" \
+              --groups="$(stat -c %g /var/run/docker.sock)" \
+              .venv/bin/python scripts/hermes/scout-check.py
+          else
+            uv run --frozen python scripts/hermes/scout-check.py
+          fi

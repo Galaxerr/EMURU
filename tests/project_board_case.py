@@ -267,6 +267,28 @@ def run(folder, reopen=False):
     archived = command("/project track " + identity)
     assert "native archived" in archived
     assert "parents: " + cards[0].id in archived
+    from emuru.projects.scout import digest
+    from emuru.projects.scout_board import claim as scout_claim
+    from emuru.projects.scout_board import finish as scout_finish
+
+    report = {"repository": "synthetic", "baseline": "e" * 40, "files": []}
+    grant = {
+        "repository_id": "a" * 64,
+        "source_task": cards[1].id,
+        "repository": "synthetic",
+        "baseline": "e" * 40,
+        "files": ["app.py"],
+        "timeout_seconds": 10,
+        "report_sha256": digest(report),
+    }
+    scouting = scout_claim(home, ROOT, grant)
+    scout_finish(
+        home, ROOT, {"task": scouting["task"], "run": scouting["run"], "report": report}
+    )
+    visible = command("/project status " + identity)
+    assert "read-only scout done" in visible and digest(report) in visible
+    assert "baseline: " + "e" * 40 in visible
+    assert command("/project track " + identity) == visible
     (vault / "10_Projects/Sample.md").write_bytes(before + b"\nHuman edit\n")
     refused(lambda: command("/project track " + identity), "stale")
     assert "Note changed" in command("/project status " + identity)

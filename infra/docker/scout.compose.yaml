@@ -1,0 +1,46 @@
+name: emuru-scout
+services:
+  scout:
+    profiles: [scout]
+    image: emuru:latest
+    user: "1000:1000"
+    entrypoint: [/opt/hermes/.venv/bin/python, -I, -c]
+    command: ["import sys; sys.path.insert(0, '/opt/emuru/src'); from emuru.projects.scout import worker_main; worker_main()"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 16
+    mem_limit: 128m
+    cpus: 1
+    restart: "no"
+    stop_grace_period: 2s
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777"]
+    environment:
+      HOME: /tmp/emuru-scout
+      HERMES_HOME: /tmp/emuru-scout
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes: []
+    logging: {driver: none}
+  ledger:
+    profiles: [scout]
+    image: emuru:latest
+    user: "1000:1000"
+    entrypoint: [/opt/hermes/.venv/bin/python, -I, -c]
+    command: ["import sys; sys.path[:0] = ['/opt/emuru/src', '/opt/hermes']; from emuru.projects.scout_board import main; main()"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 256m
+    cpus: 1
+    restart: "no"
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777"]
+    environment:
+      HOME: /tmp/emuru-scout-ledger
+      HERMES_HOME: /tmp/emuru-scout-ledger
+      HERMES_DISABLE_LAZY_INSTALLS: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes: []
+    logging: {driver: none}

@@ -204,7 +204,7 @@ def project_command(home, vault, root, text, owner, bot):
             cards = kb.list_tasks(db, tenant=project, include_archived=True)
         lines = [
             f"Project: {preview['path']}",
-            "Tracking only; execution not authorized. No dispatcher workers enabled.",
+            "Tracking does not authorize execution. Native automatic dispatch remains disabled.",
             f"Approved revision: {revision}",
         ]
         if not preview["current"]:
@@ -220,13 +220,28 @@ def project_command(home, vault, root, text, owner, bot):
             lines.append(
                 "Tracked cards belong to another spec revision; explicit reconciliation required."
             )
-        elif cards and len(cards) < len(tasks):
+        elif cards and sum(
+            "scout" not in json.loads(card.body) for card in cards
+        ) < len(tasks):
             lines.append(
                 "Partial task set. Repeat /project track with this receipt to fill missing cards."
             )
         for card in cards:
             parents = ", ".join(kb.parent_ids(db, card.id)) or "none"
             binding = json.loads(card.body)
+            if "scout" in binding:
+                from emuru.projects.scout_board import status
+
+                report = status(kb, db, card, home)
+                lines.append(
+                    f"{card.id}: read-only scout {report['status']}; source task: {binding['scout']['source_task']}"
+                )
+                if "evidence" in report:
+                    evidence = report["evidence"]
+                    lines.append(
+                        f"Repository: {evidence['repository']}; baseline: {evidence['baseline']}; report SHA-256: {evidence['sha256']}"
+                    )
+                continue
             lines.append(
                 f"{card.id} ({binding['task']['id']}): native {card.status}; parents: {parents}"
             )

@@ -330,7 +330,7 @@ def test_host_regressions_have_one_ci_owner():
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     assert "if" not in workflow["jobs"]["quality"]
     commands = [
-        shlex.split(step.get("run", ""))
+        shlex.split(step.get("run", ""), comments=True)
         for job in workflow["jobs"].values()
         for step in job["steps"]
     ]
