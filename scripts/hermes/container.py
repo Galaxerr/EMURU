@@ -457,6 +457,7 @@ def ensure_image(root=None, *, build=True):
             identity,
         ],
         check=True,
+        stdout=subprocess.DEVNULL,
     )
     return identity, image
 

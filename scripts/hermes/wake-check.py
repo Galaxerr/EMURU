@@ -243,6 +243,9 @@ def verify(*, native_checked=False):
             profile = Path(values["EMURU_PROFILE"])
             cfg = yaml.safe_load((profile / "config.yaml").read_text())
             cfg["mcp_servers"]["vault"]["tools"]["include"].remove("vault_propose")
+            cfg["mcp_servers"]["vault"]["tools"]["include"].remove(
+                "vault_proposal_status"
+            )
             write_private(profile / "config.yaml", yaml.safe_dump(cfg))
             preserved = {
                 p: hashlib.sha256(p.read_bytes()).hexdigest()

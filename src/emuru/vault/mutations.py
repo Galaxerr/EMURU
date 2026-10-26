@@ -12,7 +12,7 @@ import stat
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 _DIRECTORIES = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -480,9 +480,52 @@ def activate_request(home, identity, queue_path, bot, update_id):
         db.commit()
 
 
-def authenticated_request(home, vault_root):
+@contextmanager
+def _read_database(path):
+    """Read a stable private snapshot without SQLite touching source sidecars."""
+    from emuru.telegram.queue import QueueDiagnosticsError, _diagnostic_snapshot
+
+    with directory(path.parent) as parent:
+        private_directory(parent)
+        pinned = Path(f"/proc/self/fd/{parent}") / path.name
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            try:
+                fd = os.open(
+                    path.name + suffix,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=parent,
+                )
+            except FileNotFoundError:
+                if not suffix:
+                    raise
+                continue
+            try:
+                regular(fd, private=True)
+                if suffix == "-journal" and os.fstat(fd).st_size:
+                    raise ValueError("Database recovery required before lookup.")
+            finally:
+                os.close(fd)
+        try:
+            with (
+                _diagnostic_snapshot(pinned) as snapshot,
+                closing(
+                    sqlite3.connect(snapshot.as_uri() + "?mode=ro", uri=True)
+                ) as db,
+            ):
+                db.execute("PRAGMA query_only=ON")
+                yield db
+        except QueueDiagnosticsError:
+            raise ValueError("Database changed during lookup; query again.") from None
+
+
+def authenticated_request(home, vault_root, *, read_only=False):
     """MCP reads private adapter state and verifies the still-live durable claim."""
-    with journal(home) as db:
+    reader = (
+        _read_database(home / "emuru-mutations/mutations.sqlite")
+        if read_only
+        else journal(home)
+    )
+    with reader as db:
         row = db.execute(
             "SELECT request_id,queue_path,bot,update_id FROM active_request WHERE slot=1"
         ).fetchone()
@@ -498,7 +541,12 @@ def authenticated_request(home, vault_root):
             regular(fd, private=True)
         finally:
             os.close(fd)
-    with sqlite3.connect(Path(queue_path).as_uri() + "?mode=ro", uri=True) as queue:
+    reader = (
+        _read_database(Path(queue_path))
+        if read_only
+        else sqlite3.connect(Path(queue_path).as_uri() + "?mode=ro", uri=True)
+    )
+    with reader as queue:
         claim = queue.execute(
             "SELECT user_id,chat_id FROM updates WHERE bot_id=? AND update_id=? AND state='started'",
             (bot, update_id),
@@ -511,6 +559,58 @@ def authenticated_request(home, vault_root):
     ):
         raise ValueError("Authenticated request claim is invalid.")
     return identity
+
+
+def proposal_status(home, vault_root, proposal_id=None, *, latest=False):
+    """Owner-scoped receipt-first lifecycle lookup; no expiry or recovery writes."""
+    require_authority(home, vault_root)
+    if proposal_id is not None and latest:
+        raise ValueError("Choose a proposal ID or latest, not both.")
+    request_id = authenticated_request(home, vault_root, read_only=True)
+    with _read_database(home / "emuru-mutations/mutations.sqlite") as db:
+        owner, bot, vault = db.execute(
+            "SELECT owner,bot,vault FROM owner_requests WHERE id=?", (request_id,)
+        ).fetchone()
+        if vault != os.path.abspath(vault_root):
+            raise ValueError("Authenticated request belongs to another vault.")
+        if proposal_id is not None:
+            _check_owner(db, proposal_id, vault_root, owner, bot)
+            identities = [(proposal_id,)]
+        else:
+            identities = db.execute(
+                """SELECT p.id FROM proposals p
+                JOIN proposal_bindings b ON b.proposal_id=p.id
+                JOIN owner_requests r ON r.id=b.request_id
+                WHERE r.owner=? AND r.bot=? AND r.vault=? AND p.vault=?
+                ORDER BY p.rowid DESC""",
+                (owner, bot, vault, vault),
+            ).fetchall()
+            if latest:
+                identities = identities[:1]
+        results = []
+        for (identity,) in identities:
+            if _proposal(db, identity)["vault"] != vault:
+                raise ValueError(
+                    "Proposal has no matching authenticated owner/vault binding."
+                )
+            preview = _preview(db, identity)
+            outcome = preview["outcome"]
+            confirmed = _receipt(db, identity) is not None
+            state = {"proposed": "pending", "quarantined": "uncertain"}.get(
+                outcome, outcome
+            )
+            if proposal_id is None and not latest and state != "pending":
+                continue
+            results.append(
+                {
+                    "proposal_id": identity,
+                    "path": preview["path"],
+                    "state": state,
+                    "outcome": outcome,
+                    "receipt_confirmed": confirmed,
+                }
+            )
+        return {"proposals": results}
 
 
 def request_previews(home, identity):

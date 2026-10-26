@@ -136,6 +136,7 @@ async def test_spec_creation_update_replay_and_readback(tmp_path, spec):
             "vault_neighbors",
             "vault_write",
             "vault_propose",
+            "vault_proposal_status",
         }
         found = await client.call_tool("vault_search", {"query": "Sum prices"})
         assert found.structured_content["results"] == []

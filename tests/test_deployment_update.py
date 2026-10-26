@@ -496,8 +496,14 @@ def test_systemd_starting_during_update_blocks_worker_cutover(tmp_path, monkeypa
     assert not any("--profile" in command for command in calls)
 
 
-def test_owner_approved_private_policy_survives_normal_wake_sync(managed):
-    home, _ = managed
+@pytest.mark.parametrize("legacy_proposals", [False, True])
+def test_owner_approved_private_policy_survives_normal_wake_sync(
+    managed, legacy_proposals
+):
+    home, config = managed
+    if legacy_proposals:
+        config["mcp_servers"]["vault"]["tools"]["include"].append("vault_propose")
+        write_private(home / "config.yaml", yaml.safe_dump(config))
     policy = {
         "enabled": True,
         "roots": ["10_Projects", "20_Areas", "30_Resources"],
@@ -520,7 +526,11 @@ def test_owner_approved_private_policy_survives_normal_wake_sync(managed):
     }
     for _ in range(2):
         deployment.sync_profile(ROOT, home, apply=True)
-        assert profile.vault_tools(home) == [*profile.TOOLS, "vault_propose"]
+        assert profile.vault_tools(home) == [
+            *profile.TOOLS,
+            "vault_proposal_status",
+            "vault_propose",
+        ]
         actual = yaml.safe_load((home / "config.yaml").read_text())
         assert actual["mcp_servers"]["vault"]["tools"][
             "include"

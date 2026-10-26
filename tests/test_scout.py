@@ -243,6 +243,56 @@ def test_verified_report_reaches_only_claimed_run():
     assert backend.calls[0][1]["grant"]["report_sha256"] == scout.digest(report)
 
 
+def test_dispatcher_stdout_is_one_json_result(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    launcher = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
+    identity = "a" * 64
+    monkeypatch.setitem(
+        launcher["ensure_image"].__globals__, "source_identity", lambda _: identity
+    )
+
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "Id": "sha256:fixture",
+                        "Config": {"Labels": {"io.emuru.source": identity}},
+                    }
+                ),
+            )
+        assert command[:2] == ["docker", "run"] and kwargs["check"]
+        if kwargs.get("stdout") != subprocess.DEVNULL:
+            print(identity)
+        return SimpleNamespace(returncode=0)
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    (home / "emuru-projects").mkdir(mode=0o700)
+    result = {"status": "done", "run": None, "evidence": {"run": 1}}
+    scope = RUNNER["main"].__globals__
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(runpy, "run_path", lambda _: launcher)
+    monkeypatch.setattr(
+        scope["sys"],
+        "argv",
+        ["scout.py", "--home", str(home), "--policy", "unused", "--task", "t_1"],
+    )
+    monkeypatch.setattr(scope["signal"], "signal", lambda *_: None)
+    monkeypatch.setattr(scope["os"], "umask", lambda _: None)
+    monkeypatch.setitem(scope, "load_policy", lambda *_: {})
+    monkeypatch.setitem(scope, "snapshot", lambda *_: {})
+    monkeypatch.setitem(scope, "DockerScout", lambda *_: None)
+    monkeypatch.setitem(scope, "execute", lambda *_: result)
+    assert RUNNER["main"]() == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == result
+    assert captured.out == scout.encoded(result).decode() + "\n"
+    assert captured.err == ""
+
+
 def test_compose_worker_has_only_snapshot_no_board_or_secret_mount(
     tmp_path, monkeypatch
 ):

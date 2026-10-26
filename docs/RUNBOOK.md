@@ -204,12 +204,17 @@ uv run --frozen python scripts/hermes/scout.py \
   --task t_REPLACE_WITH_NATIVE_CARD_ID
 ```
 
-The JSON result distinguishes `done` reconnaissance from `blocked`/`uncertain`.
+Successful dispatcher stdout is one JSON document followed by a newline; image
+verification must not add its identity confirmation to stdout. Refusal diagnostics
+go to stderr with a nonzero exit. The result distinguishes `done` reconnaissance
+from `blocked`/`uncertain`.
 Only the new reconnaissance card completes; the coding task remains blocked.
 Reports contain selected file paths, sizes, line counts, SHA-256 hashes, directory
 map and bounded suggested next steps. They contain no source text, semantic review
 or test results. The result includes repository label, exact baseline, report hash,
-native run and attachment IDs. `/project status` shows this evidence separately.
+native run and attachment IDs under `evidence`. Top-level `run` is the current
+active native run, so it is `null` after completion; `evidence.run` retains the
+completed run ID. `/project status` shows this evidence separately.
 Reports persist at `<profile-home>/emuru-projects/scout-artifacts/<sha256>.json`;
 back up the whole stopped profile, including board sidecars and artifacts.
 

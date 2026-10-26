@@ -64,7 +64,7 @@ def vault_tools(home=None):
 
     home = profile_home() if home is None else home
     if home.is_dir() and load_policy(home)["enabled"]:
-        return [*TOOLS, "vault_propose"]
+        return [*TOOLS, "vault_proposal_status", "vault_propose"]
     return list(TOOLS)
 
 

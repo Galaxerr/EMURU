@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from emuru.vault import indexer as index
@@ -119,6 +120,36 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         return _call(index.vault_write, vault_root, path, content)
 
     if proposal_home is not None:
+
+        @mcp.tool(
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False)
+        )
+        def vault_proposal_status(
+            proposal_id: str | None = None, latest: bool = False
+        ) -> dict[str, Any]:
+            """Read authoritative current proposal lifecycle for the authenticated owner.
+
+            Call freshly before reporting current approval/application/cancellation
+            status; historical vault_propose results cannot override this lookup.
+            Supply proposal_id for one proposal, latest=true for the last created
+            proposal, or neither to list only currently pending approvals.
+            Returns proposals with proposal_id, path, state, outcome and
+            receipt_confirmed. State pending means proposed without a receipt;
+            applied/cancelled/expired are receipt-confirmed. prepared is unresolved,
+            index_pending means saved; indexing pending, uncertain means quarantined,
+            and not_applied means recovery confirmed no application.
+            No creation, approval, application, cancellation, expiry, indexing or
+            recovery occurs. Missing authentication or unavailable state is an error,
+            never evidence of pending status. Owner/bot/vault come from trusted
+            transport, never arguments. No draft content or approval token is returned.
+            """
+            return _call(
+                mutations.proposal_status,
+                proposal_home,
+                vault_root,
+                proposal_id,
+                latest=latest,
+            )
 
         @mcp.tool(
             description=(

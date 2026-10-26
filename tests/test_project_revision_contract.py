@@ -42,6 +42,7 @@ async def test_registered_schema_explains_revision_copy_and_bounded_recovery(tmp
             "vault_neighbors",
             "vault_write",
             "vault_propose",
+            "vault_proposal_status",
         }
         schema = tools["vault_propose"].input_schema
         assert set(schema["properties"]) == {

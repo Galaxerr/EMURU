@@ -46,6 +46,9 @@ def test_rollback_fixture_reuses_built_runtime(tmp_path, monkeypatch):
                     }
                 ),
             )
+        if command[:2] == ["docker", "run"]:
+            assert kwargs["check"] is True
+            assert kwargs["stdout"] == module["subprocess"].DEVNULL
         return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(module["subprocess"], "run", run)

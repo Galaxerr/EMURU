@@ -256,8 +256,17 @@ def _sync_profile(root, home, *, apply=False):
     if add_dispatch_fence:
         config.setdefault("kanban", {})["dispatch_profiles"] = []
     previous = profile.expected_server(root, tools=profile.TOOLS)
+    compatible = [{"vault": server}, {"vault": previous}]
+    if "vault_proposal_status" in server["tools"]["include"]:
+        compatible.append(
+            {
+                "vault": profile.expected_server(
+                    root, tools=[*profile.TOOLS, "vault_propose"]
+                )
+            }
+        )
     registered = get("mcp_servers")
-    if registered not in ({"vault": server}, {"vault": previous}):
+    if registered not in compatible:
         raise ValueError("Customized MCP registration; explicit review required")
     profile.verify_profile(settings, registered["vault"], get)
     updated = registered != {"vault": server} or add_dispatch_fence
