@@ -49,6 +49,16 @@ def test_projection_is_bounded_planning_text(spec):
         assert f"## {heading}\n" in markdown
 
 
+@pytest.mark.parametrize("field", ["command", "expected_result"])
+@pytest.mark.parametrize("validate", [validate_spec, spec_markdown])
+def test_projection_rejects_separator_in_acceptance_fields(spec, field, validate):
+    check = spec["tasks"][0]["acceptance"][0]
+    check["command"] = "run-check"
+    check[field] = "prints ; expected: OK"
+    with pytest.raises(ValueError, match=field):
+        validate(spec)
+
+
 def test_model_guidance_uses_the_existing_renderer_format(spec):
     """Check published guidance and its example, not arbitrary model output."""
     guidance = (

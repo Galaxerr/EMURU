@@ -73,8 +73,9 @@ def validate_spec(spec):
         _text(task["description"], "task.description")
         for check in _items(task["acceptance"], "acceptance", required=True):
             _fields(check, ("command", "expected_result"))
-            _text(check["command"], "command")
-            _text(check["expected_result"], "expected_result")
+            for field in ("command", "expected_result"):
+                if "; expected:" in _text(check[field], field):
+                    raise ValueError(f"Invalid spec field: {field}")
     return spec
 
 

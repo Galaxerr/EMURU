@@ -14,10 +14,39 @@ from emuru.projects.spec import spec_markdown
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_approved_spec_task_projection():
-    content = spec_markdown(SPEC)
-    assert spec_tasks(content) == SPEC["tasks"]
-    assert spec_tasks(content.replace("\n", "\r\n")) == SPEC["tasks"]
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("python -m unittest", "Zero exit"),
+        ("run-check; print-summary", "Zero exit; no errors"),
+        ("run-check;expected: literal", "prints ; Expected: OK"),
+    ],
+)
+def test_approved_spec_task_projection(command, expected):
+    spec = copy.deepcopy(SPEC)
+    spec["tasks"][0]["acceptance"][0] = {
+        "command": command,
+        "expected_result": expected,
+    }
+    content = spec_markdown(spec)
+    assert spec_tasks(content) == spec["tasks"]
+    assert spec_tasks(content.replace("\n", "\r\n")) == spec["tasks"]
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        "run-check expected: OK",
+        "run-check; expected: prints ; expected: OK",
+        "run-check; expected: extra; expected: prints ; expected: OK",
+    ],
+)
+def test_approved_markdown_rejects_ambiguous_planned_checks(check):
+    content = spec_markdown(SPEC).replace(
+        "python -m unittest; expected: Zero exit", check
+    )
+    with pytest.raises(ValueError):
+        spec_tasks(content)
 
 
 @pytest.mark.parametrize(

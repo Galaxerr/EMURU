@@ -188,7 +188,21 @@ def run(folder, reopen=False):
         "---\ntitle: Sample\ntype: project\nsummary: Tracking test\n---\n"
         + spec_markdown(SPEC)
     )
-    preview = proposal(content)
+    malformed_content = "run-check; expected: prints ; expected: OK".join(
+        content.rsplit("python -m unittest; expected: Zero exit", 1)
+    )
+    preview = proposal(malformed_content)
+    refused(
+        lambda: command("/project track " + preview["proposal_id"]), "applied approved"
+    )
+    apply(preview)
+    refused(
+        lambda: command("/project track " + preview["proposal_id"]),
+        "planned-check format",
+    )
+    with board.project_board(home, ROOT) as (kb, db):
+        assert kb.list_tasks(db, include_archived=True) == []
+    preview = proposal(malformed_content, replacement=content)
     identity = preview["proposal_id"]
     refused(lambda: command("/project track " + identity), "applied approved")
     apply(preview)
@@ -302,6 +316,17 @@ def run(folder, reopen=False):
         "/project status " + changed["proposal_id"]
     )
     # Restore synthetic bytes only, so the prior receipt remains usable for reopen.
+    (vault / "10_Projects/Sample.md").write_bytes(before)
+    with board.project_board(home, ROOT) as (kb, db):
+        existing_cards = kb.list_tasks(db, include_archived=True)
+    malformed = proposal(content, replacement=malformed_content)
+    apply(malformed)
+    refused(
+        lambda: command("/project track " + malformed["proposal_id"]),
+        "planned-check format",
+    )
+    with board.project_board(home, ROOT) as (kb, db):
+        assert kb.list_tasks(db, include_archived=True) == existing_cards
     (vault / "10_Projects/Sample.md").write_bytes(before)
     target = home / "vault-target.json"
     target.write_text('{"mode":"synthetic"}')

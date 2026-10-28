@@ -39,7 +39,7 @@ def spec_tasks(content):
         )
         if task:
             tasks.append({"id": task[2], "description": task[1], "acceptance": []})
-        elif check and tasks:
+        elif check and tasks and line.count("; expected:") == 1:
             tasks[-1]["acceptance"].append(
                 {"command": check[1], "expected_result": check[2]}
             )
