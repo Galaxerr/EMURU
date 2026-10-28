@@ -1,5 +1,6 @@
 --env-file /dev/null
 --secret-file /dev/null
 --pull=false
+--env ACTIONS_ARTIFACT_UPLOAD_CONCURRENCY=1
 --artifact-server-path .runtime/act-artifacts
 --artifact-server-addr 127.0.0.1

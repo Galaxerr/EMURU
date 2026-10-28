@@ -155,6 +155,7 @@ class NativeTelegram:
         self.turn_timeout = turn_timeout
         self.queue, self.root = queue, root
         self._app, self._runner = None, None
+        self._active_task = self._active_turn = None
         self.mutation_target = None
         if queue.path.parent.name == "emuru-telegram":
             from emuru.vault.mutations import load_policy, require_authority
@@ -229,6 +230,11 @@ class NativeTelegram:
             deadline=time.monotonic() + self.turn_timeout,
         )
         token = self._current.set(turn)
+        if (
+            self._active_task is not None
+            and asyncio.current_task() is self._active_task
+        ):
+            self._active_turn = turn
         try:
             yield turn
         finally:
@@ -336,11 +342,23 @@ class NativeTelegram:
             mutations.record_preview(home, identity, digest, complete=True)
 
     async def execute(self, payload, session_key):
+        self._active_task = asyncio.current_task()
         try:
             async with asyncio.timeout(self.turn_timeout):
                 return await self._execute(payload, session_key)
         except TimeoutError:
             return TurnResult(False, "turn_timeout", interrupted=True)
+        finally:
+            self._active_task = self._active_turn = None
+
+    def interrupt(self):
+        """Close active authority before cancellation can yield to detached work."""
+        task = self._active_task
+        if task is None or task.done() or task.cancelling():
+            return False
+        if self._active_turn is not None:
+            self._active_turn.open = False
+        return task.cancel()
 
     async def _execute(self, payload, session_key):
         from emuru.vault import mutations

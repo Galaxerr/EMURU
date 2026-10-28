@@ -662,7 +662,12 @@ class TelegramQueue:
                         for row in rows
                         if not local_status
                         or row["text"].split(maxsplit=1)[0].lower()
-                        in {"/status", "/status@" + bot_username.lower()}
+                        in {
+                            "/status",
+                            "/status@" + bot_username.lower(),
+                            "/stop",
+                            "/stop@" + bot_username.lower(),
+                        }
                     ),
                     None,
                 )

@@ -21,7 +21,7 @@ class TelegramWorker:
     """Adapters own execution; this module owns admission and durable outcomes.
 
     Execution supplies identity(), wait_ready(), route(payload),
-    execute(payload, session_key), and notice(update_id, status=None).
+    execute(payload, session_key), interrupt(), and notice(update_id, status=None).
     The optional health callback owns process reporting, never queue recovery.
     """
 
@@ -90,11 +90,25 @@ class TelegramWorker:
         self._health(None)
 
     async def local_status(self):
+        """Drain durable immediate controls without waiting for active execution."""
         bot, username = self.execution.identity()
         while not self._stopping and (
             row := self.queue.claim(bot, username, local_status=True)
         ):
             try:
+                if row["text"].split(maxsplit=1)[0].split("@")[0] == "/stop":
+                    interrupted = self.execution.interrupt()
+                    self.retired |= interrupted
+                    await self.execution.notice(
+                        row["update_id"],
+                        {
+                            "stop": "interrupted" if interrupted else "idle",
+                            "gateway_restart_required": self.retired,
+                            "effects": "Completed actions were not rolled back.",
+                        },
+                    )
+                    self.queue.finish(row["sequence"], True)
+                    continue
                 health = self.health_error or (
                     "consumer_running"
                     if self._task and not self._task.done() and self._running.is_set()
@@ -145,11 +159,14 @@ class TelegramWorker:
             raise
         except Exception as error:  # noqa: BLE001 -- terminal without replay
             logger.warning("EMURU Telegram turn failed; it will not be replayed")
-            self.queue.finish(
-                row["sequence"], False, queue_module.safe_error_code(error)
-            )
+            if self.retired:
+                self.queue.mark_interrupted(row["sequence"])
+            else:
+                self.queue.finish(
+                    row["sequence"], False, queue_module.safe_error_code(error)
+                )
         else:
-            if outcome.interrupted:
+            if outcome.interrupted or self.retired:
                 self.retired = True
                 self.queue.mark_interrupted(row["sequence"])
             else:

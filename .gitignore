@@ -38,6 +38,7 @@ _index/
 # Hermes
 .hermes/
 .runtime/
+.scratch/
 
 # Private Telegram runtime state (normally outside the repository)
 emuru-telegram/

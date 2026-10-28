@@ -547,12 +547,19 @@ def test_native_commands_ignore_interrupted_proposal_request(
     async def check():
         for uid in (101, 102):
             b.queue.stage(7, [raw(uid, command)], "emuru")
-            assert await b.bridge.once()
-            assert b.network[-1][1]["text"].split("\n")[0] == (
-                "New session started. Previous conversation preserved."
-                if command.startswith("/new")
-                else "native command"
-            )
+            worked = await b.bridge.once()
+            if command == "/stop":
+                assert not worked
+                status = json.loads(b.network[-1][1]["text"].split(": ", 1)[1])
+                assert status["stop"] == "idle"
+                assert not status["gateway_restart_required"]
+            else:
+                assert worked
+                assert b.network[-1][1]["text"].split("\n")[0] == (
+                    "New session started. Previous conversation preserved."
+                    if command.startswith("/new")
+                    else "native command"
+                )
             assert b.queue.stage(7, [raw(uid, command)], "emuru") == ["completed"]
             assert not await b.bridge.once()
         assert runner.resets == (2 if command.startswith("/new") else 0)
@@ -728,6 +735,138 @@ def test_local_status_bypasses_active_turn_and_keeps_duplicate_receipt(boundary)
         assert len(b.network) == 1
         b.release.set()
         await b.bridge.stop()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("command", ["/stop", "/stop@emuru"])
+@pytest.mark.parametrize("suppress_cancel", [False, True])
+@pytest.mark.parametrize("distinct_stop", [False, True])
+def test_owner_stop_interrupts_blocked_turn_and_preserves_pending(
+    boundary, command, suppress_cancel, distinct_stop
+):
+    b = boundary
+    if suppress_cancel:
+        native = b.adapter.runner._handle_message_with_agent
+
+        async def ignores_cancel(event):
+            try:
+                return await native(event)
+            except asyncio.CancelledError:
+                return "must not escape"
+
+        b.adapter.runner._handle_message_with_agent = ignores_cancel
+
+    async def check():
+        b.queue.stage(7, [raw(1, "wait"), raw(2, "second")])
+        await b.adapter.connect()
+        await asyncio.wait_for(b.started.wait(), 1)
+        try:
+            b.bot.batch = [
+                b.Update(raw(3, command)),
+                b.Update(raw(4 if distinct_stop else 3, command)),
+            ]
+            await b.bot.get_updates()
+            await b.app.process_update(b.bot.batch[0])
+            await b.app.process_update(b.bot.batch[1])
+            done, _ = await asyncio.wait({b.bridge._task}, timeout=1)
+            assert done, "Stop must interrupt before release or the owner deadline"
+            assert not b.release.is_set()
+            assert b.queue.status() == {
+                "interrupted": 1,
+                "queued": 1,
+                "completed": 2 if distinct_stop else 1,
+            }
+            assert b.bridge.retired and b.effects == ["wait"]
+            assert len(b.network) == (2 if distinct_stop else 1)
+            for _, data in b.network:
+                status = json.loads(data["text"].split(": ", 1)[1])
+                assert status["gateway_restart_required"]
+            with pytest.raises(RuntimeError, match="restart"):
+                await b.bridge.once()
+            b.release.set()
+            await asyncio.sleep(0)
+            assert all(data.get("text") != "native reply" for _, data in b.network)
+        finally:
+            b.release.set()
+            await b.bridge.stop()
+
+        recovered = TelegramQueue(
+            b.queue.path, b.queue.settings, 42, clock=lambda: 100000
+        )
+        calls = []
+
+        async def execute(payload):
+            calls.append(payload["update_id"])
+            return TurnResult(True)
+
+        try:
+            recovered.recover()
+            assert recovered.stage(7, [raw(1, "wait"), raw(3, command)], "emuru") == [
+                "interrupted",
+                "completed",
+            ]
+            restarted = TelegramWorker(recovered, DeterministicTelegram(execute))
+            while await restarted.once():
+                pass
+            assert calls == [2]
+        finally:
+            recovered.close()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("command", ["/stop", "/stop@emuru"])
+def test_idle_stop_does_not_interrupt_later_input_in_same_batch(boundary, command):
+    b = boundary
+
+    async def check():
+        b.queue.stage(7, [raw(1, command), raw(2, "hello")], "emuru")
+        assert await b.bridge.once()
+        assert b.queue.status() == {"completed": 2}
+        assert b.effects == ["hello"] and not b.bridge.retired
+        status = json.loads(b.network[0][1]["text"].split(": ", 1)[1])
+        assert status["stop"] == "idle"
+        assert not status["gateway_restart_required"]
+        assert not await b.bridge.once()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("refusal", ["owner", "chat", "bot", "address", "dispatch"])
+def test_untrusted_or_readmitted_stop_cannot_interrupt_active_turn(boundary, refusal):
+    b = boundary
+
+    async def check():
+        b.queue.stage(7, [raw(1, "wait")])
+        await b.adapter.connect()
+        await asyncio.wait_for(b.started.wait(), 1)
+        update = raw(2, "/stop")
+        if refusal == "owner":
+            update["message"]["from"]["id"] = 43
+        elif refusal == "chat":
+            update["message"]["chat"]["type"] = "group"
+        elif refusal == "bot":
+            update["message"]["from"]["is_bot"] = True
+        elif refusal == "address":
+            update["message"]["text"] = "/stop@other"
+        try:
+            b.bot.batch = [b.Update(update)]
+            await b.bot.get_updates()
+            if refusal == "dispatch":
+                b.queue.owner_id = 43
+            await b.app.process_update(b.bot.batch[0])
+            assert not b.bridge.retired and not b.bridge._task.done()
+            assert b.effects == ["wait"] and not b.network
+            assert b.queue.status() == (
+                {"started": 1, "rejected": 1}
+                if refusal == "dispatch"
+                else {"started": 1}
+            )
+        finally:
+            b.queue.owner_id = 42
+            b.release.set()
+            await b.bridge.stop()
 
     asyncio.run(check())
 
@@ -1241,8 +1380,9 @@ def test_shutdown_closes_intake_drains_one_turn_and_preserves_pending(
     asyncio.run(check())
 
 
-def test_shutdown_during_tool_preserves_uncertainty_and_blocks_late_effects(
-    boundary, monkeypatch
+@pytest.mark.parametrize("control", ["shutdown", "stop"])
+def test_interruption_during_tool_preserves_uncertainty_and_blocks_late_effects(
+    boundary, monkeypatch, control
 ):
     import contextvars
     import threading
@@ -1309,18 +1449,29 @@ def test_shutdown_during_tool_preserves_uncertainty_and_blocks_late_effects(
         await b.adapter.connect()
         while not tool_started.is_set():
             await asyncio.sleep(0.001)
-        await b.execution.shutdown()
-        assert b.queue.status() == {"interrupted": 1, "queued": 1}
+        if control == "shutdown":
+            await b.execution.shutdown()
+        else:
+            b.bot.batch = [b.Update(raw(3, "/stop"))]
+            await b.bot.get_updates()
+            await b.app.process_update(b.bot.batch[0])
+            done, _ = await asyncio.wait({b.bridge._task}, timeout=1)
+            assert done
+        expected = {"interrupted": 1, "queued": 1}
+        if control == "stop":
+            expected["completed"] = 1
+        assert b.queue.status() == expected
         assert "Some actions may already have completed" in b.queue.terminal_notice(
             7, 1
         )
         tool_release.set()
         await asyncio.sleep(0.02)
         assert tool_done.is_set() and errors == []
-        assert effects == ["write"] and b.network == []
+        assert effects == ["write"]
+        assert len(b.network) == (1 if control == "stop" else 0)
         assert interrupts == [True]
         b.queue.recover()
-        assert b.queue.status() == {"interrupted": 1, "queued": 1}
+        assert b.queue.status() == expected
 
     try:
         asyncio.run(asyncio.wait_for(check(), 2))
