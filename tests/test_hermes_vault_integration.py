@@ -12,6 +12,75 @@ from mcp.client.stdio import stdio_client
 from vault_helpers import create_vault
 
 
+@pytest.mark.anyio
+@pytest.mark.usefixtures("mcp_environment")
+async def test_stdio_partial_index_restart_stale_removal_and_repair(tmp_path):
+    vault = create_vault(tmp_path)
+    healthy_path = "10_Projects/healthy.md"
+    changing_path = "30_Resources/changing.md"
+    broken_path = "00_Inbox/broken.md"
+    (vault / healthy_path).write_text("healthyword [[30_Resources/changing]]")
+    (vault / changing_path).write_text(
+        "---\ntitle: OldTitle\nsummary: OldSummary\n---\nstaletoken [[10_Projects/healthy]]"
+    )
+    (vault / broken_path).write_text("---\ntitle: [broken\n---\n")
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "emuru.vault.server"],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env={"EMURU_VAULT_PATH": str(vault)},
+    )
+    for restart in (False, True):
+        async with (
+            stdio_client(params) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            async with asyncio.timeout(15):
+                await session.initialize()
+
+            async def call(name, **arguments):
+                async with asyncio.timeout(15):
+                    result = await session.call_tool(name, arguments)
+                assert not result.is_error, result.model_dump_json()
+                return result.structured_content
+
+            if not restart:
+                assert (await call("vault_search", query="staletoken"))["count"] == 1
+                (vault / changing_path).write_text("---\ntitle: [broken\n---\n")
+            found = await call("vault_search", query="staletoken")
+            assert found["count"] == 0
+            assert found["incomplete"] is True
+            assert found["failed_paths"] == [broken_path, changing_path]
+            mapped = await call("vault_map")
+            assert mapped["total_notes"] == 1
+            assert "OldTitle" not in str(mapped) and "OldSummary" not in str(mapped)
+            neighbors = await call("vault_neighbors", path=healthy_path)
+            assert neighbors["incoming"] == []
+            assert neighbors["outgoing"][0]["target"] is None
+            assert neighbors["outgoing"][0]["status"] == "unresolved"
+            assert neighbors["failed_paths"] == [broken_path, changing_path]
+            missing = await session.call_tool(
+                "vault_neighbors", {"path": changing_path}
+            )
+            assert missing.is_error
+            opened = await call("vault_open", path=changing_path)
+            assert opened["content"] == (vault / changing_path).read_text()
+            if restart:
+                renamed = "00_Inbox/renamed.md"
+                (vault / broken_path).rename(vault / renamed)
+                assert (await call("vault_map"))["failed_paths"] == [
+                    renamed,
+                    changing_path,
+                ]
+                (vault / changing_path).unlink()
+                assert (await call("vault_map"))["failed_paths"] == [renamed]
+                (vault / renamed).write_text("repairedword")
+                repaired = await call("vault_search", query="repairedword")
+                assert repaired["count"] == 1
+                assert repaired["incomplete"] is False
+                assert repaired["failed_paths"] == []
+
+
 def test_backend_keeps_environment_isolated(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location(

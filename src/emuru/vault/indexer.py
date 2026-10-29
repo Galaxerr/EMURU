@@ -80,6 +80,10 @@ class Note:
     body: str
 
 
+class NoteParseError(ValueError):
+    """Malformed captured content, distinct from unsafe or unreadable files."""
+
+
 def _frontmatter_and_body(
     text: str,
 ) -> tuple[dict[str, Any], str]:
@@ -93,17 +97,19 @@ def _frontmatter_and_body(
         if lines[i].strip() == "---":
             raw = "\n".join(lines[1:i])
             try:
-                data = yaml.safe_load(raw) or {}
-            except yaml.YAMLError as error:
-                raise ValueError("Invalid YAML frontmatter.") from error
+                data = yaml.safe_load(raw)
+            except (yaml.YAMLError, ValueError, RecursionError) as error:
+                raise NoteParseError("Invalid YAML frontmatter.") from error
 
+            if data is None:
+                data = {}
             if not isinstance(data, dict):
-                raise ValueError("frontmatter must be a YAML mapping")
+                raise NoteParseError("frontmatter must be a YAML mapping")
 
             body = "\n".join(lines[i + 1 :])
             return data, body
 
-    raise ValueError("opening frontmatter delimiter has no closing delimiter")
+    raise NoteParseError("opening frontmatter delimiter has no closing delimiter")
 
 
 def _normalize_tags(value: Any) -> list[str]:
@@ -146,13 +152,16 @@ def parse_note(
 
     if raw is None:
         raw = _read_file(vault_root, path.relative_to(vault_root))
-    text = raw.decode("utf-8")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise NoteParseError("Invalid UTF-8 note.") from error
 
     metadata, body = _frontmatter_and_body(text)
 
     relative = path.relative_to(vault_root).as_posix()
 
-    return Note(
+    note = Note(
         path=relative,
         title=str(metadata.get("title") or path.stem),
         note_type=str(metadata.get("type") or "note"),
@@ -164,6 +173,19 @@ def parse_note(
         links=extract_wikilinks(body),
         body=body,
     )
+    try:
+        for value in (
+            note.title,
+            note.note_type,
+            note.project,
+            note.updated,
+            note.summary,
+            *note.tags,
+        ):
+            value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise NoteParseError("Invalid UTF-8 note metadata.") from error
+    return note
 
 
 class AccessViolation(ValueError):
@@ -238,17 +260,17 @@ def iter_note_paths(vault_root: Path):
 
 
 def collect_notes(vault_root: Path) -> list[Note]:
-    return _parse_snapshot(vault_root, _snapshot(vault_root))
+    return _parse_snapshot(vault_root, _snapshot(vault_root))[0]
 
 
 def _parse_snapshot(vault_root, snapshot):
-    return sorted(
-        (
-            parse_note(vault_root / path, vault_root, raw)
-            for path, raw in snapshot.items()
-        ),
-        key=lambda note: note.path.casefold(),
-    )
+    notes, failed_paths = [], []
+    for path, raw in snapshot.items():
+        try:
+            notes.append(parse_note(vault_root / path, vault_root, raw))
+        except NoteParseError:
+            failed_paths.append(path)
+    return sorted(notes, key=lambda note: note.path.casefold()), sorted(failed_paths)
 
 
 def _link_aliases(
@@ -496,7 +518,7 @@ def _index_vault(
     if snapshot is None:
         snapshot = _snapshot(vault_root)
     source = _fingerprint(snapshot)
-    notes = _parse_snapshot(vault_root, snapshot)
+    notes, failed_paths = _parse_snapshot(vault_root, snapshot)
 
     graph = build_graph(notes)
 
@@ -523,6 +545,7 @@ def _index_vault(
             raise ValueError("Vault changed during index refresh.")
         completion = {
             "source": source,
+            "failed_paths": failed_paths,
             "outputs": {
                 key: hashlib.sha256(path.read_bytes()).hexdigest()
                 for key, path in staged.items()
@@ -578,6 +601,8 @@ def _index_vault(
     return {
         "notes": len(notes),
         "edges": len(graph["edges"]),
+        "incomplete": bool(failed_paths),
+        "failed_paths": failed_paths,
         **{key: str(path) for key, path in outputs.items()},
     }
 
@@ -671,24 +696,37 @@ def _safe_fts_query(query: str) -> str:
     return " AND ".join(f'"{word}"' for word in words)
 
 
-def _completed(vault_root, source):
+def _completion(vault_root, snapshot):
     try:
         record = json.loads(_read_file(vault_root, Path(COMPLETION)))
-        return record == {
-            "source": source,
+        if type(record) is not dict:
+            return None
+        failed_paths = record.get("failed_paths")
+        if (
+            type(failed_paths) is not list
+            or any(
+                type(path) is not str or path not in snapshot for path in failed_paths
+            )
+            or failed_paths != sorted(set(failed_paths))
+        ):
+            return None
+        expected = {
+            "source": _fingerprint(snapshot),
+            "failed_paths": failed_paths,
             "outputs": {
                 key: hashlib.sha256(_read_file(vault_root, Path(name))).hexdigest()
                 for key, name in OUTPUTS.items()
             },
         }
+        return record if record == expected else None
     except (AccessViolation, PermissionError):
         raise
     except (OSError, ValueError):
-        return False
+        return None
 
 
 def _validate_results(vault_root, result, snapshot):
-    paths = set()
+    paths = set(result.get("failed_paths", []))
     if "roots" in result:
         paths.update(
             node["path"] for nodes in result["roots"].values() for node in nodes
@@ -713,9 +751,14 @@ def _fresh_retrieval(vault_root, function, *args):
         for attempt in range(2):
             try:
                 snapshot = _snapshot(vault_root)
-                if not _completed(vault_root, _fingerprint(snapshot)):
-                    _index_vault(vault_root, snapshot)
-                result = function(vault_root, *args)
+                completion = _completion(vault_root, snapshot)
+                if completion is None:
+                    completion = _index_vault(vault_root, snapshot)
+                result = {
+                    **function(vault_root, *args),
+                    "incomplete": bool(completion["failed_paths"]),
+                    "failed_paths": completion["failed_paths"],
+                }
                 _validate_results(vault_root, result, snapshot)
                 return result
             except (AccessViolation, PermissionError):
@@ -934,8 +977,10 @@ def vault_write(
         normalized = (content.rstrip() + "\n").encode("utf-8")
         publish_note(parent, name, normalized, before=None)
         try:
-            index_vault(vault_root)
+            incomplete = index_vault(vault_root)["incomplete"]
         except (OSError, ValueError, sqlite3.Error):
+            incomplete = True
+        if incomplete:
             return {
                 "created": True,
                 "path": path,

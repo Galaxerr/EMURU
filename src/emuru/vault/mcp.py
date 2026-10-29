@@ -42,6 +42,8 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         Use this before opening notes when you need to understand
         the available projects, areas, resources, journal entries,
         inbox items, or archived knowledge.
+
+        incomplete and failed_paths identify malformed notes omitted from the index.
         """
         return _call(index.vault_map, vault_root, MAX_MAP_ENTRIES)
 
@@ -61,6 +63,8 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         Returns matching note paths, titles, summaries and excerpts.
         Use the returned path with vault_open when more detail is
         required.
+
+        incomplete and failed_paths report omitted malformed notes, even with no matches.
         """
         if limit < 1:
             raise ToolError("Search limit must be at least 1.")
@@ -96,6 +100,8 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         """
         Return incoming and outgoing wikilink relationships
         for one indexed note.
+
+        incomplete and failed_paths identify malformed notes omitted from relationships.
         """
         return _call(index.vault_neighbors, vault_root, path)
 

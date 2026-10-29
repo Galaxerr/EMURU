@@ -1374,10 +1374,10 @@ def _refresh_receipt(db, proposal, vault_root):
     from emuru.vault.indexer import index_vault
 
     try:
-        index_vault(vault_root)
+        incomplete = index_vault(vault_root)["incomplete"]
     except (OSError, ValueError, sqlite3.Error):
-        return _record_receipt(db, proposal, "index_pending")
-    return _record_receipt(db, proposal, "applied")
+        incomplete = True
+    return _record_receipt(db, proposal, "index_pending" if incomplete else "applied")
 
 
 def apply_proposal(

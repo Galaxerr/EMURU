@@ -48,11 +48,17 @@ def run(folder, reopen=False):
     from hermes_cli import kanban_db_dispatch as dispatcher
     from tools import kanban_tools
 
+    # Production also applies through EMURU's interpreter, not Hermes'.
+    python = Path("/opt/emuru/.venv/bin/python")
+    if not python.is_file():
+        python = ROOT / ".venv/bin/python"
     home, vault = folder / "profile", folder / "vault"
     if not reopen:
         home.mkdir(mode=0o700, parents=True)
         (vault / "10_Projects").mkdir(parents=True)
         (vault / "99_System").mkdir()
+        (vault / "30_Resources").mkdir()
+        (vault / "30_Resources/broken.md").write_text("---\ntitle: [broken\n---\n")
         (home / "vault-target.json").write_text(
             json.dumps({"mode": "real", "vault_path": str(vault)})
         )
@@ -149,10 +155,6 @@ def run(folder, reopen=False):
             mutations.record_preview(
                 home, preview["proposal_id"], preview["approval_digest"], complete=True
             )
-            # Production also applies through EMURU's interpreter, not Hermes'.
-            python = Path("/opt/emuru/.venv/bin/python")
-            if not python.is_file():
-                python = ROOT / ".venv/bin/python"
             applied = subprocess.run(
                 [
                     str(python),
@@ -209,6 +211,22 @@ def run(folder, reopen=False):
     refused(
         lambda: command("/project track " + identity, owner=43), "authenticated owner"
     )
+    retrieved = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import json,sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from emuru.vault.indexer import vault_search; print(json.dumps(vault_search(Path(sys.argv[2]),'tracking',8)))",
+            str(ROOT / "src"),
+            str(vault),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    retrieval = json.loads(retrieved.stdout)
+    assert retrieval["count"] == 1 and retrieval["incomplete"] is True
+    assert retrieval["failed_paths"] == ["30_Resources/broken.md"]
     refused(lambda: command("/project track " + identity, bot=8), "authenticated owner")
     kb = board.native_api(ROOT)
     create = kb.create_task
