@@ -8,6 +8,11 @@ proposed project or task changes. Conversation history persists across restarts.
 an authenticated LiteLLM gateway with one cloud attempt and no automatic local
 fallback. Permanent-host production certification is a separate milestone.
 
+**v0.5.4 is in development.** Ticket 1 is qualifying confined native coding and
+offline tests on disposable source. Native task execution is not enabled; the
+package version remains 0.5.3. See the [v0.5.4 implementation tracker](docs/releases/v0.5.4-implementation.md)
+for verified progress, blockers and the four-ticket dependency chain.
+
 ## What you can do
 
 - Search and read notes, navigate backlinks, and request grounded daily reviews.
@@ -21,7 +26,8 @@ fallback. Permanent-host production certification is a separate milestone.
 - Run an opt-in, offline read-only scout against explicitly selected committed
   repository files. Reports retain baseline HEAD, file hashes and a native Kanban
   receipt. See [scout operation](docs/RUNBOOK.md#read-only-repository-scout-v053).
-  Coding, tests and vault result updates require later milestones.
+  Coding and tests are under disposable v0.5.4 qualification. Live coding and
+  vault result updates remain unavailable.
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
@@ -103,6 +109,8 @@ runtime, gateway, lifecycle and rollback without a live Telegram poller.
 - [v0.5.1 acceptance](docs/releases/v0.5.1-acceptance.md): owner-confirmed M1 results,
   automated evidence and remaining release gates.
 - [v0.5.3 acceptance](docs/releases/v0.5.3-acceptance.md): isolated read-only scout.
+- [v0.5.4 implementation](docs/releases/v0.5.4-implementation.md): current progress,
+  qualification evidence, CI results and release gates.
 - [v0.5.2 acceptance](docs/releases/v0.5.2-acceptance.md): native project tracking,
   pinned contracts and remaining acceptance gates.
 - [Deployment backlog](docs/deployment-backlog.md): future permanent-host setup and recovery tooling.

@@ -236,6 +236,38 @@ Disposable acceptance (no real profile/vault or provider needed):
 uv run --frozen python scripts/hermes/scout-check.py
 ```
 
+### Disposable coding qualification (v0.5.4, in progress)
+
+This development harness does not execute tracked native cards. Ticket 1 is not
+accepted until the actual model-led edit, independent checks and runtime probes
+all pass. See [v0.5.4 progress](releases/v0.5.4-implementation.md) before interpreting
+results. Passing host tests do not establish runtime or CI qualification.
+
+Run as an unprivileged Docker-capable user. These commands create fresh synthetic
+repositories and private evidence under ignored `.runtime/`. They do not mount
+a real vault/profile into repository execution or enable native tasks.
+
+```bash
+uv run --frozen python scripts/hermes/coder-check.py --build --native-self-check --sandbox-self-check
+uv run --frozen python scripts/hermes/coder-check.py --isolation-probes
+```
+
+`--live` additionally makes cost-bearing calls through the existing selected cloud
+route. Use it only under explicit runtime authorization. Inference and its
+temporary gateway stay separate from offline repository execution. A controller
+fixture passing is not model-led proof. Missing model access, incompatibility,
+timeouts or partial evidence block acceptance without permission expansion.
+
+Preserve evidence and uncertain attempts. Verify every recorded container has
+stopped before explicit operator cleanup; never delete uncertain state to bypass
+a blocker. Repeating a qualification creates new disposable data, not permission
+to replay an existing native task.
+
+CI must also run through `act` using the repository workflow and `.actrc`. Local
+`act` supplements exact-final-commit hosted CI; it does not replace it. Keep real
+credentials out of CI: defaults use `/dev/null` for environment and secret files.
+CI exercises disposable data, not production services.
+
 ## Troubleshooting and recovery
 
 | Symptom | Action |

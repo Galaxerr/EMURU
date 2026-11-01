@@ -41,6 +41,33 @@ Interrupted work is blocked or uncertain; expired claims are never automatically
 reclaimed. The fixed worker and ledger have their own process deadlines, including
 when their Docker client dies. No model capability is qualified by this milestone.
 
+## v0.5.4 implementation boundary
+
+Ticket 1 is blocked in qualification, using disposable synthetic repositories only. The owner
+approved native Hermes inference with exactly `coder_read`, `coder_write` and
+`coder_check`, a separate trusted host dispatcher, and disposable offline check
+containers. Approval does not establish runtime security or compatibility. The
+[implementation tracker](releases/v0.5.4-implementation.md) records actual evidence.
+
+The controller exports approved committed UTF-8 files under their original paths.
+The task workspace has no Git metadata, branch, commit or task HEAD. Mediated
+replacements require the old digest; creations require explicit scope. Checks
+receive immutable read-only snapshots, without the mutable workspace, vault,
+board, journals, credentials or Docker socket. Model access stays on the inference
+side through the selected cloud route. Authorized source can reach that cloud
+model; this is not a source-confidentiality guarantee.
+
+`python_unittest` selects a fixed interpreter and reviewed harness. Controller-side
+assertions evaluate the approved `sum_prices` cases; repository tests are
+supplemental. Model prose and repository-reported counts cannot establish success.
+Exact files, source HEAD, grant, catalogue, diff and observed check results must
+bind to independently reopened evidence. Retained state is private and bounded.
+
+Ticket 1 does not authorize live cards or alter the default owner-facing profile.
+Native task authorization/status, interruption/restart integration, and integrated
+release evidence remain Tickets 2–4, in that blocking order. No automatic dispatch,
+publication, deployment or vault-result capture is enabled.
+
 ## Repository map
 
 Paths below are relative to the repository root.
@@ -55,6 +82,7 @@ Paths below are relative to the repository root.
 | `src/emuru/hermes/` | Shared profile, runtime launch and inference/tool-dispatch guards |
 | `src/emuru/projects/{spec,board}.py` | Bounded planning projection and receipt-bound native Kanban tracking |
 | `src/emuru/projects/{scout,scout_board}.py`, `scripts/hermes/scout.py` | Fixed inspection, native run/evidence fences and owner-operated isolated dispatch |
+| `src/emuru/projects/coder*.py`, `scripts/hermes/coder-check.py`, `infra/docker/coder.compose.yaml` | In-progress disposable coding, selected-file confinement and offline qualification; no live dispatch |
 | `src/emuru/models/` | Provider configuration, route/qualification contract and bounded gateway behavior |
 | `src/emuru/deployment.py`, `environment.py` | Source identity, stopped-state compatibility and private environment handling |
 | `scripts/hermes/container.py`, `scripts/service/` | Explicit initialization and Docker wake/sleep/status/rollback |

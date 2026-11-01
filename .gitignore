@@ -51,3 +51,6 @@ vault-target.json
 # Generated Docker deployment paths (private state lives outside the checkout)
 infra/docker/deployment.env
 infra/docker/deployment.lock
+
+# docs/adr
+docs/adr

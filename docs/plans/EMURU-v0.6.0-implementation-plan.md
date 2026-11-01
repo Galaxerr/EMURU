@@ -1,6 +1,6 @@
 # EMURU v0.6.0 — Native project execution and verified result capture
 
-**Status:** Proposed implementation roadmap; no feature implementation or release acceptance is claimed.  
+**Status:** Active milestone roadmap; v0.5.4 Ticket 1 is in implementation and qualification. No v0.5.4 acceptance is claimed.
 **Prepared:** 2026-10-21.  
 **Repository:** `Galaxerr/EMURU`.  
 **Inspected baseline:** `main` at `129b8754e9e6ffa301cc25d44cd963f90316dda5` (2026-10-20).  
@@ -8,6 +8,17 @@
 **Release sequence:** M1/v0.5.1 → M2/v0.5.2 → M3/v0.5.3 → M4/v0.5.4 → M5/v0.5.5 → M6/v0.5.6 → M7/v0.5.7 → M8/v0.5.8 → M9/v0.6.0.
 
 > **Planning accuracy:** Repository filenames and current boundaries below were checked against `main`. Proposed new file paths and API names are design recommendations, not existing implementations. Upstream Hermes documentation describes features that can evolve independently of EMURU's pinned commit; every invoked method, setting, feature and worker lifecycle must be verified against the **pinned source** and a disposable native runtime before being enabled. There is no claim that any milestone already passes its acceptance tests.
+
+**Progress update, 2026-10-30:** All six v0.5.4 Wayfinder contracts are resolved
+and owner-approved. Implementation authorization covers Ticket 1 only. Its
+disposable narrow-tool inference, selected-file workspace and offline acceptance
+path are under qualification; live task execution remains disabled. Tickets 2–4
+retain their blocking order. See the [v0.5.4 implementation tracker](../releases/v0.5.4-implementation.md).
+The approved development baseline is `5445e4a90e36ac9ba807ec73105897fc5f1b84a3`;
+this exception does not establish predecessor release acceptance. Approved v0.5.4
+contracts supersede tentative runtime/worktree language below: use mediated coding
+tools, a separate offline sandbox and selected-file source without a task Git
+checkout or task HEAD.
 
 ## 1. Objective and definition of success
 
@@ -189,10 +200,10 @@ Each milestone must be **useful in its own right**, testable on disposable data,
 1. Promote a separately named `emuru-coder` worker only after a pinned-native test verifies model/tool compatibility, workspace permissions, bounded timeout and exit classification. Reuse M3's separate isolated worker environment; provision a **per-task worktree** under a fixed private path from a trusted repo baseline. Never let the model select unrestricted filesystem paths.
 2. Bind the execution grant to approved repo identity, base revision, spec/task digest, permitted commands, requested files/scope, resource limits and network policy. Only owner-authorized tasks transition to dispatchable `ready`.
 3. Give the implementer concise spec, relevant project context (sanitized, minimal) and a local worker guide; do not send the entire vault, full owner conversation or credentials. Prefer single-agent code changes plus targeted unit tests. Use `delegate_task` only for a demonstrably independent reasoning lookup and only if actually supported in this worker runtime; otherwise use none.
-4. Run validation in the confined worker using deterministic allowlisted commands and record **commands, exit codes, test counts when available, HEAD, before/after diff digest, artifact paths and missing checks**. Independently read the resulting worktree to confirm the files/diff exist and scoped changes match expectations; do not treat captured prose as evidence.
+4. Run fixed callable cases through host-controlled Monty evaluation. Require host-observed normal return and typed expected values; independently reopen artifacts and verify policy and Docker lifecycle. Keep native developer commands inside the existing confined worker as supplemental evidence. Their exit, output, summary, and count do not authenticate unittest completion or independently authorize PASS. Do not claim native/Monty equivalence or universal correctness.
 5. If tests fail, record `tests_failed`/`blocked` or leave task pending with a bounded remediation path. Do not mark success and do not automatically push, merge, run deploy scripts or rewrite the vault.
 
-**Tests and GO criteria:** (a) implement a small deterministic feature with real passing tests; (b) a deliberately failing test does **not** complete as verified; (c) changed source outside authorized path/repo and symlink escapes are blocked; (d) credentials not available in worker env/logs; (e) a repeated start does not create duplicate worktrees or duplicate external effects; (f) no GitHub write or vault mutation is performed. **GO:** one constrained local implementation with independently verified evidence. **NO-GO:** model-only success, unchecked shell/network or implicit publication.
+**Tests and GO criteria:** (a) implement a small deterministic feature with passing host-controlled callable cases; (b) native zero exit and forged unittest output alone cannot pass; (c) missing authoritative evidence and deliberately failing native tests fail closed; (d) changed source outside authorized path and symlink escapes are blocked; (e) credentials are unavailable in worker env/logs; (f) no duplicate worktrees or external effects; (g) no GitHub write or vault mutation. **GO:** one constrained local implementation with independently verified artifacts, policy, callable returns, and lifecycle evidence. Native unittest completion and cross-runtime semantic equivalence remain unproven. **NO-GO:** model-only success, unchecked shell/network or implicit publication.
 
 **Release note:** v0.5.4 can build and test **one local approved task**; review is still the owner's responsibility.
 

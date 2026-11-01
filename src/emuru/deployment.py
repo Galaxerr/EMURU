@@ -31,6 +31,7 @@ BUILD_FILES = (
     "infra/docker/secret-exec.py",
     "infra/docker/compose.yaml",
     "infra/docker/scout.compose.yaml",
+    "infra/docker/coder.compose.yaml",
     "infra/docker/deployment-lock.json",
     "tests/fixtures/hermes-vault",
     "tests/telegram/native_session_case.py",

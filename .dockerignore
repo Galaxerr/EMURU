@@ -16,6 +16,7 @@
 !infra/docker/secret-exec.py
 !infra/docker/compose.yaml
 !infra/docker/scout.compose.yaml
+!infra/docker/coder.compose.yaml
 !infra/docker/deployment-lock.json
 !agents/
 !agents/emuru/

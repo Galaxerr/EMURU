@@ -16,7 +16,7 @@ RUN uv sync --locked --python /usr/local/bin/python3.14
 COPY scripts/hermes ./scripts/hermes
 COPY infra/hermes ./infra/hermes
 COPY infra/docker/secret-exec.py ./infra/docker/secret-exec.py
-COPY infra/docker/compose.yaml infra/docker/scout.compose.yaml infra/docker/deployment-lock.json ./infra/docker/
+COPY infra/docker/compose.yaml infra/docker/scout.compose.yaml infra/docker/coder.compose.yaml infra/docker/deployment-lock.json ./infra/docker/
 COPY agents/emuru ./agents/emuru
 COPY tests/fixtures/hermes-vault ./tests/fixtures/hermes-vault
 COPY tests/telegram/native_session_case.py ./tests/telegram/native_session_case.py
