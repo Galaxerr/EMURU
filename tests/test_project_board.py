@@ -2,16 +2,59 @@
 
 import copy
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 from project_board_case import SPEC
 
+from emuru.projects import board
 from emuru.projects.board import spec_tasks
 from emuru.projects.spec import spec_markdown
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_readonly_native_board_refuses_symlinked_sidecar(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    folder = home / "emuru-projects"
+    folder.mkdir(parents=True, mode=0o700)
+    (folder / "kanban.db").write_bytes(b"database")
+    (folder / "kanban.db").chmod(0o600)
+    outside = tmp_path / "outside"
+    outside.write_text("preserve")
+    (folder / "kanban.db.init.lock").symlink_to(outside)
+    monkeypatch.setattr(board, "native_api", lambda _root: None)
+    with pytest.raises(OSError), board.project_board_readonly(home, ROOT):
+        pass
+    assert outside.read_text() == "preserve"
+
+
+def test_readonly_native_board_opens_validated_database_descriptor(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "profile"
+    folder = home / "emuru-projects"
+    folder.mkdir(parents=True, mode=0o700)
+    database = folder / "kanban.db"
+    outside = tmp_path / "outside.db"
+    for path, value in ((database, "pinned"), (outside, "replacement")):
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE marker (value TEXT)")
+            db.execute("INSERT INTO marker VALUES (?)", (value,))
+        path.chmod(0o600)
+    monkeypatch.setattr(board, "native_api", lambda _root: None)
+    connect = sqlite3.connect
+
+    def replace_path_after_validation(path, **kwargs):
+        database.rename(folder / "original.db")
+        database.symlink_to(outside)
+        return connect(path, **kwargs)
+
+    monkeypatch.setattr(board.sqlite3, "connect", replace_path_after_validation)
+    with board.project_board_readonly(home, ROOT) as (_kb, db):
+        assert db.execute("SELECT value FROM marker").fetchone()[0] == "pinned"
 
 
 @pytest.mark.parametrize(

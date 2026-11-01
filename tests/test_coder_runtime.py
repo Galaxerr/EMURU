@@ -93,6 +93,12 @@ def test_failed_check_revokes_all_tools_and_cannot_be_recovered(tmp_path, supple
     assert backend.calls == 1
     assert len(report["checks"]) == 1
     assert verify_evidence(attempt.folder, attempt.evidence_sha256) == report
+    with pytest.raises(ValueError, match="does not match"):
+        verify_evidence(
+            attempt.folder,
+            attempt.evidence_sha256,
+            task_run={"task": grant["task"], "run": 1},
+        )
 
 
 def test_execution_error_cannot_be_erased_by_native_success(tmp_path):

@@ -58,13 +58,17 @@ def verify_native_completion(image, name, final, sequence, code, actual):
     }
 
 
-def run_inference(image, network, gateway_key, request, dispatch):
+def run_inference(
+    image, network, gateway_key, request, dispatch, *, name=None, process_event=None
+):
     validate_request(request)
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ValueError("Native inference requires an immutable image identity.")
     if not gateway_key:
         raise ValueError("Coding inference requires model access.")
-    name = "emuru-coder-inference-" + uuid.uuid4().hex
+    name = name or "emuru-coder-inference-" + uuid.uuid4().hex
+    if not re.fullmatch(r"emuru-coder-[a-z0-9-]{8,80}", name):
+        raise ValueError("Native inference process identity is invalid.")
     seconds = request.get("deadline_seconds", 600)
     command = [
         "docker",
@@ -118,6 +122,8 @@ def run_inference(image, network, gateway_key, request, dispatch):
         ),
     ]
     docker_environment = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}
+    if process_event:
+        process_event(name, "starting")
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
@@ -224,5 +230,7 @@ def run_inference(image, network, gateway_key, request, dispatch):
         )
         if removed["exit_code"] or absent["exit_code"] or absent["stdout"].strip():
             raise RuntimeError("Native coding inference termination is uncertain.")
+        if process_event:
+            process_event(name, "stopped")
     outcome["native_lifecycle"]["removed"] = True
     return outcome

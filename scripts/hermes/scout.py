@@ -1,7 +1,6 @@
 """Owner-operated, one-shot scout dispatcher; no bot, model, daemon or second queue."""
 
 import argparse
-import fcntl
 import json
 import os
 import runpy
@@ -10,15 +9,15 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-import yaml
-
 from emuru.models.gateway import private_path
+from emuru.projects.dispatcher import dispatcher_lock
 from emuru.projects.scout import (
     MAX_REPORT_BYTES,
     digest,
@@ -26,29 +25,6 @@ from emuru.projects.scout import (
     load_policy,
     snapshot,
 )
-from emuru.vault import mutations
-
-
-@contextmanager
-def dispatcher_lock(home):
-    """A dead dispatcher releases the lock, but never automatically releases its claim."""
-    with mutations.directory(home) as parent:
-        mutations.private_directory(parent)
-    folder = home / "emuru-projects"
-    with mutations.directory(folder) as parent:
-        mutations.private_directory(parent)
-        fd = os.open(
-            "scout.lock",
-            os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
-            0o600,
-            dir_fd=parent,
-        )
-        try:
-            mutations.regular(fd, private=True)
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            yield
-        finally:
-            os.close(fd)
 
 
 class DockerScout:

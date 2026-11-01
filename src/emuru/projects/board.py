@@ -11,6 +11,7 @@ import importlib
 import json
 import os
 import re
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -132,6 +133,50 @@ def project_board(home, root):
             os.close(lock)
 
 
+@contextmanager
+def project_board_readonly(home, root):
+    """Inspect existing native state without initialization or maintenance."""
+    kb = native_api(root)
+    path = Path(home) / "emuru-projects/kanban.db"
+    database_fd = None
+    try:
+        with mutations.directory(path.parent) as parent:
+            for name in (
+                "kanban.db",
+                "kanban.db.init.lock",
+                "kanban.db-journal",
+                "kanban.db-wal",
+                "kanban.db-shm",
+            ):
+                try:
+                    fd = os.open(
+                        name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=parent,
+                    )
+                except FileNotFoundError:
+                    if name == "kanban.db":
+                        raise
+                    continue
+                try:
+                    mutations.regular(fd, private=True)
+                except BaseException:
+                    os.close(fd)
+                    raise
+                if name == "kanban.db":
+                    database_fd = fd
+                else:
+                    os.close(fd)
+        db = sqlite3.connect(f"file:/proc/self/fd/{database_fd}?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        yield kb, db
+    finally:
+        if "db" in locals():
+            db.close()
+        if database_fd is not None:
+            os.close(database_fd)
+
+
 def project_command(home, vault, root, text, owner, bot):
     """Called only by the admitted owner transport, behind its tools-started fence."""
     fields = text.split()
@@ -166,7 +211,8 @@ def project_command(home, vault, root, text, owner, bot):
             "Approved spec is stale. Approve the current note before tracking."
         )
     tasks = spec_tasks(preview["content"])
-    with project_board(home, root) as (kb, db):
+    context = project_board if creating else project_board_readonly
+    with context(home, root) as (kb, db):
         cards = kb.list_tasks(db, tenant=project, include_archived=True)
         if creating:
             for card in cards:
@@ -242,8 +288,29 @@ def project_command(home, vault, root, text, owner, bot):
                         f"Repository: {evidence['repository']}; baseline: {evidence['baseline']}; report SHA-256: {evidence['sha256']}"
                     )
                 continue
+            if (
+                card.assignee == "emuru-coder"
+                or card.result
+                and '"grant_id"' in card.result
+            ):
+                from emuru.projects.coder_board import status
+
+                report = status(kb, db, card, home, root)
+                lines.append(
+                    f"{card.id} ({binding['task']['id']}): coder {report['status']}; parents: {parents}"
+                )
+                evidence = report.get("evidence")
+                if evidence:
+                    lines.append(
+                        f"Evidence SHA-256: {evidence['evidence_sha256']}; diff SHA-256: {evidence['diff_sha256']}"
+                    )
+                elif report.get("detail"):
+                    lines.append(f"Coder detail: {report['detail']}")
+                continue
             lines.append(
                 f"{card.id} ({binding['task']['id']}): native {card.status}; parents: {parents}"
             )
-        lines.append("Native status is not proof of tested or reviewed completion.")
+        lines.append(
+            "Native done does not establish independent review or project completion."
+        )
         return "\n".join(lines)

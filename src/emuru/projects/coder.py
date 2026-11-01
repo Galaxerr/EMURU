@@ -11,8 +11,9 @@ import os
 import re
 from pathlib import Path
 
+from emuru.models.gateway import private_path
 from emuru.projects.scout import git, selected_path
-from emuru.vault.mutations import directory, regular
+from emuru.vault.mutations import directory, private_directory, regular
 
 LIMITS = {
     "concurrent_tasks": 1,
@@ -125,8 +126,9 @@ def validate_grant(grant):
 
 def load_grant(path):
     """Open an operator-owned mode-0600, single-link bounded JSON grant."""
-    path = Path(path)
+    path = private_path(path)
     with directory(path.parent) as parent:
+        private_directory(parent)
         fd = os.open(
             path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
         )

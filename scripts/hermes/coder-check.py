@@ -1,7 +1,6 @@
 """Disposable Ticket 1 qualification; never dispatches a native board task."""
 
 import argparse
-import contextlib
 import json
 import os
 import runpy
@@ -9,142 +8,16 @@ import secrets
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from emuru.environment import read_env
-from emuru.models.gateway import read_route, render, write_private
+from emuru.models.gateway import write_private
+from emuru.projects.coder_gateway import cloud_gateway
 from emuru.projects.coder_inference import run_inference
 from emuru.projects.coder_runtime import Qualification, qualification_fixture
-from emuru.projects.coder_sandbox import DockerSandbox, bounded_process
-
-
-def command(arguments, *, seconds=30):
-    result = bounded_process(["docker", *arguments], b"", seconds, 65536)
-    if result["exit_code"]:
-        raise RuntimeError("Disposable Docker operation failed: " + arguments[0])
-    return result["stdout"].strip()
-
-
-@contextlib.contextmanager
-def cloud_gateway(folder, daemon_root):
-    """Private disposable copy of the selected route; no real profile/vault mount."""
-    route = read_route(Path.home() / ".local/state/emuru/container/route.json")
-    values = read_env(ROOT / ".env")
-    selected = {
-        "ollama": "OLLAMA_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "openai-api": "OPENAI_API_KEY",
-    }[route["primary"]["provider"]]
-    upstream_key = values.get(selected) or (
-        values.get("GOOGLE_API_KEY") if selected == "GEMINI_API_KEY" else None
-    )
-    if not upstream_key:
-        raise ValueError("Selected cloud route credential is unavailable.")
-    folder.mkdir(mode=0o700)
-    gateway_key = "sk-" + secrets.token_hex(32)
-    write_private(folder / "gateway.key", gateway_key + "\n")
-    write_private(folder / "provider.key", upstream_key + "\n")
-    write_private(folder / "route.json", json.dumps(route))
-    write_private(folder / "litellm.yaml", render(route))
-    suffix = secrets.token_hex(8)
-    model_network, egress_network = (
-        "emuru-coder-model-" + suffix,
-        "emuru-coder-egress-" + suffix,
-    )
-    name = "emuru-coder-gateway-" + suffix
-
-    def mapped(path):
-        return str(daemon_root / Path(path).relative_to(ROOT))
-
-    try:
-        command(["network", "create", "--internal", model_network])
-        command(["network", "create", egress_network])
-        argv = [
-            "run",
-            "-d",
-            "--name",
-            name,
-            "--network",
-            egress_network,
-            "--user",
-            f"{os.getuid()}:{os.getgid()}",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--log-driver",
-            "none",
-            "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
-            "--env",
-            "HOME=/tmp",
-            "--env",
-            "PYTHONPATH=/opt/emuru/src",
-            "--env",
-            "EMURU_CONTAINER_ROUTE=/run/emuru/route.json",
-            "--env",
-            "LITELLM_LOG=ERROR",
-        ]
-        mounts = [
-            (ROOT / "src", "/opt/emuru/src"),
-            (ROOT / "infra/docker/secret-exec.py", "/opt/emuru/secret-exec.py"),
-            (folder / "gateway.key", "/run/secrets/emuru_gateway_key"),
-            (folder / "provider.key", "/run/secrets/" + selected.lower()),
-            (folder / "route.json", "/run/emuru/route.json"),
-            (folder / "litellm.yaml", "/run/emuru/litellm.yaml"),
-        ]
-        for source, target in mounts:
-            argv += [
-                "--mount",
-                f"type=bind,source={mapped(source)},target={target},readonly",
-            ]
-        pins = json.loads((ROOT / "infra/docker/deployment-lock.json").read_text())
-        argv += [
-            "--entrypoint",
-            "python",
-            pins["litellm"],
-            "/opt/emuru/secret-exec.py",
-            "litellm",
-            "--config",
-            "/run/emuru/litellm.yaml",
-            "--port",
-            "4000",
-        ]
-        command(argv)
-        command(["network", "connect", "--alias", "litellm", model_network, name])
-        deadline = time.monotonic() + 120
-        while True:
-            health = bounded_process(
-                [
-                    "docker",
-                    "exec",
-                    name,
-                    "python",
-                    "-c",
-                    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness',timeout=2)",
-                ],
-                b"",
-                5,
-                4096,
-            )
-            if health["exit_code"] == 0:
-                break
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Disposable model gateway did not become ready.")
-            time.sleep(1)
-        yield model_network, gateway_key, route["primary"]
-    finally:
-        bounded_process(["docker", "rm", "--force", name], b"", 15, 4096)
-        bounded_process(["docker", "network", "rm", model_network], b"", 15, 4096)
-        bounded_process(["docker", "network", "rm", egress_network], b"", 15, 4096)
-        # Credentials are ephemeral gateway inputs, never retained task evidence.
-        for name in ("gateway.key", "provider.key"):
-            (folder / name).unlink(missing_ok=True)
+from emuru.projects.coder_sandbox import DockerSandbox
 
 
 def completion_regression(image, folder, daemon_root):

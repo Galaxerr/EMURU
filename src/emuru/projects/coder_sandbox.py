@@ -278,7 +278,9 @@ def inspect_confinement(record, snapshot, uid, gid, limits):
 class DockerSandbox:
     """Trusted fixed-check adapter; no repository command or environment input."""
 
-    def __init__(self, root, image, folder, limits, daemon_root=None):
+    def __init__(
+        self, root, image, folder, limits, daemon_root=None, process_event=None
+    ):
         import re
 
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
@@ -286,6 +288,7 @@ class DockerSandbox:
         self.root, self.image, self.folder = Path(root), image, Path(folder)
         self.limits = dict(limits)
         self.daemon_root = Path(daemon_root) if daemon_root else self.root
+        self.process_event = process_event
         self.total_output = 0
         self.executions = 0
         self.processes = []
@@ -345,6 +348,8 @@ class DockerSandbox:
         ]
         observed = {"container": name, "command": service["command"]}
         self.processes.append(observed)
+        if self.process_event:
+            self.process_event(name, "starting")
         try:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -396,6 +401,8 @@ class DockerSandbox:
                 raise
             observed["stopped"] = True
             observed["removal_exit_code"] = removed["exit_code"]
+            if self.process_event:
+                self.process_event(name, "stopped")
             try:
                 path.unlink()
             except OSError:

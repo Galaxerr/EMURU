@@ -185,13 +185,24 @@ def _accepted(result):
     )
 
 
-def verify_evidence(folder, expected_digest):
+def verify_evidence(folder, expected_digest, *, task_run=None):
     """Reopen actual source/check artifacts independently of native/model success."""
     folder = Path(folder)
     data = _read_private(folder / "evidence.json", LIMITS["artifact_bytes"])
     if hashlib.sha256(data).hexdigest() != expected_digest:
         raise ValueError("Qualification evidence digest changed.")
     report = json.loads(data)
+    if task_run is None:
+        if (
+            report.get("qualification_only") is not True
+            or report.get("native_task_run") is not None
+        ):
+            raise ValueError("Live task evidence needs its native run binding.")
+    elif (
+        report.get("qualification_only") is not False
+        or report.get("native_task_run") != task_run
+    ):
+        raise ValueError("Coder evidence does not match its native task run.")
     grant_data = _read_private(folder / "grant.json", 32768)
     grant = validate_grant(json.loads(grant_data))
     if _artifact_size(folder) > grant["limits"]["artifact_bytes"]:
@@ -261,26 +272,51 @@ def _remove_snapshot(folder):
 
 
 class Qualification:
-    """One synthetic attempt. This cannot authenticate or dispatch a live task."""
+    """One bounded task attempt; live attempts bind evidence to their native run."""
 
-    def __init__(self, folder, grant, image):
+    def __init__(self, folder, grant, image, *, task_run=None):
         self.folder, self.grant, self.image = Path(folder), validate_grant(grant), image
-        if (
-            grant["repository"] != "coder-qualification"
-            or grant["catalogue"] != catalogue_digest()
+        self.task_run = task_run
+        if grant["catalogue"] != catalogue_digest() or (
+            task_run is None and grant["repository"] != "coder-qualification"
         ):
-            raise ValueError(
-                "Only the predefined disposable qualification fixture is supported."
+            raise ValueError("Only the approved coder check catalogue is supported.")
+        if task_run is not None and (
+            set(task_run) != {"task", "run"}
+            or task_run["task"] != grant["task"]
+            or type(task_run["run"]) is not int
+            or task_run["run"] <= 0
+        ):
+            raise ValueError("Invalid native task run binding.")
+        if task_run is None:
+            if self.folder.exists():
+                raise ValueError(
+                    "An existing qualification cannot be started again; inspect its evidence."
+                )
+            self.folder.mkdir(mode=0o700)
+            self._save("grant.json", encoded(grant))
+            self._save(
+                "intent.json",
+                encoded(
+                    {
+                        "grant": digest(grant),
+                        "qualification_only": True,
+                        "native_task_run": None,
+                    }
+                ),
             )
-        if self.folder.exists():
-            raise ValueError(
-                "An existing qualification cannot be started again; inspect its evidence."
+        else:
+            saved_grant = validate_grant(
+                json.loads(_read_private(self.folder / "grant.json", 32768))
             )
-        self.folder.mkdir(mode=0o700)
-        self._save("grant.json", encoded(grant))
-        self._save(
-            "intent.json", encoded({"grant": digest(grant), "qualification_only": True})
-        )
+            intent = json.loads(_read_private(self.folder / "intent.json", 32768))
+            run = json.loads(_read_private(self.folder / "run.json", 32768))
+            if (
+                digest(saved_grant) != digest(grant)
+                or intent.get("grant_sha256") != digest(grant)
+                or run != task_run
+            ):
+                raise ValueError("Existing coder intent differs from its task run.")
         self.workspace = Workspace(self.folder / "source", grant, reserve=self._reserve)
         self.workspace.snapshot(self.folder / "initial-source")
         self.deadline = time.monotonic() + grant["limits"]["attempt_seconds"]
@@ -392,7 +428,7 @@ class Qualification:
         )
         report = {
             "schema": 1,
-            "qualification_only": True,
+            "qualification_only": self.task_run is None,
             "success": valid,
             "failure": self.failure,
             "grant_sha256": digest(self.grant),
@@ -400,7 +436,7 @@ class Qualification:
             "task_head": None,
             "task_branch": None,
             "task_commits": [],
-            "native_task_run": None,
+            "native_task_run": self.task_run,
             "image": self.image,
             "native": native_result,
             "initial_manifest": self.workspace.initial_manifest,
@@ -415,4 +451,6 @@ class Qualification:
         data = encoded(report)
         self._save("evidence.json", data)
         self.evidence_sha256 = hashlib.sha256(data).hexdigest()
-        return verify_evidence(self.folder, self.evidence_sha256)
+        return verify_evidence(
+            self.folder, self.evidence_sha256, task_run=self.task_run
+        )
