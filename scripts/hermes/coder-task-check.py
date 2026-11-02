@@ -65,7 +65,7 @@ def _git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
-def run(image):
+def prepare(image):
     os.umask(0o077)
     root = Path(
         tempfile.mkdtemp(prefix="coder-task-acceptance-", dir=ROOT / ".runtime")
@@ -258,6 +258,29 @@ def run(image):
     policy = root / "coder-grant.json"
     policy.write_text(json.dumps(grant, sort_keys=True), encoding="utf-8")
     policy.chmod(0o600)
+    return locals()
+
+
+def run(image):
+    fixture = prepare(image)
+    root, home, vault, policy, task_id = (
+        fixture[key] for key in ("root", "home", "vault", "policy", "task_id")
+    )
+    repo, baseline, original_key, card_body, proposal, queue, project_command = (
+        fixture[key]
+        for key in (
+            "repo",
+            "baseline",
+            "original_key",
+            "card_body",
+            "proposal",
+            "queue",
+            "project_command",
+        )
+    )
+    from emuru.projects import board, coder_board
+    from emuru.projects.scout import git
+
     receipt = runpy.run_path(str(ROOT / "scripts/hermes/coder.py"))["launch"](
         home, vault, policy, task_id, ROOT
     )

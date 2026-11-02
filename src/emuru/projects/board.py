@@ -288,8 +288,11 @@ def project_command(home, vault, root, text, owner, bot):
                         f"Repository: {evidence['repository']}; baseline: {evidence['baseline']}; report SHA-256: {evidence['sha256']}"
                     )
                 continue
+            from emuru.projects.coder_board import _find_attempt
+
             if (
-                card.assignee == "emuru-coder"
+                _find_attempt(home, card.id) is not None
+                or card.assignee == "emuru-coder"
                 or card.result
                 and '"grant_id"' in card.result
             ):

@@ -55,7 +55,7 @@ def verify():
 
         source = code(
             "ledger",
-            "import runpy,sys; sys.argv=['case','source','/control']; runpy.run_path('/opt/emuru/tests/scout_board_case.py',run_name='__main__')",
+            f"import runpy,sys; sys.argv=['case','source',{str(home)!r}]; runpy.run_path('/opt/emuru/tests/scout_board_case.py',run_name='__main__')",
         )["source"]
         config_path.write_text(json.dumps(original))
         repo = folder / "repository"
@@ -128,7 +128,7 @@ print(json.dumps({'isolation':'PASS'}))
                     "/state/vault/private.md",
                     "/run/secrets/emuru_gateway_key",
                     "/var/run/docker.sock",
-                    "/control/emuru-projects/kanban.db",
+                    str(home / "emuru-projects/kanban.db"),
                     "/etc/shadow",
                 ]
             ),
@@ -176,7 +176,7 @@ print(json.dumps({'isolation':'PASS'}))
         def archive_stopped(task):
             code(
                 "ledger",
-                f"import sys,json; sys.path[:0]=['/opt/emuru/src','/opt/hermes']; from pathlib import Path; from emuru.projects.board import project_board;\nwith project_board(Path('/control'),Path('/opt/emuru')) as (kb,db): kb.archive_task(db,{task!r})\nprint(json.dumps({{'reconciled':True}}))",
+                f"import sys,json; sys.path[:0]=['/opt/emuru/src','/opt/hermes']; from pathlib import Path; from emuru.projects.board import project_board;\nwith project_board(Path({str(home)!r}),Path('/opt/emuru')) as (kb,db): kb.archive_task(db,{task!r})\nprint(json.dumps({{'reconciled':True}}))",
             )
             config_path.write_text(json.dumps(original))
 

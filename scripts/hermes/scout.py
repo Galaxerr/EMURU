@@ -48,18 +48,39 @@ class DockerScout:
             }
         ]
         ledger = config["services"]["ledger"]
-        ledger["environment"]["EMURU_SCOUT_HOME"] = "/control"
+        ledger["environment"]["EMURU_SCOUT_HOME"] = str(home)
         ledger["tmpfs"].append(
-            f"/control:rw,noexec,nosuid,nodev,size=1m,mode=0700,uid={os.getuid()},gid={os.getgid()}"
+            f"{home}:rw,noexec,nosuid,nodev,size=1m,mode=0700,uid={os.getuid()},gid={os.getgid()}"
         )
         ledger["volumes"] = [
             {
                 "type": "bind",
                 "source": str(home / "emuru-projects"),
-                "target": "/control/emuru-projects",
+                "target": str(home / "emuru-projects"),
                 "bind": {"create_host_path": False},
             }
         ]
+        attempts = home / "emuru-projects/coder-attempts"
+        if attempts.exists():
+            from emuru.projects.coder import load_grant
+            from emuru.vault.mutations import directory, private_directory
+
+            with directory(attempts) as parent:
+                private_directory(parent)
+                entries = os.listdir(parent)
+            repositories = {
+                load_grant(attempts / entry / "grant.json")["path"] for entry in entries
+            }
+            for repository in sorted(repositories):
+                ledger["volumes"].append(
+                    {
+                        "type": "bind",
+                        "source": repository,
+                        "target": repository,
+                        "read_only": True,
+                        "bind": {"create_host_path": False},
+                    }
+                )
         config_path = staging / "compose.json"
         config_path.write_bytes(encoded(config))
         self.command = [

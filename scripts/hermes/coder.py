@@ -69,7 +69,7 @@ def _prior_status(home, root, task_id):
         return coder_board.status(kb, db, card, home, root)
 
 
-def launch(home, vault, policy, task_id, root=ROOT):
+def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=False):
     home = private_path(home)
     os.environ["HERMES_HOME"] = str(home)
     os.environ["HERMES_KANBAN_HOME"] = str(home)
@@ -83,6 +83,13 @@ def launch(home, vault, policy, task_id, root=ROOT):
     ):
         raise ValueError("Only the approved sum_prices task envelope is supported.")
     with dispatcher_lock(home):
+        if cleanup:
+            return coder_board.cleanup(home, root, task_id, grant)
+        if reconcile:
+            return coder_board.reconcile(home, vault, root, task_id, grant)
+        prior = coder_board._find_attempt(home, task_id)
+        if prior is not None:
+            return _prior_status(home, root, task_id)
         folder = coder_board.attempt_path(home, grant)
         if folder.exists():
             existing = load_grant(folder / "grant.json")
@@ -96,6 +103,7 @@ def launch(home, vault, policy, task_id, root=ROOT):
         _, image = launcher["ensure_image"](build=False)
         coder_board.ensure_idle(home, root, task_id)
         folder = coder_board.create_attempt(home, grant)
+        coder_board.record_launcher(folder)
         run = coder_board.claim(home, vault, root, task_id, grant, folder)
         coder_board.authorize(home, vault, root, task_id, grant, run_id=run["run"])
         attempt = Qualification(folder, grant, image, task_run=run)
@@ -105,6 +113,11 @@ def launch(home, vault, policy, task_id, root=ROOT):
             prefix="emuru-coder-gateway-", dir=root / ".runtime"
         ) as gateway_temp:
             gateway_folder = Path(gateway_temp) / "gateway"
+            coder_board._write_new(
+                folder,
+                "gateway.json",
+                json.dumps({"folder": str(gateway_folder)}).encode(),
+            )
             with cloud_gateway(
                 gateway_folder,
                 process_event=lambda name, phase: coder_board.process_event(
@@ -135,7 +148,14 @@ def launch(home, vault, policy, task_id, root=ROOT):
                     ),
                     sandbox,
                 )
-        receipt = coder_board.finish(home, vault, root, task_id, grant, folder, run)
+        try:
+            receipt = coder_board.finish(home, vault, root, task_id, grant, folder, run)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # Completion may commit before its acknowledgment fails.
+            prior = _prior_status(home, root, task_id)
+            if prior["status"] == "tested local result / awaiting owner review":
+                return prior
+            raise
         if result["success"] != (
             receipt.get("status") == "tested local result / awaiting owner review"
         ):
@@ -155,6 +175,17 @@ def main():
         help="Private operator-approved coder grant",
     )
     parser.add_argument("--task", required=True, help="Existing M2 tracked card ID")
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Stop recorded attempt resources after launcher death; preserve task and evidence",
+    )
+    recovery.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="Record verified evidence only after proven process stop; never execute code",
+    )
     args = parser.parse_args()
     os.umask(0o077)
     signal.signal(signal.SIGTERM, interrupted)
@@ -165,7 +196,18 @@ def main():
         )
     vault = private_path(Path(values["EMURU_VAULT_PATH"]))
     home = private_path(args.home)
-    print(encoded(launch(home, vault, args.policy, args.task)).decode())
+    print(
+        encoded(
+            launch(
+                home,
+                vault,
+                args.policy,
+                args.task,
+                reconcile=args.reconcile,
+                cleanup=args.cleanup,
+            )
+        ).decode()
+    )
     return 0
 
 

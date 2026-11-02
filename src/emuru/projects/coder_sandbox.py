@@ -11,8 +11,6 @@ import unittest
 import uuid
 from pathlib import Path
 
-import yaml
-
 CASES = (([], 0), ([1, 2, 3], 6), ([-2, 5], 3), ([0, 0], 0), ([4, 4], 8))
 
 
@@ -169,6 +167,8 @@ def sandbox_configuration(root, image, snapshot, uid, gid, limits=None):
         for key, value in limits.items()
     ):
         raise ValueError("Invalid coding resource limits.")
+    import yaml
+
     config = yaml.safe_load(
         (Path(root) / "infra/docker/coder.compose.yaml").read_text()
     )

@@ -13,6 +13,8 @@ from emuru.vault import mutations
 
 def claim(home, root, grant):
     """One immutable grant/card per source task, baseline, selection and budget."""
+    from emuru.projects.coder_board import ensure_idle
+
     with project_board(home, root) as (kb, db):
         source = kb.get_task(db, grant["source_task"])
         binding = json.loads(source.body) if source else {}
@@ -43,6 +45,7 @@ def claim(home, root, grant):
                 "blocked",
             }:
                 return status(kb, db, active, home)
+        ensure_idle(home, root, None)
         identity = kb.create_task(
             db,
             title="Read-only repository reconnaissance",

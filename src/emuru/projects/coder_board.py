@@ -78,6 +78,25 @@ def _active_work(kb, db, except_task):
 
 
 def ensure_idle(home, root, task_id):
+    attempts = Path(home) / "emuru-projects/coder-attempts"
+    if attempts.exists():
+        with directory(attempts) as parent:
+            private_directory(parent)
+            entries = os.listdir(parent)
+        with board.project_board_readonly(home, root) as (kb, db):
+            for entry in entries:
+                if not re.fullmatch(r"[0-9a-f]{32}", entry):
+                    raise ValueError("Coder attempt identity is invalid.")
+                folder = attempts / entry
+                intent = _read_json(folder / "intent.json")
+                card = kb.get_task(db, intent["task"])
+                if card is None or status(kb, db, card, home, root)["status"] != (
+                    "tested local result / awaiting owner review"
+                ):
+                    raise ValueError(
+                        "Coder intent unresolved; explicit reconciliation required."
+                    )
+
     with board.project_board_readonly(home, root) as (kb, db):
         active = _active_work(kb, db, task_id)
     if active:
@@ -256,13 +275,206 @@ def _processes(folder):
             or (event["name"] in kinds and kinds[event["name"]] != event["kind"])
             or event["phase"] not in {"starting", "stopped", "uncertain"}
             or (event["phase"] == "starting" and event["name"] in states)
-            or (event["phase"] == "stopped" and states.get(event["name"]) != "starting")
+            or (
+                event["phase"] == "stopped"
+                and states.get(event["name"]) not in {"starting", "uncertain"}
+            )
             or (event["phase"] == "uncertain" and event["name"] not in states)
         ):
             raise ValueError("Coder process ledger is invalid.")
         states[event["name"]] = event["phase"]
         kinds[event["name"]] = event["kind"]
     return events
+
+
+def record_launcher(folder):
+    """Bind PID reuse and host reboot before any native claim or worker effects."""
+    pid = os.getpid()
+    _write_new(
+        folder,
+        "launcher.json",
+        json.dumps(
+            {
+                "pid": pid,
+                "start_time": Path(f"/proc/{pid}/stat")
+                .read_text()
+                .rsplit(")", 1)[1]
+                .split()[19],
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            },
+            sort_keys=True,
+        ).encode(),
+    )
+
+
+def _launcher_stopped(folder):
+    record = _read_json(Path(folder) / "launcher.json")
+    if (
+        set(record) != {"pid", "start_time", "boot_id"}
+        or type(record["pid"]) is not int
+        or record["pid"] <= 0
+        or not isinstance(record["start_time"], str)
+        or not record["start_time"].isdigit()
+        or not isinstance(record["boot_id"], str)
+    ):
+        raise ValueError("Coder launcher identity is invalid.")
+    if record["boot_id"] != Path("/proc/sys/kernel/random/boot_id").read_text().strip():
+        return True
+    try:
+        state = (
+            Path(f"/proc/{record['pid']}/stat").read_text().rsplit(")", 1)[1].split()
+        )
+    except FileNotFoundError:
+        return True
+    return state[19] != record["start_time"] or state[0] == "Z"
+
+
+def _cleanup_gateway_secrets(root, receipt):
+    if set(receipt) != {"folder"} or not isinstance(receipt["folder"], str):
+        raise ValueError("Coder gateway private-file binding is invalid.")
+    folder = Path(receipt["folder"])
+    if (
+        folder.name != "gateway"
+        or folder.parent.parent != Path(root) / ".runtime"
+        or not re.fullmatch(r"emuru-coder-gateway-[a-z0-9_]+", folder.parent.name)
+    ):
+        raise ValueError("Coder gateway private-file path is invalid.")
+    try:
+        with directory(folder.parent) as parent:
+            private_directory(parent)
+            try:
+                gateway = os.open(
+                    "gateway",
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent,
+                )
+            except FileNotFoundError:
+                return
+            try:
+                private_directory(gateway)
+                for name in ("provider.key", "gateway.key"):
+                    try:
+                        secret = os.open(
+                            name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=gateway
+                        )
+                    except FileNotFoundError:
+                        continue
+                    try:
+                        regular(secret, private=True)
+                        os.unlink(name, dir_fd=gateway)
+                    finally:
+                        os.close(secret)
+                os.fsync(gateway)
+            finally:
+                os.close(gateway)
+    except FileNotFoundError:
+        return
+
+
+def cleanup(home, root, task_id, grant):
+    """Stop only durably named attempt resources; preserve all task/evidence state."""
+    folder = _find_attempt(home, task_id)
+    if folder is None or digest(load_grant(folder / "grant.json")) != digest(grant):
+        raise ValueError("Coder cleanup grant does not match its intent.")
+    intent = _read_json(folder / "intent.json")
+    if intent.get("grant_sha256") != digest(grant):
+        raise ValueError("Coder cleanup intent binding changed.")
+    if not _launcher_stopped(folder):
+        raise ValueError("Coder launcher may still execute; preserve ownership.")
+    states = {}
+    for event in _processes(folder):
+        states[event["name"]] = event
+
+    def inspect(command):
+        observed = bounded_process(["docker", *command], b"", 10, 65536)
+        if observed["exit_code"]:
+            raise ValueError("Coder cleanup inspection failed; preserve ownership.")
+        return observed["stdout"].strip()
+
+    for name, event in states.items():
+        if not re.fullmatch(r"emuru-coder-[a-z0-9-]{8,100}", name):
+            raise ValueError("Coder cleanup process identity is invalid.")
+        query = ["ps", "-aq", "--filter", f"name=^/{name}$"]
+        if inspect(query):
+            inspect(["rm", "--force", name])
+        if inspect(query):
+            raise ValueError("Coder cleanup termination is uncertain.")
+        if event["kind"] == "gateway":
+            match = re.fullmatch(r"emuru-coder-gateway-([0-9a-f]{16})", name)
+            if match is None:
+                raise ValueError("Coder gateway network identity is invalid.")
+            for kind in ("model", "egress"):
+                network = f"emuru-coder-{kind}-" + match[1]
+                query = ["network", "ls", "-q", "--filter", f"name=^{network}$"]
+                if inspect(query):
+                    inspect(["network", "rm", network])
+                if inspect(query):
+                    raise ValueError("Coder cleanup network removal is uncertain.")
+        if event["phase"] != "stopped":
+            process_event(folder, name, event["kind"], "stopped")
+    try:
+        gateway = _read_json(folder / "gateway.json")
+    except FileNotFoundError:
+        if any(event["kind"] == "gateway" for event in states.values()):
+            raise ValueError("Coder gateway private-file binding unavailable.")
+    else:
+        _cleanup_gateway_secrets(root, gateway)
+    return {
+        "status": "uncertain",
+        "detail": "recorded resources removed; ownership and evidence preserved; explicit reconciliation required",
+    }
+
+
+def reconcile(home, vault, root, task_id, grant):
+    """Explicit metadata-only finalization; caller holds the shared dispatcher lock."""
+    folder = _find_attempt(home, task_id)
+    if folder is None or digest(load_grant(folder / "grant.json")) != digest(grant):
+        raise ValueError("Coder reconciliation grant does not match its intent.")
+    if not _launcher_stopped(folder):
+        raise ValueError("Coder launcher may still execute; preserve ownership.")
+    with board.project_board_readonly(home, root) as (kb, db):
+        card = kb.get_task(db, task_id)
+        prior = status(kb, db, card, home, root)
+        if prior["status"] == "tested local result / awaiting owner review":
+            return prior
+    run = _read_json(folder / "run.json")
+    authorize(home, vault, root, task_id, grant, run_id=run["run"])
+    events = _processes(folder)
+    states = {}
+    for event in events:
+        states[event["name"]] = event
+    # Successful absence inspection proves removal; inspect errors never prove death.
+    for name in states:
+        observed = bounded_process(
+            ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"], b"", 5, 4096
+        )
+        if observed["exit_code"] or observed["stdout"].strip():
+            raise ValueError(
+                "Coder process termination is not verified; preserve ownership."
+            )
+    for event in states.values():
+        if event["kind"] == "gateway":
+            match = re.fullmatch(r"emuru-coder-gateway-([0-9a-f]{16})", event["name"])
+            if match is None:
+                raise ValueError("Coder gateway network identity is invalid.")
+            for kind in ("model", "egress"):
+                network = f"emuru-coder-{kind}-" + match[1]
+                observed = bounded_process(
+                    ["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"],
+                    b"",
+                    5,
+                    4096,
+                )
+                if observed["exit_code"] or observed["stdout"].strip():
+                    raise ValueError(
+                        "Coder gateway cleanup is unproven; operator --cleanup required."
+                    )
+    data = _read_private(folder / "evidence.json", LIMITS["artifact_bytes"])
+    verify_evidence(folder, hashlib.sha256(data).hexdigest(), task_run=run)
+    for event in states.values():
+        if event["phase"] != "stopped":
+            process_event(folder, event["name"], event["kind"], "stopped")
+    return finish(home, vault, root, task_id, grant, folder, run)
 
 
 def finish(home, vault, root, task_id, grant, folder, run):
@@ -418,7 +630,10 @@ def status(kb, db, card, home, root):
     try:
         run = _read_json(folder / "run.json")
     except FileNotFoundError:
-        return {"status": "uncertain", "detail": "claim/run binding incomplete"}
+        return {
+            "status": "uncertain",
+            "detail": "claim/run binding incomplete; preserve ownership; operator reconciliation required",
+        }
     if (
         set(run) != {"task", "run"}
         or run["task"] != card.id
@@ -436,6 +651,10 @@ def status(kb, db, card, home, root):
     except (TypeError, json.JSONDecodeError):
         pass
     if card.status == "done" and isinstance(receipt, dict):
+        if not process_state or any(
+            phase != "stopped" for phase in process_state.values()
+        ):
+            raise ValueError("Coder completion process termination is unproven.")
         task_run = {"task": card.id, "run": run["run"]}
         if (
             receipt.get("status") != "tested local result / awaiting owner review"
@@ -513,8 +732,15 @@ def status(kb, db, card, home, root):
                 )
             except FileNotFoundError:
                 return {"status": "uncertain", "detail": "checked evidence unavailable"}
-            return {"status": "awaiting reconciliation", "run": run["run"]}
-        return {"status": "uncertain", "detail": "attempt process state unproven"}
+            return {
+                "status": "awaiting reconciliation",
+                "run": run["run"],
+                "detail": "operator --reconcile after proving launcher and containers stopped",
+            }
+        return {
+            "status": "uncertain",
+            "detail": "attempt process state unproven; inspect recorded containers; preserve ownership",
+        }
     try:
         report_data = _read_private(folder / "evidence.json", LIMITS["artifact_bytes"])
         report = verify_evidence(

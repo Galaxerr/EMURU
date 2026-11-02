@@ -56,10 +56,26 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
     created_networks = []
     container_owned = False
     try:
+        existing = bounded_process(
+            ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"], b"", 5, 4096
+        )
+        if existing["exit_code"] or existing["stdout"].strip():
+            raise RuntimeError("Coder gateway container identity is unavailable.")
+        for network in (model_network, egress_network):
+            found = bounded_process(
+                ["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"],
+                b"",
+                5,
+                4096,
+            )
+            if found["exit_code"] or found["stdout"].strip():
+                raise RuntimeError("Coder gateway network identity is unavailable.")
+        if process_event:
+            process_event(name, "starting")
+        container_owned = True
+        created_networks.extend((model_network, egress_network))
         _docker(["network", "create", "--internal", model_network])
-        created_networks.append(model_network)
         _docker(["network", "create", egress_network])
-        created_networks.append(egress_network)
         argv = [
             "run",
             "-d",
@@ -103,8 +119,12 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
         pins = json.loads((ROOT / "infra/docker/deployment-lock.json").read_text())
         argv += [
             "--entrypoint",
-            "python",
+            "/usr/bin/timeout",
             pins["litellm"],
+            "-s",
+            "KILL",
+            "600",
+            "python",
             "/opt/emuru/secret-exec.py",
             "litellm",
             "--config",
@@ -112,14 +132,6 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
             "--port",
             "4000",
         ]
-        existing = bounded_process(
-            ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"], b"", 5, 4096
-        )
-        if existing["exit_code"] or existing["stdout"].strip():
-            raise RuntimeError("Coder gateway container identity is unavailable.")
-        if process_event:
-            process_event(name, "starting")
-        container_owned = True
         _docker(argv)
         _docker(["network", "connect", "--alias", "litellm", model_network, name])
         deadline = time.monotonic() + 120
