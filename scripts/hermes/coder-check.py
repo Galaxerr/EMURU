@@ -117,9 +117,9 @@ def sum_prices(prices):
     try: os.execve('/bin/sh', ['sh', '-c', 'exit 0'], {{}})
     except PermissionError: pass
     else: raise AssertionError('unexpected exec')
-    for address in ('1.1.1.1', 'litellm'):
+    for address, port in (('1.1.1.1', 4000), ('litellm', 4000), ('github.com', 443)):
         try:
-            with socket.create_connection((address, 4000), timeout=0.2): pass
+            with socket.create_connection((address, port), timeout=0.2): pass
         except OSError: pass
         else: raise AssertionError('unexpected egress')
     return sum(prices)
@@ -188,6 +188,32 @@ def sum_prices(prices):
         probe = folder / label
         probe.mkdir(mode=0o700)
         repo, grant = qualification_fixture(probe / "fixture")
+        # Native-only probes exercise Docker, not Monty's deliberately smaller API.
+        if label not in {"wrong_result", "early_exit", "forged_counts"}:
+            (repo / "test_sum_prices.py").write_text(
+                content + "\nimport unittest\nclass Boundary(unittest.TestCase):\n"
+                "    def test_boundary(self):\n"
+                "        self.assertEqual(sum_prices([1, 2, 3]), 6)\n"
+            )
+            content = "def sum_prices(prices): return sum(prices)\n"
+            from emuru.projects.scout import git
+
+            git(repo, "--work-tree", str(repo), "add", "test_sum_prices.py")
+            git(
+                repo,
+                "--work-tree",
+                str(repo),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-qm",
+                "controlled native boundary probe",
+            )
+            grant["baseline"] = git(repo, "rev-parse", "HEAD").decode().strip()
         original = (repo / "sum_prices.py").read_bytes()
         grant["limits"].update(overrides)
         attempt = Qualification(probe / "attempt", grant, image)
@@ -202,6 +228,10 @@ def sum_prices(prices):
         except (ValueError, TimeoutError):
             result, observed = None, False
         assert observed is expected, label
+        if expected:
+            assert result["case_count"] == 5 and result["behavioral_cases_passed"]
+            assert result["developer_tests"]["exit_code"] == 0
+            assert result["developer_tests"]["completion_verified"] is False
         assert sandbox.processes and all(
             p.get("stopped") is True for p in sandbox.processes
         ), label
@@ -209,7 +239,10 @@ def sum_prices(prices):
         if label == "memory":
             assert any(p.get("oom_killed") for p in sandbox.processes)
         if label in {"timeout", "output"}:
-            assert sandbox.failed and len(sandbox.processes) == 1
+            assert sandbox.failed and len(sandbox.processes) == 2
+            assert sandbox.failure == (
+                "timeout" if label == "timeout" else "output_limit"
+            )
         record = {
             "probe": label,
             "expected_acceptance": expected,
@@ -221,6 +254,62 @@ def sum_prices(prices):
         records.append(
             {"probe": label, "passed": True, "containers": len(sandbox.processes)}
         )
+        print(json.dumps(records[-1]), flush=True)
+    for label in ("out_of_scope", "repository_write", "symlink", "publication"):
+        probe = folder / label
+        probe.mkdir(mode=0o700)
+        repo, grant = qualification_fixture(probe / "fixture")
+        attempt = Qualification(probe / "attempt", grant, image)
+        sandbox = DockerSandbox(ROOT, image, probe, grant["limits"], daemon_root)
+        original = (repo / "sum_prices.py").read_bytes()
+        denied = []
+
+        def attack(dispatch, attempt=attempt, label=label, repo=repo, denied=denied):
+            path = attempt.workspace.folder / "sum_prices.py"
+            source = path.read_bytes()
+            mode = path.stat().st_mode & 0o777
+            if label == "symlink":
+                path.unlink()
+                path.symlink_to(sentinel)
+            try:
+                if label == "publication":
+                    dispatch("terminal", {"command": "git push"})
+                elif label == "symlink":
+                    dispatch("coder_read", {"path": "sum_prices.py"})
+                else:
+                    dispatch(
+                        "coder_write",
+                        {
+                            "path": str(repo / "sum_prices.py")
+                            if label == "repository_write"
+                            else "../escape.py",
+                            "content": "escape",
+                            "expected_sha256": None,
+                        },
+                    )
+            except (ValueError, OSError):
+                denied.append(label)
+            else:
+                raise AssertionError("Forbidden tool request succeeded: " + label)
+            finally:
+                if label == "symlink":
+                    path.unlink()
+                    path.write_bytes(source)
+                    path.chmod(mode)
+            try:
+                dispatch("coder_read", {"path": "sum_prices.py"})
+            except ValueError:
+                denied.append("revoked")
+            else:
+                raise AssertionError("Tool authority survived denial: " + label)
+            return {"success": True, "model_led": False}
+
+        result = attempt.run(attack, sandbox)
+        assert denied == [label, "revoked"], label
+        assert result["success"] is False and result["failure"] == "execution_failed"
+        assert not sandbox.processes and not result["checks"]
+        assert (repo / "sum_prices.py").read_bytes() == original
+        records.append({"probe": label, "passed": True, "model_led": False})
         print(json.dumps(records[-1]), flush=True)
     return {"isolation_probes": records, "evidence": str(folder)}
 

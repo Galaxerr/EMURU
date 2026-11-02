@@ -708,7 +708,21 @@ def status(kb, db, card, home, root):
             "evidence": receipt,
         }
     if card.current_run_id != run["run"]:
-        return {"status": "uncertain", "detail": "native run identity changed"}
+        # Native blocking closes the run and clears the active pointer.
+        latest = kb.latest_run(db, card.id) if card.status == "blocked" else None
+        if (
+            card.current_run_id is not None
+            or latest is None
+            or latest.id != run["run"]
+            or latest.task_id != card.id
+            or latest.profile != CODER
+            or latest.status != "blocked"
+            or latest.outcome != "blocked"
+            or latest.ended_at is None
+            or not process_state
+            or any(phase != "stopped" for phase in process_state.values())
+        ):
+            return {"status": "uncertain", "detail": "native run identity changed"}
     if card.status == "running":
         for name, phase in process_state.items():
             if phase != "starting":

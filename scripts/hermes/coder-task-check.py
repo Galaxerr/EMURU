@@ -1,6 +1,7 @@
-"""Run one synthetic native task through Ticket 2 using the pinned image."""
+"""Qualify the operator/native/status path on disposable data with a real provider."""
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -65,7 +66,15 @@ def _git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
-def prepare(image):
+def snapshot(folder):
+    return {
+        str(path.relative_to(folder)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in folder.rglob("*")
+        if path.is_file()
+    }
+
+
+def prepare(image, *, failing_tests=False):
     os.umask(0o077)
     root = Path(
         tempfile.mkdtemp(prefix="coder-task-acceptance-", dir=ROOT / ".runtime")
@@ -141,7 +150,14 @@ def prepare(image):
 
     task = {
         "id": "sum-prices",
-        "description": "Implement sum_prices as the sum of input prices",
+        "description": "Implement sum_prices as the sum of input prices"
+        + (
+            ". This qualification intentionally contains a failing immutable developer test. "
+            "Implement only sum_prices.py, run python_unittest, then report tests_failed. "
+            "Do not fix or write test_sum_prices.py, retry checks, or call more tools after failure."
+            if failing_tests
+            else ""
+        ),
         "acceptance": [
             {"command": "python -m unittest", "expected_result": "Zero exit"}
         ],
@@ -210,7 +226,12 @@ def prepare(image):
     (repo / "test_sum_prices.py").write_text(
         "import unittest\nfrom sum_prices import sum_prices\n\n"
         "class Prices(unittest.TestCase):\n"
-        "    def test_positive(self):\n        self.assertEqual(sum_prices([1, 2, 3]), 6)\n",
+        "    def test_positive(self):\n"
+        + (
+            "        self.fail('deliberate acceptance failure')\n"
+            if failing_tests
+            else "        self.assertEqual(sum_prices([1, 2, 3]), 6)\n"
+        ),
         encoding="utf-8",
     )
     _git(repo, "init", "-q")
@@ -261,8 +282,14 @@ def prepare(image):
     return locals()
 
 
-def run(image):
-    fixture = prepare(image)
+def run(image, *, failing_tests=False):
+    source_identity, current_image = runpy.run_path(
+        str(ROOT / "scripts/hermes/container.py")
+    )["ensure_image"](build=False)
+    assert image == current_image, (
+        "Acceptance requires the verified current-source image."
+    )
+    fixture = prepare(image, failing_tests=failing_tests)
     root, home, vault, policy, task_id = (
         fixture[key] for key in ("root", "home", "vault", "policy", "task_id")
     )
@@ -281,21 +308,28 @@ def run(image):
     from emuru.projects import board, coder_board
     from emuru.projects.scout import git
 
+    vault_before, repo_before = snapshot(vault), snapshot(repo)
     receipt = runpy.run_path(str(ROOT / "scripts/hermes/coder.py"))["launch"](
         home, vault, policy, task_id, ROOT
     )
-    assert receipt["status"] == "tested local result / awaiting owner review"
+    expected = (
+        "tests_failed"
+        if failing_tests
+        else "tested local result / awaiting owner review"
+    )
+    assert receipt["status"] == expected
     assert git(repo, "rev-parse", "HEAD").decode().strip() == baseline
     with board.project_board_readonly(home, ROOT) as (kb, db):
         card = kb.get_task(db, task_id)
-        assert card.status == "done" and card.idempotency_key == original_key
+        assert card.status == ("blocked" if failing_tests else "done")
+        assert card.idempotency_key == original_key
         assert card.body == card_body
         report = coder_board.status(kb, db, card, home, ROOT)
         assert report["status"] == receipt["status"]
         ids = tuple(item.id for item in kb.list_attachments(db, task_id))
         identity = (card.current_run_id, ids)
-        evidence_sha256 = json.loads(card.result)["evidence_sha256"]
-        diff_sha256 = json.loads(card.result)["diff_sha256"]
+        evidence_sha256 = report["evidence"]["evidence_sha256"]
+        diff_sha256 = report["evidence"]["diff_sha256"]
     try:
         project_command("/project status " + proposal, owner=43)
     except ValueError:
@@ -308,18 +342,63 @@ def run(image):
     repeated = runpy.run_path(str(ROOT / "scripts/hermes/coder.py"))["launch"](
         home, vault, policy, task_id, ROOT
     )
-    assert repeated == {"status": receipt["status"], "evidence": receipt}
+    assert repeated["status"] == expected
     with board.project_board_readonly(home, ROOT) as (kb, db):
         card = kb.get_task(db, task_id)
         assert (
             card.current_run_id,
             tuple(item.id for item in kb.list_attachments(db, task_id)),
         ) == identity
+    folder = coder_board.attempt_path(home, fixture["grant"])
+    evidence = json.loads((folder / "evidence.json").read_text())
+    assert evidence["image"] == image
+    assert evidence["native_task_run"] == {"task": task_id, "run": receipt["run"]}
+    assert evidence["native"]["model_led"] is True
+    assert evidence["changed_files"] == ["sum_prices.py"]
+    assert evidence["checks"][-1]["result"]["behavioral_cases_passed"] is True
+    assert evidence["checks"][-1]["result"]["developer_tests"]["exit_code"] == (
+        1 if failing_tests else 0
+    )
+    # Corrupt only disposable evidence, then restore it for independent inspection.
+    patch = folder / "diff.patch"
+    original_patch = patch.read_bytes()
+    try:
+        patch.write_bytes(original_patch + b"forged diff\n")
+        with board.project_board_readonly(home, ROOT) as (kb, db):
+            try:
+                coder_board.status(kb, db, kb.get_task(db, task_id), home, ROOT)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Tampered diff retained authenticated status.")
+    finally:
+        patch.write_bytes(original_patch)
+    assert snapshot(vault) == vault_before and snapshot(repo) == repo_before
+    (root / "acceptance.json").write_text(
+        json.dumps(
+            {
+                "model_led": True,
+                "expected_status": expected,
+                "task": task_id,
+                "run": receipt["run"],
+                "image": image,
+                "source_identity": source_identity,
+                "evidence_sha256": evidence_sha256,
+                "diff_sha256": diff_sha256,
+                "source_and_vault_unchanged": True,
+                "repeat_no_replay": True,
+                "wrong_owner_refused": True,
+                "tampered_diff_refused": True,
+                "owner_manual_acceptance": "pending",
+            },
+            sort_keys=True,
+        )
+    )
     queue.close()
     (root / "receipt.json").write_text(json.dumps(receipt, sort_keys=True))
     for name in ("native-runtime", "hermes-site", "emuru-site"):
         shutil.rmtree(root / name)
-    print(f"Ticket 2 native task acceptance: PASS ({root})", flush=True)
+    print(f"Integrated native task acceptance ({expected}): PASS ({root})", flush=True)
 
 
 if __name__ == "__main__":
@@ -327,4 +406,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--image", required=True, help="Verified current-source image digest"
     )
-    run(parser.parse_args().image)
+    parser.add_argument(
+        "--failing-tests",
+        action="store_true",
+        help="Require tests_failed with immutable deliberately failing tests",
+    )
+    args = parser.parse_args()
+    run(args.image, failing_tests=args.failing_tests)

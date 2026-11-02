@@ -8,9 +8,10 @@ proposed project or task changes. Conversation history persists across restarts.
 an authenticated LiteLLM gateway with one cloud attempt and no automatic local
 fallback. Permanent-host production certification is a separate milestone.
 
-**v0.5.4 is in development.** Ticket 1 is qualifying confined native coding and
-offline tests on disposable source. Native task execution is not enabled; the
-package version remains 0.5.3. See the [v0.5.4 implementation tracker](docs/releases/v0.5.4-implementation.md)
+**v0.5.4 is in development.** Tickets 1–3 implement bounded operator-run coding,
+independent callable acceptance and conservative crash recovery. Ticket 4 qualifies
+the integrated path on disposable data; production/release acceptance remains
+pending. The package version remains 0.5.3. See the [v0.5.4 implementation tracker](docs/releases/v0.5.4-implementation.md)
 for verified progress, blockers and the four-ticket dependency chain.
 
 ## What you can do
@@ -26,8 +27,10 @@ for verified progress, blockers and the four-ticket dependency chain.
 - Run an opt-in, offline read-only scout against explicitly selected committed
   repository files. Reports retain baseline HEAD, file hashes and a native Kanban
   receipt. See [scout operation](docs/RUNBOOK.md#read-only-repository-scout-v053).
-  Coding and tests are under disposable v0.5.4 qualification. Live coding and
-  vault result updates remain unavailable.
+- Qualify one separately authorized coding task with a private immutable grant,
+  selected-file workspace and authenticated status. See the
+  [coder runbook](docs/RUNBOOK.md#bounded-operator-run-coding-v054-development).
+  Production enablement and vault result capture remain separate gates.
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,

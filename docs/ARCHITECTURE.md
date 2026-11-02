@@ -43,8 +43,8 @@ when their Docker client dies. No model capability is qualified by this mileston
 
 ## v0.5.4 implementation boundary
 
-Ticket 1 is blocked in qualification, using disposable synthetic repositories only. The owner
-approved native Hermes inference with exactly `coder_read`, `coder_write` and
+Tickets 1–3 implement the approved development boundary; Ticket 4 qualifies its
+integrated behavior on disposable data. Native Hermes inference exposes exactly `coder_read`, `coder_write` and
 `coder_check`, a separate trusted host dispatcher, and disposable offline check
 containers. Approval does not establish runtime security or compatibility. The
 [implementation tracker](releases/v0.5.4-implementation.md) records actual evidence.
@@ -57,16 +57,21 @@ board, journals, credentials or Docker socket. Model access stays on the inferen
 side through the selected cloud route. Authorized source can reach that cloud
 model; this is not a source-confidentiality guarantee.
 
-`python_unittest` selects a fixed interpreter and reviewed harness. Controller-side
-assertions evaluate the approved `sum_prices` cases; repository tests are
-supplemental. Model prose and repository-reported counts cannot establish success.
+`python_unittest` selects the reviewed host-controlled Monty callable harness.
+Fresh sessions evaluate the five approved `sum_prices` cases. Docker CPython
+developer tests are supplemental; their zero exit does not authenticate unittest
+completion or establish native/Monty equivalence. Nonzero exit blocks acceptance.
+Model prose and repository-reported counts cannot establish success.
 Exact files, source HEAD, grant, catalogue, diff and observed check results must
 bind to independently reopened evidence. Retained state is private and bounded.
 
-Ticket 1 does not authorize live cards or alter the default owner-facing profile.
-Native task authorization/status, interruption/restart integration, and integrated
-release evidence remain Tickets 2–4, in that blocking order. No automatic dispatch,
-publication, deployment or vault-result capture is enabled.
+The operator launcher revalidates private grants against current applied approval,
+the original tracked card, source HEAD and catalogue. Native records retain task/run
+authority; private intent/process/evidence facts enforce shared Scout exclusion and
+no replay. Explicit cleanup requires proven launcher death; reconciliation only
+finalizes existing verified evidence after proven stop. Neither action retries work.
+The default owner-facing profile has no coding execution controls. Local acceptance
+means tested output awaiting owner review, not publication or project completion.
 
 ## Repository map
 
@@ -82,7 +87,7 @@ Paths below are relative to the repository root.
 | `src/emuru/hermes/` | Shared profile, runtime launch and inference/tool-dispatch guards |
 | `src/emuru/projects/{spec,board}.py` | Bounded planning projection and receipt-bound native Kanban tracking |
 | `src/emuru/projects/{scout,scout_board}.py`, `scripts/hermes/scout.py` | Fixed inspection, native run/evidence fences and owner-operated isolated dispatch |
-| `src/emuru/projects/coder*.py`, `scripts/hermes/coder-check.py`, `infra/docker/coder.compose.yaml` | In-progress disposable coding, selected-file confinement and offline qualification; no live dispatch |
+| `src/emuru/projects/coder*.py`, `scripts/hermes/coder*.py`, `infra/docker/coder.compose.yaml` | Grant-bound operator coding, selected-file confinement, evidence/status, conservative recovery and disposable qualification |
 | `src/emuru/models/` | Provider configuration, route/qualification contract and bounded gateway behavior |
 | `src/emuru/deployment.py`, `environment.py` | Source identity, stopped-state compatibility and private environment handling |
 | `scripts/hermes/container.py`, `scripts/service/` | Explicit initialization and Docker wake/sleep/status/rollback |

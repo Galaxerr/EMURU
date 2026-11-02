@@ -236,37 +236,110 @@ Disposable acceptance (no real profile/vault or provider needed):
 uv run --frozen python scripts/hermes/scout-check.py
 ```
 
-### Disposable coding qualification (v0.5.4, in progress)
+### Bounded operator-run coding (v0.5.4 development)
 
-This development harness does not execute tracked native cards. Ticket 1 is not
-accepted until the actual model-led edit, independent checks and runtime probes
-all pass. See [v0.5.4 progress](releases/v0.5.4-implementation.md) before interpreting
-results. Passing host tests do not establish runtime or CI qualification.
+This is the delivered development path, not production enablement or release GO.
+Use only under separate task execution authorization, as an unprivileged
+Docker-capable operator. The default Telegram profile cannot start coding.
+An approved note alone never grants repository access or execution authority.
 
-Run as an unprivileged Docker-capable user. These commands create fresh synthetic
-repositories and private evidence under ignored `.runtime/`. They do not mount
-a real vault/profile into repository execution or enable native tasks.
+1. Apply the reviewed project spec through guarded vault approval, then use
+   `/project track <proposal-id>` and owner-private `/project status <proposal-id>`
+   to identify the original native coding card. The initial supported task is
+   `sum_prices.py:sum_prices(prices)` over integer lists.
+2. Review selected committed UTF-8 source for disclosure to the selected cloud
+   provider. Build/verify the current-source image using the existing image
+   workflow. The coding launcher never builds, pulls or downloads dependencies.
+3. Prepare an immutable, operator-owned mode-0600 JSON grant outside the source
+   repository. Parent directories must be private and free of symlinks. Use the
+   exact schema accepted by `src/emuru/projects/coder.py:validate_grant`:
+
+| Grant fields | Required binding |
+| --- | --- |
+| `schema`, `grant_id` | `1`, fresh 32-character lowercase hex attempt ID |
+| `owner`, `bot` | Authenticated numeric Telegram owner/bot IDs |
+| `vault` | `scout.digest(os.path.abspath(vault))` |
+| `project` | `board._digest([str(owner), str(bot), os.path.abspath(vault), approved_note_path])` |
+| `proposal`, `approval`, `revision` | Applied proposal ID, `approval_digest`, `after_revision` from current `mutations.approved_project` |
+| `task`, `task_digest` | Original tracked native card ID, `scout.digest(task)` for its exact approved structured task |
+| `repository`, `path`, `baseline` | Reviewed repository label, absolute repository path, exact authentic 40-character source HEAD |
+| `read_files`, `write_files`, `create_files` | Exact relative files; writes/creates within reads and disjoint; include `sum_prices.py` in reads/writes |
+| `check_ids`, `catalogue`, `network` | `["python_unittest"]`, current `coder_board.catalogue_digest()`, `"none"` |
+| `limits` | Every key in `coder.LIMITS`, positive integers at or below its ceilings |
+
+Do not derive approval fields from model prose or fabricate receipts. There is no
+public grant-creation command; the operator reviews the native card and current
+applied receipt using the existing trusted APIs. The disposable example in
+`scripts/hermes/coder-task-check.py:prepare` demonstrates the complete binding;
+its synthetic IDs and receipts never authorize real state. Spec/task, source HEAD
+and catalogue are revalidated before dispatch and completion.
+
+Ceilings: one task, 600 seconds per attempt, 12 model iterations, four checks of
+60 seconds each, one CPU, 512 MiB memory, 64 PIDs, 100 selected files, 256 KiB per
+file, 2 MiB selected source, 64 KiB output per check, 256 KiB combined output,
+8 MiB retained artifacts, and fresh 64 MiB/1,024-inode `/tmp`. Checks have no network,
+Docker socket, vault, board or model credentials. No shell, Git, delete, rename,
+chmod, install or arbitrary command tool is exposed. Monetary usage is observational.
+
+With `.env` pointing to the intended approved `EMURU_VAULT_PATH`, launch once:
 
 ```bash
-uv run --frozen python scripts/hermes/coder-check.py --build --native-self-check --sandbox-self-check
-uv run --frozen python scripts/hermes/coder-check.py --isolation-probes
+uv run --frozen python scripts/hermes/coder.py \
+  --home /absolute/path/to/existing/profiles/emuru \
+  --policy /absolute/path/to/private/coder-grant.json \
+  --task t_REPLACE_WITH_NATIVE_CARD_ID
 ```
 
-`--live` additionally makes cost-bearing calls through the existing selected cloud
-route. Use it only under explicit runtime authorization. Inference and its
-temporary gateway stay separate from offline repository execution. A controller
-fixture passing is not model-led proof. Missing model access, incompatibility,
-timeouts or partial evidence block acceptance without permission expansion.
+Inspect the JSON receipt and owner-private `/project status <proposal-id>`.
+Evidence and scoped diff are native attachments under
+`<home>/emuru-projects/coder-attempts/<grant_id>/`; inspect `evidence.json`,
+`diff.patch`, immutable source manifests, grant/run identity and recorded process
+facts. Status reopens and hashes actual artifacts. Five fresh Monty sessions must
+return typed expected values for empty, positive, negative, zero and duplicate
+inputs. Native developer tests are supplemental: nonzero exit blocks acceptance;
+zero exit never proves unittest completion or native/Monty equivalence.
+`tested local result / awaiting owner review` means only bounded local acceptance.
+`tests_failed` records a verified failing check; `blocked` records a refused or
+failed attempt. Unproven identities, artifacts or process stop remain `uncertain`.
+The owner must inspect the diff, broader correctness and independent review;
+publication and later vault note capture require separate authority.
 
-Preserve evidence and uncertain attempts. Verify every recorded container has
-stopped before explicit operator cleanup; never delete uncertain state to bypass
-a blocker. Repeating a qualification creates new disposable data, not permission
-to replay an existing native task.
+Repeat launch only inspects the existing attempt; it never retries work. After a
+crash, preserve the complete stopped profile and artifacts. An expired lease,
+changed grant or lost reply cannot clear ownership. If status is uncertain, first
+investigate the exact launcher/container identities. Explicit `--cleanup` on the
+same command proves launcher death, stops recorded resources and removes retained
+gateway credentials; it preserves intent, evidence, workspace and ownership.
+After proven stop, `--reconcile` can finalize already checked evidence under the
+current grant/approval/baseline. It runs no inference or checks. Missing or partial
+evidence remains uncertain; never edit SQLite or delete attempts to unblock work.
+General retry/retention controls remain outside this increment.
 
-CI must also run through `act` using the repository workflow and `.actrc`. Local
-`act` supplements exact-final-commit hosted CI; it does not replace it. Keep real
-credentials out of CI: defaults use `/dev/null` for environment and secret files.
-CI exercises disposable data, not production services.
+### Disposable integrated coding qualification
+
+Use fresh synthetic data only; evidence stays private under ignored `.runtime/`.
+Provider-backed commands incur selected-provider calls and require explicit
+runtime authorization. They do not use a real owner vault or establish manual
+owner acceptance. Verify the image digest against current source first.
+
+```bash
+uv run --frozen python scripts/hermes/coder-check.py --build --native-self-check --sandbox-self-check --isolation-probes
+uv run --frozen python scripts/hermes/coder-task-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE
+uv run --frozen python scripts/hermes/coder-task-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --failing-tests
+uv run --frozen python scripts/hermes/coder-lifecycle-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE
+```
+
+Run each command in a separate process. Passing/failing native fixtures use real
+model-led inference, applied synthetic receipts, board/status and Docker checks.
+Controlled isolation/crash fixtures are reported separately from model proof.
+Missing provider access, timeouts, failed probes or partial evidence block
+acceptance; no permission expansion or automatic retry is allowed.
+
+Use the existing full CI workflow once through `act push` and `.actrc` for
+M1–M3, Telegram/vault/cloud contracts, source identity and the owned
+wake/update/rollback drill. Do not duplicate that drill. Keep CI secrets/env at
+`/dev/null`. Local CI does not replace exact-final-commit hosted CI. Predecessor
+acceptance, manual owner acceptance and publication remain separate release gates.
 
 ## Troubleshooting and recovery
 

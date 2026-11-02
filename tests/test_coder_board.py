@@ -7,8 +7,114 @@ from types import SimpleNamespace
 import pytest
 
 from emuru.projects import coder_board
-from emuru.projects.coder_runtime import qualification_fixture
+from emuru.projects.coder_runtime import Qualification, qualification_fixture
 from emuru.projects.scout import digest
+
+
+@pytest.fixture
+def failed_status(tmp_path):
+    _, grant = qualification_fixture(tmp_path / "fixture")
+    home = tmp_path / "home"
+    (home / "emuru-projects").mkdir(parents=True, mode=0o700)
+    folder = coder_board.create_attempt(home, grant)
+    run = {"task": grant["task"], "run": 1}
+    coder_board._write_new(folder, "run.json", json.dumps(run).encode())
+    attempt = Qualification(folder, grant, "sha256:" + "a" * 64, task_run=run)
+
+    class Checks:
+        failed = False
+        processes = ()
+
+        def check(self, *_args, **_kwargs):
+            return {"success": False, "case_count": 0}
+
+    def native(dispatch):
+        dispatch("coder_check", {"check_id": "python_unittest"})
+        return {"success": True}
+
+    attempt.run(native, Checks())
+    coder_board.process_event(folder, "emuru-coder-check-12345678", "check", "starting")
+    coder_board.process_event(folder, "emuru-coder-check-12345678", "check", "stopped")
+    card = SimpleNamespace(
+        id=grant["task"], status="blocked", current_run_id=None, result=None
+    )
+    latest = SimpleNamespace(
+        id=1,
+        task_id=card.id,
+        profile="emuru-coder",
+        status="blocked",
+        outcome="blocked",
+        ended_at=123,
+    )
+
+    class Board:
+        @staticmethod
+        def latest_run(_db, _task):
+            return latest
+
+        @staticmethod
+        def list_attachments(_db, _task):
+            return [
+                SimpleNamespace(
+                    filename=name,
+                    stored_path=str(folder / name),
+                    size=(folder / name).stat().st_size,
+                    uploaded_by="emuru-coder-runner",
+                )
+                for name in ("evidence.json", "diff.patch")
+            ]
+
+    return home, folder, card, latest, Board()
+
+
+def test_failed_status_authenticates_closed_run_after_native_clears_active_pointer(
+    failed_status,
+):
+    home, _, card, _, kb = failed_status
+    report = coder_board.status(kb, None, card, home, home)
+    assert report["status"] == "tests_failed" and report["run"] == 1
+    assert report["evidence"]["evidence_sha256"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", 2),
+        ("task_id", "t_other"),
+        ("profile", "emuru-scout"),
+        ("status", "running"),
+        ("outcome", "completed"),
+        ("ended_at", None),
+    ],
+)
+def test_failed_status_refuses_mismatched_or_unfinished_terminal_run(
+    failed_status, field, value
+):
+    home, _, card, latest, kb = failed_status
+    setattr(latest, field, value)
+    assert coder_board.status(kb, None, card, home, home)["status"] == "uncertain"
+
+
+def test_failed_status_refuses_unproven_process_stop(failed_status):
+    home, folder, card, _, kb = failed_status
+    coder_board.process_event(folder, "emuru-coder-check-87654321", "check", "starting")
+    assert coder_board.status(kb, None, card, home, home)["status"] == "uncertain"
+
+
+@pytest.mark.parametrize(
+    "missing", ["matching_active_run", "latest_run", "process_ledger"]
+)
+def test_failed_status_requires_terminal_identity_and_stop_facts(
+    failed_status, monkeypatch, missing
+):
+    home, folder, card, _, kb = failed_status
+    if missing == "matching_active_run":
+        card.current_run_id = 2
+    elif missing == "latest_run":
+        monkeypatch.setattr(kb, "latest_run", lambda *_: None)
+    else:
+        (folder / "processes.jsonl").write_text("")
+    assert coder_board.status(kb, None, card, home, home)["status"] == "uncertain"
 
 
 def test_authorize_reopens_approval_task_and_native_binding(tmp_path, monkeypatch):
