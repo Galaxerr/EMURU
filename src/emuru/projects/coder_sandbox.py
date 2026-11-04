@@ -448,7 +448,7 @@ class DockerSandbox:
         result["behavioral_cases_passed"] = result["success"]
         if result["success"] and list(Path(snapshot).rglob("test_*.py")):
             allowance = min(
-                self.limits["check_output_bytes"],
+                self.limits["check_output_bytes"] - used,
                 self.limits["total_output_bytes"] - self.total_output,
             )
             developer = self._run(

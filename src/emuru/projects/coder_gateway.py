@@ -22,7 +22,18 @@ def _docker(arguments, seconds=30):
 
 
 @contextlib.contextmanager
-def cloud_gateway(folder, daemon_root=None, process_event=None):
+def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None):
+    now = time.monotonic()
+    attempt_deadline = min(now + 600, deadline) if deadline is not None else now + 600
+    deadline = min(now + 120, attempt_deadline)
+
+    def remaining(seconds):
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("Coder gateway exceeded its attempt deadline.")
+        return min(seconds, budget)
+
+    remaining(120)
     folder = Path(folder)
     daemon_root = Path(daemon_root) if daemon_root else ROOT
     route = read_route(Path.home() / ".local/state/emuru/container/route.json")
@@ -57,7 +68,10 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
     container_owned = False
     try:
         existing = bounded_process(
-            ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"], b"", 5, 4096
+            ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
+            b"",
+            remaining(5),
+            4096,
         )
         if existing["exit_code"] or existing["stdout"].strip():
             raise RuntimeError("Coder gateway container identity is unavailable.")
@@ -65,7 +79,7 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
             found = bounded_process(
                 ["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"],
                 b"",
-                5,
+                remaining(5),
                 4096,
             )
             if found["exit_code"] or found["stdout"].strip():
@@ -74,8 +88,8 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
             process_event(name, "starting")
         container_owned = True
         created_networks.extend((model_network, egress_network))
-        _docker(["network", "create", "--internal", model_network])
-        _docker(["network", "create", egress_network])
+        _docker(["network", "create", "--internal", model_network], remaining(30))
+        _docker(["network", "create", egress_network], remaining(30))
         argv = [
             "run",
             "-d",
@@ -123,7 +137,7 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
             pins["litellm"],
             "-s",
             "KILL",
-            "600",
+            str(attempt_deadline - time.monotonic()),
             "python",
             "/opt/emuru/secret-exec.py",
             "litellm",
@@ -132,9 +146,11 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
             "--port",
             "4000",
         ]
-        _docker(argv)
-        _docker(["network", "connect", "--alias", "litellm", model_network, name])
-        deadline = time.monotonic() + 120
+        _docker(argv, remaining(30))
+        _docker(
+            ["network", "connect", "--alias", "litellm", model_network, name],
+            remaining(30),
+        )
         while True:
             health = bounded_process(
                 [
@@ -146,14 +162,13 @@ def cloud_gateway(folder, daemon_root=None, process_event=None):
                     "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness',timeout=2)",
                 ],
                 b"",
-                5,
+                remaining(5),
                 4096,
             )
             if health["exit_code"] == 0:
+                remaining(1)
                 break
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Disposable model gateway did not become ready.")
-            time.sleep(1)
+            time.sleep(remaining(1))
         yield model_network, gateway_key, route["primary"]
     finally:
         cleanup_error = None

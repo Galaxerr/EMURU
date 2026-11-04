@@ -195,3 +195,37 @@ def test_native_zero_and_forged_summary_cannot_replace_callable_evidence(
     assert not result["success"]
     assert result["failure"] == "authoritative_evidence_missing"
     assert result["case_count"] == 0
+
+
+@pytest.mark.parametrize("total_limit", [2048, 4096])
+def test_authoritative_and_developer_output_share_one_check_budget(
+    tmp_path, monkeypatch, total_limit
+):
+    limits = {**LIMITS, "check_output_bytes": 2048, "total_output_bytes": total_limit}
+    sandbox = DockerSandbox(ROOT, "sha256:" + "a" * 64, tmp_path, limits)
+    (tmp_path / "test_example.py").write_text("pass\n")
+    authoritative = json.dumps(run_acceptance(sum))
+    allowances = []
+
+    def run(snapshot, payload, deadline, allowance, *, developer=False):
+        allowances.append(allowance)
+        if developer:
+            # Exercise the real bounded producer and its output failure latch.
+            try:
+                output = bounded_process(
+                    [sys.executable, "-c", "print('x' * 1800)"], b"", 2, allowance
+                )
+            except ValueError:
+                sandbox._fail("output_limit")
+                raise
+        else:
+            output = {"stdout": authoritative, "stderr": "", "exit_code": 0}
+        return {**output, "stopped": True, "confinement": {"network": "none"}}
+
+    monkeypatch.setattr(sandbox, "_run", run)
+    with pytest.raises(ValueError, match="output limit"):
+        sandbox.check(tmp_path, "python_unittest")
+    assert allowances == [2048, 2048 - len(authoritative.encode())]
+    assert sandbox.failed and sandbox.failure == "output_limit"
+    with pytest.raises(ValueError, match="failed closed"):
+        sandbox.check(tmp_path, "python_unittest")

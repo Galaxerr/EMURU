@@ -59,7 +59,15 @@ def verify_native_completion(image, name, final, sequence, code, actual):
 
 
 def run_inference(
-    image, network, gateway_key, request, dispatch, *, name=None, process_event=None
+    image,
+    network,
+    gateway_key,
+    request,
+    dispatch,
+    *,
+    name=None,
+    process_event=None,
+    deadline=None,
 ):
     validate_request(request)
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
@@ -70,6 +78,11 @@ def run_inference(
     if not re.fullmatch(r"emuru-coder-[a-z0-9-]{8,80}", name):
         raise ValueError("Native inference process identity is invalid.")
     seconds = request.get("deadline_seconds", 600)
+    now = time.monotonic()
+    deadline = min(now + seconds, deadline) if deadline is not None else now + seconds
+    seconds = deadline - now
+    if seconds <= 0:
+        raise TimeoutError("Native coding inference exceeded its attempt deadline.")
     command = [
         "docker",
         "run",
@@ -135,7 +148,7 @@ def run_inference(
             "EMURU_GATEWAY_KEY": gateway_key,
         },
     )
-    deadline, buffer, sequence, final = time.monotonic() + seconds, bytearray(), 0, None
+    buffer, sequence, final = bytearray(), 0, None
     try:
         process.stdin.write(json.dumps(request).encode() + b"\n")
         process.stdin.flush()

@@ -120,6 +120,7 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
             )
             with cloud_gateway(
                 gateway_folder,
+                deadline=attempt.deadline,
                 process_event=lambda name, phase: coder_board.process_event(
                     folder, name, "gateway", phase
                 ),
@@ -141,6 +142,7 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                         gateway_key,
                         request,
                         dispatch,
+                        deadline=attempt.deadline,
                         name=inference_name,
                         process_event=lambda name, phase: coder_board.process_event(
                             folder, name, "inference", phase
