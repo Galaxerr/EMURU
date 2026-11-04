@@ -1,6 +1,7 @@
 """Attempt deadlines cover gateway startup and inference, with cleanup grace."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -125,7 +126,10 @@ def test_launcher_shares_original_deadline_after_gateway_startup(monkeypatch, tm
 
     monkeypatch.setitem(namespace, "cloud_gateway", gateway)
     monkeypatch.setitem(namespace, "run_inference", inference)
-    with pytest.raises(TimeoutError, match="fixture deadline"):
+    with (
+        patch.dict("os.environ"),
+        pytest.raises(TimeoutError, match="fixture deadline"),
+    ):
         launch(
             tmp_path / "home",
             tmp_path / "vault",
