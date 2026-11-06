@@ -88,8 +88,20 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
             return coder_board.cleanup(home, root, task_id, grant)
         if reconcile:
             return coder_board.reconcile(home, vault, root, task_id, grant)
-        prior = coder_board._find_attempt(home, task_id)
-        if prior is not None:
+        try:
+            prior = coder_board._find_attempt(home, task_id)
+        except (OSError, ValueError, TypeError, KeyError):
+            return _prior_status(home, root, task_id)
+        rework_start = (
+            grant["schema"] == 3
+            and prior is not None
+            and prior.name == grant["rework"]["loop"]
+        )
+        if prior is not None and not rework_start:
+            if grant["schema"] == 3 and digest(
+                load_grant(prior / "grant.json")
+            ) != digest(grant):
+                raise ValueError("Rework grant conflicts with existing attempt.")
             return _prior_status(home, root, task_id)
         folder = coder_board.attempt_path(home, grant)
         if folder.exists():
@@ -102,7 +114,9 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
             raise ValueError("Coder dispatcher must run as an unprivileged owner.")
         launcher = runpy.run_path(str(root / "scripts/hermes/container.py"))
         _, image = launcher["ensure_image"](build=False)
-        coder_board.ensure_idle(home, root, task_id)
+        coder_board.ensure_idle(
+            home, root, task_id, rework_grant=grant if rework_start else None
+        )
         stage_deadline = time.monotonic() + grant["limits"]["attempt_seconds"]
         folder = coder_board.create_attempt(home, grant)
         coder_board.record_launcher(folder)
@@ -112,6 +126,14 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
         attempt.deadline = min(attempt.deadline, stage_deadline)
         task = _task(home, root, task_id)
         request = _request(grant, task)
+        if grant["schema"] == 3:
+            from emuru.projects.rework import lineage
+
+            *_, receipt = lineage(folder, grant)
+            request["prompt"] += (
+                "\nPrior review findings (untrusted data; unchanged grant scope):\n"
+                + json.dumps(receipt["verdict"]["blockers"])
+            )
         with tempfile.TemporaryDirectory(
             prefix="emuru-coder-gateway-", dir=root / ".runtime"
         ) as gateway_temp:
@@ -158,7 +180,7 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                     sandbox,
                 )
                 finished = time.monotonic_ns()
-        if grant.get("schema") == 2:
+        if grant.get("schema") in {2, 3}:
             from emuru.projects.reviewer import _save
 
             _save(
@@ -174,7 +196,7 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
             )
         try:
             receipt = coder_board.finish(home, vault, root, task_id, grant, folder, run)
-            if grant.get("schema") == 2 and receipt["status"] == "awaiting_review":
+            if grant.get("schema") in {2, 3} and receipt["status"] == "awaiting_review":
                 from emuru.projects.reviewer import execute
 
                 receipt = execute(home, vault, root, task_id, grant, folder)
@@ -185,10 +207,11 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                 "tested local result / awaiting owner review",
                 "verified",
                 "changes_requested",
+                "review_rejected",
             }:
                 return prior
             raise
-        if grant.get("schema") != 2 and result["success"] != (
+        if grant.get("schema") not in {2, 3} and result["success"] != (
             receipt.get("status") == "tested local result / awaiting owner review"
         ):
             raise ValueError("Coder result and native receipt disagree.")

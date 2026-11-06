@@ -81,7 +81,9 @@ complete bounded packet, fences same-card coder/reviewer runs, and validates exa
 evidence before verified local completion. Private review receipts and reservations
 extend the existing attempt tree; no second queue or board schema is introduced.
 Unknown review state and incomplete process/transition facts remain uncertain.
-Legacy M4 results remain unreviewed. Ticket 1 cannot execute rework; default owner
+Legacy M4 results remain unreviewed. Ticket 2 adds one fresh schema-3 owner grant,
+explicit parent lineage and cumulative original-HEAD evidence. Immutable loop
+reservations bound both attempts; partial lineage stays uncertain. Default owner
 profiles gain no execution controls. See the v0.5.5 implementation tracker for
 qualification status; development code is not production enablement.
 

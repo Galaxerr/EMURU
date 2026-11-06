@@ -327,11 +327,35 @@ Use the existing operator launcher with that grant. Successful checks request
 review on the same card; the separate reviewer receives a complete packet without
 tools or mounts. A matching approval yields `verified` local output; concrete
 findings yield `changes_requested` and wait for owner action. A concrete hard
-security refusal may yield `blocked`, stopping without rework authority. Ticket 1 has no
-rework execution path. Repeated launch only inspects prior facts. Missing review
+security refusal may yield `blocked`, stopping without rework authority. Repeated
+launch only inspects prior facts unless a fresh schema-3 rework grant is supplied. Missing review
 facts remain `uncertain`; explicit cleanup/reconcile never launches a reviewer,
 reruns checks or fabricates an approval. Older executors cannot accept newest
 review state through the supported rollback workflow.
+
+Ticket 2 adds exactly one operator-authorized rework. Supply a new private grant
+with schema `3`, a new `grant_id`, unchanged owner/task/HEAD/file/check scope and
+review authority, and limits no greater than the first grant. Its `rework` object
+has schema `1`, `loop` equal to the initial grant ID, `coder_run` and `reviewer_run`
+from the rejected receipt, and these SHA-256 bindings: `grant_sha256` (initial grant),
+`evidence_sha256` (exact evidence file bytes), `receipt_sha256` (initial review
+receipt), `findings_sha256` (its blockers list), and `final_sha256` (parent final
+manifest). Object hashes use the existing canonical `scout.digest`; file hashes
+use exact bytes. Only a validated `changes_requested` receipt permits this grant.
+Use the same launcher and original card. Schema-2 grants never authorize rework.
+
+The second workspace starts from verified parent final bytes; its diff still binds
+the original HEAD. New bytes require fresh checks and a distinct reviewer run.
+Second rejection becomes `review_rejected` with native blocking. A third grant,
+partial lineage, stale authority, or unknown usage cannot dispatch. Full stage
+allowances are reserved without refunds, including after crashes; totals cannot
+exceed two coder/two reviewer runs, 1,800 active seconds, 24/8 model iterations,
+eight checks, 640 KiB captured output, or 17 MiB retained artifacts. Waiting for
+owner authorization executes nothing. Both attempts and rejection history remain
+private and retained. Supported cleanup and metadata-only reconciliation use the
+same `--policy`, `--task`, `--cleanup` and `--reconcile` options; an uncertain
+transition is never replayed. Rollback to an executor without schema-3 support is
+refused while preserving newest state.
 
 Reviewer ceilings are 300 active seconds, four model calls/iterations, 256 KiB
 complete input, 64 KiB output and 32 KiB strict verdict. Existing coder caps remain

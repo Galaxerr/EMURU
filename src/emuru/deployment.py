@@ -192,10 +192,16 @@ def check_review_state(home, target_root):
         if (
             not isinstance(grant, dict)
             or type(grant.get("schema")) is not int
-            or grant["schema"] not in {1, 2}
+            or grant["schema"] not in {1, 2, 3}
         ):
             raise ValueError("Unknown coder state schema; preserve newest state.")
-        if grant["schema"] == 2:
+        if grant["schema"] == 3:
+            source = Path(target_root) / "src/emuru/projects/rework.py"
+            if not source.is_file() or "STATE_SCHEMA = 1\n" not in source.read_text():
+                raise ValueError(
+                    "Rework state is incompatible; preserve newest state and refuse rollback."
+                )
+        if grant["schema"] in {2, 3}:
             state = _read(folder / "loop.json")
             source = Path(target_root) / "src/emuru/projects/reviewer.py"
             if (

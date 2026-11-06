@@ -60,9 +60,11 @@ _FIELDS = {
 
 def validate_grant(grant):
     """Validate frozen scope/ceilings, without consulting real board or vault state."""
-    review = isinstance(grant, dict) and grant.get("schema") == 2
+    review = isinstance(grant, dict) and grant.get("schema") in {2, 3}
     if not isinstance(grant, dict) or set(grant) != _FIELDS | (
-        {"review"} if review else set()
+        ({"review", "rework"} if grant.get("schema") == 3 else {"review"})
+        if review
+        else set()
     ):
         raise ValueError("Invalid coder grant fields.")
     if review:
@@ -74,6 +76,10 @@ def validate_grant(grant):
             or grant["review"].get("enabled") is not True
         ):
             raise ValueError("Invalid or disabled review authority.")
+    if grant["schema"] == 3:
+        from emuru.projects.rework import validate_authority
+
+        validate_authority(grant)
     patterns = {
         "grant_id": r"[0-9a-f]{32}",
         "proposal": r"[0-9a-f]{32}",
@@ -89,7 +95,7 @@ def validate_grant(grant):
     }
     if (
         type(grant["schema"]) is not int
-        or grant["schema"] not in {1, 2}
+        or grant["schema"] not in {1, 2, 3}
         or any(
             type(grant[key]) is not int or grant[key] <= 0 for key in ("owner", "bot")
         )
@@ -214,6 +220,20 @@ class Workspace:
                 raise ValueError("Coder source blob changed.")
             self._text(data)
             self._baseline[name] = (data, int(entry[0][-3:], 8))
+        self._original = dict(self._baseline)
+        if self.grant["schema"] == 3:
+            from emuru.projects.coder_runtime import _tree_matches
+            from emuru.projects.rework import lineage
+
+            previous, _, report, _ = lineage(self.folder.parent, self.grant)
+            data = _tree_matches(
+                previous / "final-source", report["final_manifest"], frozen=True
+            )
+            self._baseline = {
+                name: (value, report["final_manifest"][name]["mode"])
+                for name, value in data.items()
+            }
+            total = sum(len(value[0]) for value in self._baseline.values())
         if self.reserve:
             self.reserve(total)
         with directory(self.folder.parent) as parent:
@@ -461,6 +481,6 @@ class Workspace:
         """Inspectable scoped content diff; no synthetic Git commit or task HEAD."""
         manifest = self.manifest()
         return source_diff(
-            {name: item[0] for name, item in self._baseline.items()},
+            {name: item[0] for name, item in self._original.items()},
             {name: self._read(name)[0] for name in manifest},
         )

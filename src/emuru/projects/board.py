@@ -290,8 +290,12 @@ def project_command(home, vault, root, text, owner, bot):
                 continue
             from emuru.projects.coder_board import _find_attempt
 
+            try:
+                coder_intent = _find_attempt(home, card.id) is not None
+            except (OSError, ValueError, TypeError, KeyError):
+                coder_intent = True
             if (
-                _find_attempt(home, card.id) is not None
+                coder_intent
                 or card.assignee == "emuru-coder"
                 or card.result
                 and '"grant_id"' in card.result

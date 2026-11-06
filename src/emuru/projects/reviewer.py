@@ -109,6 +109,10 @@ def _save(folder, name, value):
     base = folder.parent if folder.name == "review" else folder
     grant = load_grant(base / "grant.json")
     data = encoded(value)
+    if grant["schema"] == 3:
+        from emuru.projects.rework import check_artifacts
+
+        check_artifacts(base, grant, len(data))
     if _artifact_size(base) + len(data) > min(
         grant["limits"]["artifact_bytes"], 17 * 1024 * 1024
     ):
@@ -116,24 +120,23 @@ def _save(folder, name, value):
     _write_new(folder, name, data)
 
 
+def _reservation(folder, grant):
+    from emuru.projects import rework
+
+    total = rework.reservation(grant)
+    loop = grant["grant_id"]
+    if grant["schema"] == 3:
+        previous, original = rework.parent(folder, grant)
+        prior = check_loop(previous, original)
+        total = {k: prior[k] + total[k] for k in total}
+        loop = original["grant_id"]
+    rework.bounded(total)
+    return {"schema": 1, "loop": loop, "grant_sha256": digest(grant), **total}
+
+
 def reserve_loop(folder, grant, initialized):
-    """Reserve once before the initial claim; this ticket cannot start rework."""
-    _save(
-        folder,
-        "loop.json",
-        {
-            "schema": 1,
-            "loop": grant["grant_id"],
-            "grant_sha256": digest(grant),
-            "coder_runs": 1,
-            "reviewer_runs": 1,
-            "active_seconds": grant["limits"]["attempt_seconds"] + SECONDS,
-            "coder_iterations": grant["limits"]["model_iterations"],
-            "reviewer_iterations": ITERATIONS,
-            "checks": grant["limits"]["check_executions"],
-            "output_bytes": grant["limits"]["total_output_bytes"] + OUTPUT_BYTES,
-        },
-    )
+    """Durably reserve full allowances before claim; no refund or replay."""
+    _save(folder, "loop.json", _reservation(folder, grant))
     _save(
         folder,
         "coder-stage.json",
@@ -149,19 +152,7 @@ def reserve_loop(folder, grant, initialized):
 def check_loop(folder, grant):
     """Reject unsupported private state before any capability or native write."""
     loop = _read(folder / "loop.json")
-    expected_loop = {
-        "schema": 1,
-        "loop": grant["grant_id"],
-        "grant_sha256": digest(grant),
-        "coder_runs": 1,
-        "reviewer_runs": 1,
-        "active_seconds": grant["limits"]["attempt_seconds"] + SECONDS,
-        "coder_iterations": grant["limits"]["model_iterations"],
-        "reviewer_iterations": ITERATIONS,
-        "checks": grant["limits"]["check_executions"],
-        "output_bytes": grant["limits"]["total_output_bytes"] + OUTPUT_BYTES,
-    }
-    if encoded(loop) != encoded(expected_loop):
+    if encoded(loop) != encoded(_reservation(folder, grant)):
         raise ValueError("Review budget reservation changed.")
     return loop
 
@@ -270,6 +261,21 @@ def packet(home, vault, root, task_id, grant, folder, run):
         "checklist": authority()["checklist"],
         "limitations": "Fixed Monty cases only; native unittest completion and native/Monty equivalence unverified.",
     }
+    if grant["schema"] == 3:
+        from emuru.projects import rework
+
+        previous, _, parent_report, receipt = rework.lineage(folder, grant)
+        value["rework_initial"] = value["original"]
+        value["original"] = {
+            k: v.decode()
+            for k, v in _tree_matches(
+                previous / "initial-source",
+                parent_report["initial_manifest"],
+                frozen=True,
+            ).items()
+        }
+        value["parent"] = grant["rework"]
+        value["prior_findings"] = receipt["verdict"]["blockers"]
     raw_packet = encoded(value).decode()
     if len(raw_packet.encode()) > INPUT_BYTES:
         raise ValueError("Complete review packet exceeds input bound.")
@@ -445,7 +451,7 @@ def execute(home, vault, root, task_id, grant, folder):
     return finalize(home, vault, root, task_id, grant, folder)
 
 
-def _prepared(home, vault, root, task_id, grant, folder, kb, db):
+def _prepared(home, vault, root, task_id, grant, folder, kb, db, *, historical=False):
     """Shared current-authority, immutable context and native ownership predicate."""
     from emuru.deployment import source_identity
     from emuru.projects import coder_board
@@ -529,25 +535,36 @@ def _prepared(home, vault, root, task_id, grant, folder, kb, db):
         or card is None
         or card.assignee not in {REVIEWER, coder_board.CODER}
         or (
-            card.status == "running"
+            not historical
+            and card.status == "running"
             and (card.current_run_id != current.id or card.claim_lock != REVIEWER)
         )
         or (
-            card.status != "running"
+            not historical
+            and card.status != "running"
             and (latest is None or latest.id != current.id or current.ended_at is None)
         )
     ):
         raise ValueError("Independent native reviewer provenance changed.")
     _coder_usage(folder, grant, report)
+    if grant["schema"] == 3:
+        from emuru.projects import rework
+
+        rework.authorize(home, vault, root, grant)
+        if {original["run"], reviewer_run["run"]} & {
+            grant["rework"]["coder_run"],
+            grant["rework"]["reviewer_run"],
+        }:
+            raise ValueError("Rework reused a previous native run.")
     return intent, value, report, evidence, loop, coder_run, current
 
 
-def verify(home, vault, root, task_id, grant, folder, kb, db):
+def verify(home, vault, root, task_id, grant, folder, kb, db, *, historical=False):
     """Shared completion/status/reconciliation predicate; all facts reopen."""
     from emuru.projects import coder_board
 
     intent, value, report, evidence, loop, coder_run, current = _prepared(
-        home, vault, root, task_id, grant, folder, kb, db
+        home, vault, root, task_id, grant, folder, kb, db, historical=historical
     )
     review = folder / "review"
     stage = _stage(review)
@@ -626,7 +643,9 @@ def verify(home, vault, root, task_id, grant, folder, kb, db):
         "schema": 1,
         "status": {
             "approve": "verified",
-            "changes_requested": "changes_requested",
+            "changes_requested": "review_rejected"
+            if grant["schema"] == 3
+            else "changes_requested",
             "blocked": "blocked",
         }[verdict["verdict"]],
         "task": task_id,
@@ -764,6 +783,7 @@ def status(kb, db, card, home, root, grant, folder):
         "verified": ("done", "completed"),
         "changes_requested": ("ready", "changes_requested"),
         "blocked": ("blocked", "blocked"),
+        "review_rejected": ("blocked", "blocked"),
     }[receipt["status"]]
     if (card.status, current.outcome) != expected or current.ended_at is None:
         return {

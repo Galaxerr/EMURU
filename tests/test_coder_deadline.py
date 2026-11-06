@@ -77,6 +77,7 @@ def test_launcher_shares_original_deadline_after_gateway_startup(monkeypatch, tm
     launch = runpy.run_path("scripts/hermes/coder.py")["launch"]
     namespace = launch.__globals__
     grant = {
+        "schema": 1,
         "task": "t_fixture",
         "read_files": ["sum_prices.py"],
         "write_files": ["sum_prices.py"],

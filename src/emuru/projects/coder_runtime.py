@@ -212,6 +212,10 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         or grant["catalogue"] != catalogue_digest()
     ):
         raise ValueError("Qualification grant or catalogue changed.")
+    if task_run is not None:
+        from emuru.projects.coder_board import check_intent
+
+        check_intent(folder, grant)
     trees = {}
     for key, subfolder in (
         ("initial_manifest", "initial-source"),
@@ -220,9 +224,42 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         trees[key] = _tree_matches(folder / subfolder, report[key], frozen=True)
     _tree_matches(folder / "source", report["final_manifest"], frozen=False)
     initial, final = report["initial_manifest"], report["final_manifest"]
-    changed = sorted(name for name in final if final[name] != initial.get(name))
+    original = trees["initial_manifest"]
+    if grant["schema"] == 3:
+        from emuru.projects.rework import lineage
+
+        previous, _, parent_report, _ = lineage(folder, grant)
+        if (
+            initial != parent_report["final_manifest"]
+            or report.get("parent") != grant["rework"]
+        ):
+            raise ValueError("Rework initial manifest differs from parent final bytes.")
+        original = _tree_matches(
+            previous / "initial-source", parent_report["initial_manifest"], frozen=True
+        )
+    else:
+        for name, data in original.items():
+            row = git(
+                Path(grant["path"]), "ls-tree", "-z", grant["baseline"], "--", name
+            )
+            fields = row.split(b"\t", 1)[0].decode().split() if row else []
+            if (
+                len(fields) != 3
+                or fields[:2] not in (["100644", "blob"], ["100755", "blob"])
+                or int(fields[0][-3:], 8) != initial[name]["mode"]
+                or git(Path(grant["path"]), "cat-file", "blob", fields[2]) != data
+            ):
+                raise ValueError(
+                    "Qualification initial manifest differs from committed baseline."
+                )
+    changed = sorted(
+        name for name in final if trees["final_manifest"][name] != original.get(name)
+    )
     if (
-        set(initial) != set(grant["read_files"]) - set(grant["create_files"])
+        (
+            grant["schema"] != 3
+            and set(initial) != set(grant["read_files"]) - set(grant["create_files"])
+        )
         or not set(initial) <= set(final) <= set(grant["read_files"])
         or not set(changed) <= set(grant["write_files"] + grant["create_files"])
         or report["changed_files"] != changed
@@ -237,8 +274,7 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
     patch = _read_private(folder / "diff.patch", grant["limits"]["artifact_bytes"])
     if (
         hashlib.sha256(patch).hexdigest() != report["diff_sha256"]
-        or patch
-        != source_diff(trees["initial_manifest"], trees["final_manifest"]).encode()
+        or patch != source_diff(original, trees["final_manifest"]).encode()
     ):
         raise ValueError("Qualification diff changed.")
     if (
@@ -251,6 +287,7 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         not report.get("failure")
         and all(_accepted(check["result"]) for check in checks)
         and bool(report["changed_files"])
+        and (grant["schema"] != 3 or final != initial)
         and report["native"].get("success") is True
         and bool(checks)
         and checks[-1]["snapshot_sha256"] == digest(report["final_manifest"])
@@ -261,6 +298,10 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         raise ValueError(
             "Qualification success is not supported by independent evidence."
         )
+    if grant["schema"] == 3:
+        from emuru.projects.rework import check_artifacts
+
+        check_artifacts(folder, grant)
     return report
 
 
@@ -309,7 +350,9 @@ class Qualification:
             saved_grant = validate_grant(
                 json.loads(_read_private(self.folder / "grant.json", 32768))
             )
-            intent = json.loads(_read_private(self.folder / "intent.json", 32768))
+            from emuru.projects.coder_board import check_intent
+
+            intent = check_intent(self.folder, grant)
             run = json.loads(_read_private(self.folder / "run.json", 32768))
             if (
                 digest(saved_grant) != digest(grant)
@@ -324,6 +367,10 @@ class Qualification:
         self.failure = None
 
     def _reserve(self, additional):
+        if self.grant["schema"] == 3:
+            from emuru.projects.rework import check_artifacts
+
+            check_artifacts(self.folder, self.grant, additional)
         if (
             _artifact_size(self.folder) + additional
             > self.grant["limits"]["artifact_bytes"]
@@ -415,12 +462,14 @@ class Qualification:
         changed = [
             name
             for name in final
-            if final.get(name) != self.workspace.initial_manifest.get(name)
+            if self.workspace._read(name)[0]
+            != self.workspace._original.get(name, (None,))[0]
         ]
         valid = (
             not self.failure
             and native_result.get("success") is True
             and bool(changed)
+            and (self.grant["schema"] != 3 or final != self.workspace.initial_manifest)
             and bool(self.checks)
             and _accepted(self.checks[-1]["result"])
             and not sandbox.failed
@@ -448,6 +497,8 @@ class Qualification:
             "missing_checks": [] if valid else ["independent_local_acceptance"],
             "usage": None,
         }
+        if self.grant["schema"] == 3:
+            report["parent"] = self.grant["rework"]
         data = encoded(report)
         self._save("evidence.json", data)
         self.evidence_sha256 = hashlib.sha256(data).hexdigest()
