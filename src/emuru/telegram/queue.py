@@ -158,14 +158,19 @@ def diagnostics(path: Path, *, process_health=(), health_file: Path | None = Non
 
 
 @contextmanager
-def _diagnostic_snapshot(path):
+def _diagnostic_snapshot(path, *, descriptors=None):
     # Even mode=ro creates/mutates WAL sidecars; SQLite must open only scratch files.
     sources = (path, Path(str(path) + "-wal"))
+    if descriptors is not None:
+        sources = tuple(
+            Path(f"/proc/self/fd/{fd}") if fd is not None else None
+            for fd in descriptors
+        )
 
     def versions():
         result = []
         for source in sources:
-            if source.exists():
+            if source is not None and source.exists():
                 info = source.stat()
                 result.append(
                     (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
@@ -177,9 +182,9 @@ def _diagnostic_snapshot(path):
     before = versions()
     with tempfile.TemporaryDirectory(prefix="emuru-status-") as directory:
         snapshot = Path(directory) / path.name
-        for source, info in zip(sources, before, strict=True):
+        for index, (source, info) in enumerate(zip(sources, before, strict=True)):
             if info is not None:
-                target = Path(directory) / source.name
+                target = Path(directory) / (path.name + ("-wal" if index else ""))
                 shutil.copyfile(source, target)
                 target.chmod(0o600)
         if versions() != before:

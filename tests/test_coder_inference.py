@@ -30,7 +30,11 @@ NAME = "emuru-coder-inference-fixture"
         "tool",
     ],
 )
-def test_reviewer_completion_requires_observed_confinement_and_zero_tools(attack):
+def test_reviewer_completion_requires_observed_confinement_and_zero_tools(
+    attack, monkeypatch
+):
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+    monkeypatch.setattr(os, "getgid", lambda: 1000)
     actual = facts()
     actual["Config"]["User"] = f"{os.getuid()}:{os.getgid()}"
     actual["HostConfig"] = {

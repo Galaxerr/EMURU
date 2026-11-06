@@ -2,7 +2,8 @@
 
 v0.5.5 development adds explicitly granted, tool-free independent review on the
 original task card. Verified local output requires current checks and a distinct
-reviewer approval. Rework remains unavailable in Ticket 1; real-use enablement
+reviewer approval. One rework requires a fresh owner grant, new checks and fresh
+review on that card. Execution stays disabled by default; real-use enablement
 remains gated on milestone acceptance. See [development evidence](docs/releases/v0.5.5-implementation.md).
 
 EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately

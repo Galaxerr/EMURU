@@ -317,7 +317,7 @@ General retry/retention controls remain outside this increment.
 
 ### Disposable integrated coding qualification
 
-For v0.5.5 Ticket 1 development, review is explicitly enabled per private grant:
+For v0.5.5 development, review is explicitly enabled per private grant:
 schema `2` adds `review` equal to `emuru.projects.reviewer.authority()` (schema,
 enabled=true, current checklist digest). All original grant fields and limits
 remain required. Schema-1 grants retain M4 behavior and cannot authorize review.
@@ -371,14 +371,22 @@ owner acceptance. Verify the image digest against current source first.
 
 ```bash
 uv run --frozen python scripts/hermes/coder-check.py --build --native-self-check --sandbox-self-check --isolation-probes
-uv run --frozen python scripts/hermes/coder-task-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE
-uv run --frozen python scripts/hermes/coder-task-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --failing-tests
-uv run --frozen python scripts/hermes/coder-lifecycle-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE
+uv run --frozen python scripts/hermes/reviewer-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --live
+uv run --frozen python scripts/hermes/rework-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --live
+uv run --frozen python scripts/hermes/rework-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --matrix
 ```
 
 Run each command in a separate process. Passing/failing native fixtures use real
 model-led inference, applied synthetic receipts, board/status and Docker checks.
 Controlled isolation/crash fixtures are reported separately from model proof.
+The reviewer fixture covers correct approval, hidden-defect and unsafe-change
+rejection, failed developer checks and interrupted handoffs. The rework live
+fixture seeds the initial defect, uses actual model reviews and a model-led
+authorized rework, and separately proves terminal second rejection. Its matrix
+uses deterministic verdicts and both signals across all initial/rework windows.
+CI runs confinement, tool-free reviewer checks and that matrix without provider
+credentials. Retained evidence is reusable only with matching identities and
+unchanged relevant boundaries; historical proof is never relabeled as current.
 Missing provider access, timeouts, failed probes or partial evidence block
 acceptance; no permission expansion or automatic retry is allowed.
 
@@ -387,6 +395,9 @@ M1–M3, Telegram/vault/cloud contracts, source identity and the owned
 wake/update/rollback drill. Do not duplicate that drill. Keep CI secrets/env at
 `/dev/null`. Local CI does not replace exact-final-commit hosted CI. Predecessor
 acceptance, manual owner acceptance and publication remain separate release gates.
+CI activates `COMPOSE_PROFILES=agent` for native/lifecycle fixture teardown so
+Compose also removes the profiled synthetic worker. Supply that environment
+variable when running those predecessor fixture scripts directly.
 
 ## Troubleshooting and recovery
 

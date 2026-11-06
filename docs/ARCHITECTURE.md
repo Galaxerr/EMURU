@@ -75,7 +75,7 @@ means tested output awaiting owner review, not publication or project completion
 
 ## Repository map
 
-v0.5.5 Ticket 1 development adds an explicit schema-2 review grant and a separate
+v0.5.5 development adds an explicit schema-2 review grant and a separate
 tool-free reviewer context on the selected cloud route. The controller freezes a
 complete bounded packet, fences same-card coder/reviewer runs, and validates exact
 evidence before verified local completion. Private review receipts and reservations
@@ -86,6 +86,10 @@ explicit parent lineage and cumulative original-HEAD evidence. Immutable loop
 reservations bound both attempts; partial lineage stays uncertain. Default owner
 profiles gain no execution controls. See the v0.5.5 implementation tracker for
 qualification status; development code is not production enablement.
+
+Native board diagnostics copy validated DB/WAL descriptors into private scratch
+snapshots. SQLite never opens the original database for these reads, so WAL
+sidecars remain unchanged. Recovery journals or changing snapshots fail closed.
 
 Paths below are relative to the repository root.
 

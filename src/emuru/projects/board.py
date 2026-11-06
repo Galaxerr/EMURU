@@ -12,7 +12,7 @@ import json
 import os
 import re
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from emuru.vault import mutations
@@ -135,46 +135,75 @@ def project_board(home, root):
 
 @contextmanager
 def project_board_readonly(home, root):
-    """Inspect existing native state without initialization or maintenance."""
+    """Inspect pinned DB/WAL snapshots without touching native state or sidecars."""
+    from emuru.telegram.queue import QueueDiagnosticsError, _diagnostic_snapshot
+
     kb = native_api(root)
     path = Path(home) / "emuru-projects/kanban.db"
-    database_fd = None
+    descriptors = [None, None]
     try:
         with mutations.directory(path.parent) as parent:
-            for name in (
-                "kanban.db",
-                "kanban.db.init.lock",
-                "kanban.db-journal",
-                "kanban.db-wal",
-                "kanban.db-shm",
-            ):
+            mutations.private_directory(parent)
+            for suffix in ("", ".init.lock", "-journal", "-wal", "-shm"):
                 try:
                     fd = os.open(
-                        name,
+                        path.name + suffix,
                         os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                         dir_fd=parent,
                     )
                 except FileNotFoundError:
-                    if name == "kanban.db":
+                    if not suffix:
                         raise
                     continue
                 try:
                     mutations.regular(fd, private=True)
-                except BaseException:
-                    os.close(fd)
-                    raise
-                if name == "kanban.db":
-                    database_fd = fd
+                    if suffix == "-journal" and os.fstat(fd).st_size:
+                        raise ValueError("Database recovery required before lookup.")
+                    if suffix in {"", "-wal"}:
+                        descriptors[0 if not suffix else 1] = fd
+                        fd = None
+                finally:
+                    if fd is not None:
+                        os.close(fd)
+            with _diagnostic_snapshot(path, descriptors=descriptors) as snapshot:
+                try:
+                    journal = os.open(
+                        path.name + "-journal",
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=parent,
+                    )
+                except FileNotFoundError:
+                    pass
                 else:
-                    os.close(fd)
-        db = sqlite3.connect(f"file:/proc/self/fd/{database_fd}?mode=ro", uri=True)
-        db.row_factory = sqlite3.Row
-        yield kb, db
+                    try:
+                        mutations.regular(journal, private=True)
+                        if os.fstat(journal).st_size:
+                            raise ValueError(
+                                "Database recovery required before lookup."
+                            )
+                    finally:
+                        os.close(journal)
+                if descriptors[1] is None:
+                    try:
+                        os.stat(
+                            path.name + "-wal", dir_fd=parent, follow_symlinks=False
+                        )
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise ValueError("Database changed during lookup; query again.")
+                with closing(
+                    sqlite3.connect(snapshot.as_uri() + "?mode=ro", uri=True)
+                ) as db:
+                    db.execute("PRAGMA query_only=ON")
+                    db.row_factory = sqlite3.Row
+                    yield kb, db
+    except QueueDiagnosticsError:
+        raise ValueError("Database changed during lookup; query again.") from None
     finally:
-        if "db" in locals():
-            db.close()
-        if database_fd is not None:
-            os.close(database_fd)
+        for fd in descriptors:
+            if fd is not None:
+                os.close(fd)
 
 
 def project_command(home, vault, root, text, owner, bot):
