@@ -229,3 +229,36 @@ def test_authoritative_and_developer_output_share_one_check_budget(
     assert sandbox.failed and sandbox.failure == "output_limit"
     with pytest.raises(ValueError, match="failed closed"):
         sandbox.check(tmp_path, "python_unittest")
+
+
+def test_native_transport_and_all_checks_share_the_coder_output_ceiling(
+    tmp_path, monkeypatch
+):
+    usage = {"native": 3072, "checks": 0}
+    limits = {**LIMITS, "check_output_bytes": 4096, "total_output_bytes": 4096}
+    sandbox = DockerSandbox(
+        ROOT, "sha256:" + "a" * 64, tmp_path, limits, output_usage=usage
+    )
+    (tmp_path / "test_example.py").write_text("pass\n")
+    authoritative = json.dumps(run_acceptance(sum))
+    allowances = []
+
+    def run(snapshot, payload, deadline, allowance, *, developer=False):
+        allowances.append(allowance)
+        if developer:
+            return bounded_process(
+                [sys.executable, "-c", "print('x' * 400)"], b"", 2, allowance
+            )
+        return {
+            "stdout": authoritative,
+            "stderr": "",
+            "exit_code": 0,
+            "stopped": True,
+            "confinement": {"network": "none"},
+        }
+
+    monkeypatch.setattr(sandbox, "_run", run)
+    with pytest.raises(ValueError, match="output limit"):
+        sandbox.check(tmp_path, "python_unittest")
+    assert allowances == [1024, 1024 - len(authoritative.encode())]
+    assert usage["checks"] == len(authoritative.encode())

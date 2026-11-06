@@ -75,6 +75,16 @@ means tested output awaiting owner review, not publication or project completion
 
 ## Repository map
 
+v0.5.5 Ticket 1 development adds an explicit schema-2 review grant and a separate
+tool-free reviewer context on the selected cloud route. The controller freezes a
+complete bounded packet, fences same-card coder/reviewer runs, and validates exact
+evidence before verified local completion. Private review receipts and reservations
+extend the existing attempt tree; no second queue or board schema is introduced.
+Unknown review state and incomplete process/transition facts remain uncertain.
+Legacy M4 results remain unreviewed. Ticket 1 cannot execute rework; default owner
+profiles gain no execution controls. See the v0.5.5 implementation tracker for
+qualification status; development code is not production enablement.
+
 Paths below are relative to the repository root.
 
 | Path | Responsibility |

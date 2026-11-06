@@ -279,7 +279,14 @@ class DockerSandbox:
     """Trusted fixed-check adapter; no repository command or environment input."""
 
     def __init__(
-        self, root, image, folder, limits, daemon_root=None, process_event=None
+        self,
+        root,
+        image,
+        folder,
+        limits,
+        daemon_root=None,
+        process_event=None,
+        output_usage=None,
     ):
         import re
 
@@ -290,6 +297,9 @@ class DockerSandbox:
         self.daemon_root = Path(daemon_root) if daemon_root else self.root
         self.process_event = process_event
         self.total_output = 0
+        self.output_usage = (
+            output_usage if output_usage is not None else {"native": 0, "checks": 0}
+        )
         self.executions = 0
         self.processes = []
         self.failed = False
@@ -423,11 +433,14 @@ class DockerSandbox:
         deadline = time.monotonic() + seconds
         allowance = min(
             self.limits["check_output_bytes"],
-            self.limits["total_output_bytes"] - self.total_output,
+            self.limits["total_output_bytes"]
+            - self.total_output
+            - self.output_usage["native"],
         )
         execution = self._run(Path(snapshot), b"", deadline, allowance)
         used = len(execution["stdout"].encode()) + len(execution["stderr"].encode())
         self.total_output += used
+        self.output_usage["checks"] = self.total_output
         try:
             result = json.loads(execution["stdout"])
             if (
@@ -449,7 +462,9 @@ class DockerSandbox:
         if result["success"] and list(Path(snapshot).rglob("test_*.py")):
             allowance = min(
                 self.limits["check_output_bytes"] - used,
-                self.limits["total_output_bytes"] - self.total_output,
+                self.limits["total_output_bytes"]
+                - self.total_output
+                - self.output_usage["native"],
             )
             developer = self._run(
                 Path(snapshot), b"", deadline, allowance, developer=True
@@ -457,6 +472,7 @@ class DockerSandbox:
             self.total_output += len(developer["stdout"].encode()) + len(
                 developer["stderr"].encode()
             )
+            self.output_usage["checks"] = self.total_output
             result["developer_tests"] = developer
             result["developer_tests"]["completion_verified"] = False
             result["success"] = result["success"] and developer["exit_code"] == 0

@@ -702,12 +702,17 @@ def owner_preview(home, vault_root, identity, owner, bot):
         return _preview(db, identity)
 
 
-def approved_project(home, vault_root, identity, owner, bot):
+def approved_project(home, vault_root, identity, owner, bot, *, readonly=False):
     """Read an owner-bound applied snapshot; Markdown cannot assert approval."""
     policy = require_authority(home, vault_root)
     if not policy["enabled"]:
         raise ValueError("Project tracking requires a bound vault and enabled policy.")
-    with journal(home) as db:
+    context = (
+        _read_database(Path(home) / "emuru-mutations/mutations.sqlite")
+        if readonly
+        else journal(home)
+    )
+    with context as db:
         _check_owner(db, identity, vault_root, owner, bot)
         preview = _preview(db, identity)
     if preview["outcome"] not in {"applied", "index_pending"}:

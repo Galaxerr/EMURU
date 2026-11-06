@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from emuru.projects import board
@@ -21,7 +22,7 @@ from emuru.vault.mutations import directory, private_directory, regular
 
 CODER = "emuru-coder"
 SCOUT = "emuru-scout"
-ACTIVE = {"ready", "running", "blocked", "needs_input"}
+ACTIVE = {"ready", "running", "blocked", "needs_input", "review"}
 
 
 def attempt_path(home, grant):
@@ -70,7 +71,7 @@ def _read_json(path, limit=32768):
 
 
 def _active_work(kb, db, except_task):
-    for agent in (SCOUT, CODER):
+    for agent in (SCOUT, CODER, "emuru-reviewer"):
         for card in kb.list_tasks(db, assignee=agent, include_archived=True):
             if card.id != except_task and card.status in ACTIVE:
                 return card
@@ -90,9 +91,10 @@ def ensure_idle(home, root, task_id):
                 folder = attempts / entry
                 intent = _read_json(folder / "intent.json")
                 card = kb.get_task(db, intent["task"])
-                if card is None or status(kb, db, card, home, root)["status"] != (
-                    "tested local result / awaiting owner review"
-                ):
+                if card is None or status(kb, db, card, home, root)["status"] not in {
+                    "tested local result / awaiting owner review",
+                    "verified",
+                }:
                     raise ValueError(
                         "Coder intent unresolved; explicit reconciliation required."
                     )
@@ -126,13 +128,24 @@ def _find_attempt(home, task_id):
     return matches[0] if matches else None
 
 
-def authorize(home, vault, root, task_id, grant, *, run_id=None):
+def authorize(
+    home, vault, root, task_id, grant, *, run_id=None, review=False, readonly=False
+):
     """Reopen current approval and native task before any worker or claim starts."""
     grant = validate_grant(grant)
+    if grant["schema"] == 2 and attempt_path(home, grant).exists():
+        from emuru.projects.reviewer import check_loop
+
+        check_loop(attempt_path(home, grant), grant)
     if task_id != grant["task"]:
         raise ValueError("Coder task does not match its grant.")
     preview = mutations.approved_project(
-        home, vault, grant["proposal"], grant["owner"], grant["bot"]
+        home,
+        vault,
+        grant["proposal"],
+        grant["owner"],
+        grant["bot"],
+        **({"readonly": True} if readonly else {}),
     )
     project = board._digest(
         [
@@ -157,7 +170,8 @@ def authorize(home, vault, root, task_id, grant, *, run_id=None):
         raise ValueError("Coder repository baseline changed.")
     if grant["catalogue"] != catalogue_digest():
         raise ValueError("Coder check catalogue changed.")
-    with board.project_board(home, root) as (kb, db):
+    context = board.project_board_readonly if readonly else board.project_board
+    with context(home, root) as (kb, db):
         card = kb.get_task(db, task_id)
         binding = json.loads(card.body) if card else {}
         task = binding.get("task")
@@ -166,14 +180,18 @@ def authorize(home, vault, root, task_id, grant, *, run_id=None):
             card is None
             or card.tenant != project
             or card.created_by != "emuru-owner"
+            or (review and grant["schema"] != 2)
             or (
-                (card.assignee is not None or card.status != "blocked")
-                if run_id is None
-                else (
-                    card.assignee != CODER
-                    or card.status != "running"
-                    or card.claim_lock != CODER
-                    or card.current_run_id != run_id
+                not review
+                and (
+                    (card.assignee is not None or card.status != "blocked")
+                    if run_id is None
+                    else (
+                        card.assignee != CODER
+                        or card.status != "running"
+                        or card.claim_lock != CODER
+                        or card.current_run_id != run_id
+                    )
                 )
             )
             or binding.get("schema") != 1
@@ -191,6 +209,7 @@ def authorize(home, vault, root, task_id, grant, *, run_id=None):
 
 def create_attempt(home, grant):
     """Exclusive-create the immutable grant and intent before native claim."""
+    initialized = time.monotonic_ns()
     root = Path(home) / "emuru-projects"
     with directory(root) as parent:
         private_directory(parent)
@@ -218,6 +237,10 @@ def create_attempt(home, grant):
             sort_keys=True,
         ).encode(),
     )
+    if grant["schema"] == 2:
+        from emuru.projects.reviewer import reserve_loop
+
+        reserve_loop(folder, grant, initialized)
     return folder
 
 
@@ -245,7 +268,7 @@ def process_event(folder, name, kind, phase):
     if (
         not name.startswith("emuru-coder-")
         or len(name) > 128
-        or kind not in {"inference", "check", "gateway"}
+        or kind not in {"inference", "check", "gateway", "reviewer"}
         or phase not in {"starting", "stopped", "uncertain"}
     ):
         raise ValueError("Invalid coder process identity.")
@@ -267,11 +290,11 @@ def _processes(folder):
     kinds = {}
     for event in events:
         if (
-            len(events) > 20
+            len(events) > 24
             or set(event) != {"name", "kind", "phase"}
             or not isinstance(event["name"], str)
             or not event["name"].startswith("emuru-coder-")
-            or event["kind"] not in {"inference", "check", "gateway"}
+            or event["kind"] not in {"inference", "check", "gateway", "reviewer"}
             or (event["name"] in kinds and kinds[event["name"]] != event["kind"])
             or event["phase"] not in {"starting", "stopped", "uncertain"}
             or (event["phase"] == "starting" and event["name"] in states)
@@ -379,6 +402,10 @@ def cleanup(home, root, task_id, grant):
     intent = _read_json(folder / "intent.json")
     if intent.get("grant_sha256") != digest(grant):
         raise ValueError("Coder cleanup intent binding changed.")
+    if grant["schema"] == 2:
+        from emuru.projects.reviewer import check_loop
+
+        check_loop(folder, grant)
     if not _launcher_stopped(folder):
         raise ValueError("Coder launcher may still execute; preserve ownership.")
     states = {}
@@ -419,6 +446,12 @@ def cleanup(home, root, task_id, grant):
             raise ValueError("Coder gateway private-file binding unavailable.")
     else:
         _cleanup_gateway_secrets(root, gateway)
+    try:
+        gateway = _read_json(folder / "review-gateway.json")
+    except FileNotFoundError:
+        pass
+    else:
+        _cleanup_gateway_secrets(root, gateway)
     return {
         "status": "uncertain",
         "detail": "recorded resources removed; ownership and evidence preserved; explicit reconciliation required",
@@ -430,8 +463,16 @@ def reconcile(home, vault, root, task_id, grant):
     folder = _find_attempt(home, task_id)
     if folder is None or digest(load_grant(folder / "grant.json")) != digest(grant):
         raise ValueError("Coder reconciliation grant does not match its intent.")
+    if grant["schema"] == 2:
+        from emuru.projects.reviewer import check_loop
+
+        check_loop(folder, grant)
     if not _launcher_stopped(folder):
         raise ValueError("Coder launcher may still execute; preserve ownership.")
+    if grant["schema"] == 2 and (folder / "review").exists():
+        from emuru.projects.reviewer import reconcile
+
+        return reconcile(home, vault, root, task_id, grant, folder)
     with board.project_board_readonly(home, root) as (kb, db):
         card = kb.get_task(db, task_id)
         prior = status(kb, db, card, home, root)
@@ -474,6 +515,14 @@ def reconcile(home, vault, root, task_id, grant):
     for event in states.values():
         if event["phase"] != "stopped":
             process_event(folder, event["name"], event["kind"], "stopped")
+    if grant["schema"] == 2 and not json.loads(data)["success"]:
+        return _record_failure(
+            home, root, task_id, grant, folder, run, json.loads(data)
+        )
+    if grant["schema"] == 2:
+        raise ValueError(
+            "Successful coder evidence has no durable review handoff; preserve ownership."
+        )
     return finish(home, vault, root, task_id, grant, folder, run)
 
 
@@ -508,6 +557,10 @@ def finish(home, vault, root, task_id, grant, folder, run):
             report,
             failure="authorization_stale",
         )
+    if grant["schema"] == 2:
+        from emuru.projects.reviewer import begin
+
+        return begin(home, vault, root, task_id, grant, folder, run)
     with board.project_board(home, root) as (kb, db):
         card = kb.get_task(db, task_id)
         _require_run(card, task_id, run["run"])
@@ -624,6 +677,12 @@ def status(kb, db, card, home, root):
     if folder is None:
         return {"status": "uncertain", "detail": "coder intent unavailable"}
     grant = load_grant(folder / "grant.json")
+    if grant["schema"] == 2:
+        from emuru.projects.reviewer import status as review_status
+
+        result = review_status(kb, db, card, home, root, grant, folder)
+        if result is not None:
+            return result
     intent = _read_json(folder / "intent.json")
     if intent.get("grant_sha256") != digest(grant) or intent.get("task") != card.id:
         raise ValueError("Coder intent binding changed.")
@@ -797,6 +856,10 @@ def status(kb, db, card, home, root):
 
 
 def _record_failure(home, root, task_id, grant, folder, run, report, failure=None):
+    if grant["schema"] == 2:
+        from emuru.projects.reviewer import check_loop
+
+        check_loop(folder, grant)
     failure = failure or report.get("failure") or "blocked"
     if not re.fullmatch(r"[a-z_]+", failure):
         failure = "blocked"

@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import sys
 
 import pytest
@@ -10,6 +11,80 @@ from emuru.projects import coder_inference
 
 IMAGE = "sha256:" + "a" * 64
 NAME = "emuru-coder-inference-fixture"
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        None,
+        "mount",
+        "root",
+        "network",
+        "writable",
+        "privileged",
+        "capabilities",
+        "security",
+        "memory",
+        "pids",
+        "calls",
+        "tool",
+    ],
+)
+def test_reviewer_completion_requires_observed_confinement_and_zero_tools(attack):
+    actual = facts()
+    actual["Config"]["User"] = f"{os.getuid()}:{os.getgid()}"
+    actual["HostConfig"] = {
+        "ReadonlyRootfs": True,
+        "Privileged": False,
+        "CapDrop": ["ALL"],
+        "SecurityOpt": ["no-new-privileges"],
+        "Memory": 536870912,
+        "PidsLimit": 64,
+        "NanoCpus": 1000000000,
+        "NetworkMode": "emuru-coder-model-fixture",
+    }
+    actual["Mounts"] = []
+    final = {
+        "type": "final",
+        "success": True,
+        "tool_calls": 0,
+        "model_calls": 1,
+        "verdict": "{}",
+    }
+    if attack == "mount":
+        actual["Mounts"] = [{"Type": "bind", "Source": "/private"}]
+    elif attack == "root":
+        actual["Config"]["User"] = "0:0"
+    elif attack == "network":
+        actual["HostConfig"]["NetworkMode"] = "bridge"
+    elif attack == "writable":
+        actual["HostConfig"]["ReadonlyRootfs"] = False
+    elif attack == "privileged":
+        actual["HostConfig"]["Privileged"] = True
+    elif attack == "capabilities":
+        actual["HostConfig"]["CapDrop"] = []
+    elif attack == "security":
+        actual["HostConfig"]["SecurityOpt"] = []
+    elif attack == "memory":
+        actual["HostConfig"]["Memory"] = 0
+    elif attack == "pids":
+        actual["HostConfig"]["PidsLimit"] = 0
+    elif attack == "calls":
+        final["model_calls"] = 5
+    elif attack == "tool":
+        final["tool_calls"] = 1
+    if attack:
+        with pytest.raises(ValueError):
+            coder_inference.verify_native_completion(
+                IMAGE, NAME, final, final["tool_calls"], 0, actual, review=True
+            )
+    else:
+        assert (
+            coder_inference.verify_native_completion(
+                IMAGE, NAME, final, 0, 0, actual, review=True
+            )["image"]
+            == IMAGE
+        )
 
 
 def facts():

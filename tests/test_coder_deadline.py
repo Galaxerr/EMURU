@@ -81,7 +81,11 @@ def test_launcher_shares_original_deadline_after_gateway_startup(monkeypatch, tm
         "read_files": ["sum_prices.py"],
         "write_files": ["sum_prices.py"],
         "create_files": [],
-        "limits": {"attempt_seconds": 600, "model_iterations": 12},
+        "limits": {
+            "attempt_seconds": 600,
+            "model_iterations": 12,
+            "total_output_bytes": 262144,
+        },
     }
     folder = tmp_path / "attempt"
     (tmp_path / ".runtime").mkdir()

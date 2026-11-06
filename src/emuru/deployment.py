@@ -131,6 +131,7 @@ def _schema(path):
 
 
 def check_state(home, *, allow_proposal_upgrade=False):
+    check_review_state(home, Path(__file__).resolve().parents[2])
     upgrade = False
     queue = home / "emuru-telegram/queue.sqlite3"
     if queue.exists():
@@ -169,6 +170,42 @@ def check_state(home, *, allow_proposal_upgrade=False):
                     )
                 upgrade = True
     return upgrade
+
+
+def check_review_state(home, target_root):
+    """Never roll newest review facts into an executor unaware of their schema."""
+    from emuru.projects.coder_runtime import _read_private
+    from emuru.projects.reviewer import _read, unique_fields
+    from emuru.vault.mutations import directory, private_directory
+
+    attempts = Path(home) / "emuru-projects/coder-attempts"
+    if not attempts.exists():
+        return
+    with directory(attempts) as parent:
+        private_directory(parent)
+        names = os.listdir(parent)
+    for name in names:
+        folder = attempts / name
+        grant = json.loads(
+            _read_private(folder / "grant.json", 32768), object_pairs_hook=unique_fields
+        )
+        if (
+            not isinstance(grant, dict)
+            or type(grant.get("schema")) is not int
+            or grant["schema"] not in {1, 2}
+        ):
+            raise ValueError("Unknown coder state schema; preserve newest state.")
+        if grant["schema"] == 2:
+            state = _read(folder / "loop.json")
+            source = Path(target_root) / "src/emuru/projects/reviewer.py"
+            if (
+                state.get("schema") != 1
+                or not source.is_file()
+                or "STATE_SCHEMA = 1\n" not in source.read_text()
+            ):
+                raise ValueError(
+                    "Review state is incompatible; preserve newest state and refuse rollback."
+                )
 
 
 @contextmanager

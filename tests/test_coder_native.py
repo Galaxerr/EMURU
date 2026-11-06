@@ -168,7 +168,7 @@ def test_native_turn_reports_completion_without_exporting_model_prose(monkeypatc
 
     assert run_native(
         {"prompt": "Fix sum_prices.py"}, lambda *_: "{}", NativeAgent
-    ) == {"success": True}
+    ) == {"success": True, "model_calls": 3}
 
 
 @pytest.mark.parametrize(

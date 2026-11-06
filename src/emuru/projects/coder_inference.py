@@ -14,20 +14,51 @@ from emuru.projects.coder_native import MAX_LINE, validate_call, validate_reques
 from emuru.projects.coder_sandbox import bounded_process
 
 
-def verify_native_completion(image, name, final, sequence, code, actual):
+def verify_native_completion(
+    image, name, final, sequence, code, actual, *, review=False
+):
     """Bind the trusted native final channel to daemon-observed termination only."""
     if not isinstance(final, dict) or type(final.get("success")) is not bool:
         raise ValueError("Native completion frame is missing or invalid.")
     fields = {"type", "success", "tool_calls"}
+    if not review and final["success"] and "model_calls" in final:
+        fields.add("model_calls")
+        if type(final["model_calls"]) is not int or not 0 <= final["model_calls"] <= 12:
+            raise ValueError("Coder model-call count is invalid.")
+    if review and final["success"]:
+        fields.update({"verdict", "model_calls"})
+        if (
+            type(final.get("model_calls")) is not int
+            or not 1 <= final["model_calls"] <= 4
+        ):
+            raise ValueError("Reviewer model-call budget is invalid.")
     if not final["success"]:
         fields.add("error")
     state = actual.get("State") if isinstance(actual, dict) else None
     config = actual.get("Config") if isinstance(actual, dict) else None
+    if review:
+        host = actual.get("HostConfig", {})
+        if (
+            not isinstance(config, dict)
+            or config.get("User") != f"{os.getuid()}:{os.getgid()}"
+            or host.get("ReadonlyRootfs") is not True
+            or host.get("Privileged") is not False
+            or host.get("CapDrop") != ["ALL"]
+            or "no-new-privileges" not in host.get("SecurityOpt", [])
+            or host.get("Memory") != 512 * 1024 * 1024
+            or host.get("PidsLimit") != 64
+            or host.get("NanoCpus") != 1000000000
+            or not str(host.get("NetworkMode", "")).startswith("emuru-coder-model-")
+            or any(m.get("Type") != "tmpfs" for m in actual.get("Mounts", []))
+        ):
+            raise ValueError("Reviewer confinement inspection failed.")
     if (
         set(final) != fields
         or final["type"] != "final"
         or type(final["tool_calls"]) is not int
         or final["tool_calls"] != sequence
+        or review
+        and sequence != 0
         or (
             not final["success"]
             and not re.fullmatch(r"coder_[a-z_]+", str(final.get("error", "")))
@@ -68,8 +99,22 @@ def run_inference(
     name=None,
     process_event=None,
     deadline=None,
+    output_bytes=None,
+    output_usage=None,
 ):
     validate_request(request)
+    review = request.get("role") == "reviewer"
+    output_usage = (
+        output_usage if output_usage is not None else {"native": 0, "checks": 0}
+    )
+    output_bytes = (
+        output_bytes if output_bytes is not None else (64 if review else 256) * 1024
+    )
+    if (
+        type(output_bytes) is not int
+        or not 0 < output_bytes <= (64 if review else 256) * 1024
+    ):
+        raise ValueError("Invalid native output ceiling.")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ValueError("Native inference requires an immutable image identity.")
     if not gateway_key:
@@ -149,6 +194,7 @@ def run_inference(
         },
     )
     buffer, sequence, final = bytearray(), 0, None
+    received = 0
     try:
         process.stdin.write(json.dumps(request).encode() + b"\n")
         process.stdin.flush()
@@ -164,6 +210,10 @@ def run_inference(
                         poller.unregister(key.fileobj)
                         break
                     buffer.extend(chunk)
+                    received += len(chunk)
+                    output_usage["native"] = received
+                    if received + output_usage["checks"] > output_bytes:
+                        raise ValueError("Native output exceeded its bound.")
                     if len(buffer) > MAX_LINE:
                         raise ValueError("Native coding protocol exceeded its bound.")
                     while b"\n" in buffer:
@@ -182,6 +232,8 @@ def run_inference(
                             final = event
                             continue
                         sequence += 1
+                        if review:
+                            raise ValueError("Reviewer attempted a tool call.")
                         if (
                             set(event) != {"type", "id", "name", "arguments"}
                             or event["type"] != "tool"
@@ -212,7 +264,7 @@ def run_inference(
         if not isinstance(actual, list) or len(actual) != 1:
             raise ValueError("Native coding lifecycle inspection is ambiguous.")
         lifecycle = verify_native_completion(
-            image, name, final, sequence, code, actual[0]
+            image, name, final, sequence, code, actual[0], review=review
         )
         outcome = {
             "success": final["success"],
@@ -225,6 +277,12 @@ def run_inference(
             else None,
             "native_lifecycle": lifecycle,
         }
+        outcome["output_bytes"] = received
+        outcome["model_calls"] = final.get("model_calls")
+        if review and final["success"]:
+            outcome["verdict"] = final["verdict"]
+            outcome["model_calls"] = final["model_calls"]
+            outcome["output_bytes"] = received
     finally:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)

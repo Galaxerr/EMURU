@@ -474,6 +474,9 @@ def prepare_update(command, values, rollback_source=None):
         snapshot = private_path(home / "sources" / rollback_source)
         if source_identity(snapshot) != rollback_source:
             raise ValueError("Rollback source snapshot mismatch")
+        from emuru.deployment import check_review_state
+
+        check_review_state(home, snapshot)
         # Orchestration and runtime must match; schema/guidance checks run in the target image.
         for name in (
             "infra/docker/compose.yaml",

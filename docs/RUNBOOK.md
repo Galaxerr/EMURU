@@ -317,6 +317,29 @@ General retry/retention controls remain outside this increment.
 
 ### Disposable integrated coding qualification
 
+For v0.5.5 Ticket 1 development, review is explicitly enabled per private grant:
+schema `2` adds `review` equal to `emuru.projects.reviewer.authority()` (schema,
+enabled=true, current checklist digest). All original grant fields and limits
+remain required. Schema-1 grants retain M4 behavior and cannot authorize review.
+Disabled, unknown or stale review authority is refused before any claim.
+
+Use the existing operator launcher with that grant. Successful checks request
+review on the same card; the separate reviewer receives a complete packet without
+tools or mounts. A matching approval yields `verified` local output; concrete
+findings yield `changes_requested` and wait for owner action. A concrete hard
+security refusal may yield `blocked`, stopping without rework authority. Ticket 1 has no
+rework execution path. Repeated launch only inspects prior facts. Missing review
+facts remain `uncertain`; explicit cleanup/reconcile never launches a reviewer,
+reruns checks or fabricates an approval. Older executors cannot accept newest
+review state through the supported rollback workflow.
+
+Reviewer ceilings are 300 active seconds, four model calls/iterations, 256 KiB
+complete input, 64 KiB output and 32 KiB strict verdict. Existing coder caps remain
+unchanged; one coder/reviewer allowance is reserved durably before claim. Inspect
+private `coder-attempts/<grant_id>/review/` receipts and loop reservation. Source
+can reach the approved cloud model. Independent review does not authenticate
+native unittest completion or prove native/Monty equivalence.
+
 Use fresh synthetic data only; evidence stays private under ignored `.runtime/`.
 Provider-backed commands incur selected-provider calls and require explicit
 runtime authorization. They do not use a real owner vault or establish manual

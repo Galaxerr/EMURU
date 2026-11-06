@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -102,11 +103,13 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
         launcher = runpy.run_path(str(root / "scripts/hermes/container.py"))
         _, image = launcher["ensure_image"](build=False)
         coder_board.ensure_idle(home, root, task_id)
+        stage_deadline = time.monotonic() + grant["limits"]["attempt_seconds"]
         folder = coder_board.create_attempt(home, grant)
         coder_board.record_launcher(folder)
         run = coder_board.claim(home, vault, root, task_id, grant, folder)
         coder_board.authorize(home, vault, root, task_id, grant, run_id=run["run"])
         attempt = Qualification(folder, grant, image, task_run=run)
+        attempt.deadline = min(attempt.deadline, stage_deadline)
         task = _task(home, root, task_id)
         request = _request(grant, task)
         with tempfile.TemporaryDirectory(
@@ -125,11 +128,13 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                     folder, name, "gateway", phase
                 ),
             ) as (network, gateway_key, _primary):
+                output_usage = {"native": 0, "checks": 0}
                 sandbox = DockerSandbox(
                     root,
                     image,
                     folder,
                     grant["limits"],
+                    output_usage=output_usage,
                     process_event=lambda name, phase: coder_board.process_event(
                         folder, name, "check", phase
                     ),
@@ -143,6 +148,8 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                         request,
                         dispatch,
                         deadline=attempt.deadline,
+                        output_bytes=grant["limits"]["total_output_bytes"],
+                        output_usage=output_usage,
                         name=inference_name,
                         process_event=lambda name, phase: coder_board.process_event(
                             folder, name, "inference", phase
@@ -150,15 +157,38 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                     ),
                     sandbox,
                 )
+                finished = time.monotonic_ns()
+        if grant.get("schema") == 2:
+            from emuru.projects.reviewer import _save
+
+            _save(
+                folder,
+                "coder-usage.json",
+                {
+                    "schema": 1,
+                    "finished_ns": finished,
+                    "model_calls": result["native"].get("model_calls", 0),
+                    "output_bytes": sum(output_usage.values()),
+                    "checks": len(result["checks"]),
+                },
+            )
         try:
             receipt = coder_board.finish(home, vault, root, task_id, grant, folder, run)
+            if grant.get("schema") == 2 and receipt["status"] == "awaiting_review":
+                from emuru.projects.reviewer import execute
+
+                receipt = execute(home, vault, root, task_id, grant, folder)
         except (OSError, ValueError, subprocess.SubprocessError):
             # Completion may commit before its acknowledgment fails.
             prior = _prior_status(home, root, task_id)
-            if prior["status"] == "tested local result / awaiting owner review":
+            if prior["status"] in {
+                "tested local result / awaiting owner review",
+                "verified",
+                "changes_requested",
+            }:
                 return prior
             raise
-        if result["success"] != (
+        if grant.get("schema") != 2 and result["success"] != (
             receipt.get("status") == "tested local result / awaiting owner review"
         ):
             raise ValueError("Coder result and native receipt disagree.")

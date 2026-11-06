@@ -60,8 +60,20 @@ _FIELDS = {
 
 def validate_grant(grant):
     """Validate frozen scope/ceilings, without consulting real board or vault state."""
-    if not isinstance(grant, dict) or set(grant) != _FIELDS:
+    review = isinstance(grant, dict) and grant.get("schema") == 2
+    if not isinstance(grant, dict) or set(grant) != _FIELDS | (
+        {"review"} if review else set()
+    ):
         raise ValueError("Invalid coder grant fields.")
+    if review:
+        from emuru.projects.reviewer import authority
+
+        if (
+            grant["review"] != authority()
+            or type(grant["review"].get("schema")) is not int
+            or grant["review"].get("enabled") is not True
+        ):
+            raise ValueError("Invalid or disabled review authority.")
     patterns = {
         "grant_id": r"[0-9a-f]{32}",
         "proposal": r"[0-9a-f]{32}",
@@ -77,7 +89,7 @@ def validate_grant(grant):
     }
     if (
         type(grant["schema"]) is not int
-        or grant["schema"] != 1
+        or grant["schema"] not in {1, 2}
         or any(
             type(grant[key]) is not int or grant[key] <= 0 for key in ("owner", "bot")
         )

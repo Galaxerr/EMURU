@@ -302,11 +302,18 @@ def project_command(home, vault, root, text, owner, bot):
                 lines.append(
                     f"{card.id} ({binding['task']['id']}): coder {report['status']}; parents: {parents}"
                 )
+                if report.get("actor"):
+                    lines.append(f"Actor: {report['actor']}; run: {report['run']}")
                 evidence = report.get("evidence")
                 if evidence:
                     lines.append(
                         f"Evidence SHA-256: {evidence['evidence_sha256']}; diff SHA-256: {evidence['diff_sha256']}"
                     )
+                    if evidence.get("reviewer_profile"):
+                        lines.append(
+                            f"Reviewer: {evidence['reviewer_profile']}; coder run: {evidence['coder_run']}; review run: {evidence['run']}; verdict: {evidence['verdict']['verdict']}"
+                        )
+                        lines.append(f"Review reason: {evidence['verdict']['summary']}")
                 elif report.get("detail"):
                     lines.append(f"Coder detail: {report['detail']}")
                 continue
