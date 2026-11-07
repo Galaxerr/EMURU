@@ -14,6 +14,9 @@ from emuru.vault import mutations
 def claim(home, root, grant):
     """One immutable grant/card per source task, baseline, selection and budget."""
     from emuru.projects.coder_board import ensure_idle
+    from emuru.projects.supervisor import refuse_unsupported
+
+    refuse_unsupported(home)
 
     with project_board(home, root) as (kb, db):
         source = kb.get_task(db, grant["source_task"])

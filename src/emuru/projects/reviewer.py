@@ -285,7 +285,10 @@ def packet(home, vault, root, task_id, grant, folder, run):
 def begin(home, vault, root, task_id, grant, folder, run):
     from emuru.deployment import source_identity
     from emuru.projects import board, coder_board
+    from emuru.projects.supervisor import refuse_unsupported
     from emuru.vault.mutations import directory
+
+    refuse_unsupported(home)
 
     initialized = time.monotonic_ns()
     _stopped(folder)
@@ -370,6 +373,9 @@ def execute(home, vault, root, task_id, grant, folder):
     from emuru.projects import board, coder_board
     from emuru.projects.coder_gateway import cloud_gateway
     from emuru.projects.coder_inference import run_inference
+    from emuru.projects.supervisor import refuse_unsupported
+
+    refuse_unsupported(home)
 
     review = folder / "review"
     stage = _stage(review, launching=True)

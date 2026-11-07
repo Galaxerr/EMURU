@@ -186,6 +186,9 @@ def main():
     policy = load_policy(args.policy, args.task)
     home = private_path(args.home)
     with dispatcher_lock(home):
+        from emuru.projects.supervisor import refuse_unsupported
+
+        refuse_unsupported(home)
         launcher = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
         _, image = launcher["ensure_image"](build=False)
         with tempfile.TemporaryDirectory(prefix="emuru-scout-") as temporary:

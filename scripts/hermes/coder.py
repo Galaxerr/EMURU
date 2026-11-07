@@ -88,6 +88,9 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
             return coder_board.cleanup(home, root, task_id, grant)
         if reconcile:
             return coder_board.reconcile(home, vault, root, task_id, grant)
+        from emuru.projects.supervisor import refuse_unsupported
+
+        refuse_unsupported(home)
         try:
             prior = coder_board._find_attempt(home, task_id)
         except (OSError, ValueError, TypeError, KeyError):

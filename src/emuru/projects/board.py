@@ -218,8 +218,16 @@ def project_command(home, vault, root, text, owner, bot):
         raise ValueError(
             "Use /project track <applied-spec-proposal-id> or /project status <applied-spec-proposal-id>."
         )
-    request = mutations.authenticated_request(home, vault)
-    with mutations.journal(home) as journal:
+    creating = fields[1] == "track"
+    request = mutations.authenticated_request(
+        home, vault, **({} if creating else {"read_only": True})
+    )
+    reader = (
+        mutations.journal(home)
+        if creating
+        else mutations._read_database(Path(home) / "emuru-mutations/mutations.sqlite")
+    )
+    with reader as journal:
         binding = journal.execute(
             "SELECT owner,bot,vault,text_hash FROM owner_requests WHERE id=?",
             (request,),
@@ -231,10 +239,11 @@ def project_command(home, vault, root, text, owner, bot):
         hashlib.sha256(text.encode()).hexdigest(),
     ):
         raise ValueError("Explicit authenticated owner project command required.")
-    preview = mutations.approved_project(home, vault, fields[2], owner, bot)
+    preview = mutations.approved_project(
+        home, vault, fields[2], owner, bot, **({} if creating else {"readonly": True})
+    )
     project = _digest([str(owner), str(bot), os.path.abspath(vault), preview["path"]])
     revision = preview["after_revision"]
-    creating = fields[1] == "track"
     if creating and not preview["current"]:
         raise ValueError(
             "Approved spec is stale. Approve the current note before tracking."
@@ -302,6 +311,12 @@ def project_command(home, vault, root, text, owner, bot):
                 "Partial task set. Repeat /project track with this receipt to fill missing cards."
             )
         for card in cards:
+            if not creating:
+                from emuru.projects.supervisor import projection
+
+                supervised = projection(home, root, project, card, preview=preview)
+                if supervised:
+                    lines.append(supervised)
             parents = ", ".join(kb.parent_ids(db, card.id)) or "none"
             binding = json.loads(card.body)
             if "scout" in binding:

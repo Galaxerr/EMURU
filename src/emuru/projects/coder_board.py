@@ -249,6 +249,9 @@ def authorize(
 def create_attempt(home, grant):
     """Exclusive-create the immutable grant and intent before native claim."""
     initialized = time.monotonic_ns()
+    from emuru.projects.supervisor import refuse_unsupported
+
+    refuse_unsupported(home)
     if grant["schema"] == 3:
         from emuru.projects.rework import preflight
 
@@ -293,6 +296,9 @@ def create_attempt(home, grant):
 
 def claim(home, vault, root, task_id, grant, folder):
     """Claim original task only after durable intent and shared exclusion checks."""
+    from emuru.projects.supervisor import refuse_unsupported
+
+    refuse_unsupported(home)
     authorize(home, vault, root, task_id, grant)
     with board.project_board(home, root) as (kb, db):
         active = _active_work(kb, db, task_id)
