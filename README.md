@@ -1,24 +1,25 @@
 # EMURU
 
-v0.5.5 development adds explicitly granted, tool-free independent review on the
-original task card. Verified local output requires current checks and a distinct
-reviewer approval. One rework requires a fresh owner grant, new checks and fresh
-review on that card. Execution stays disabled by default; real-use enablement
-remains gated on milestone acceptance. See [development evidence](docs/releases/v0.5.5-implementation.md).
-
 EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately
 with your Telegram bot to find notes, follow links, save Inbox notes, and review
 proposed project or task changes. Conversation history persists across restarts.
 
-**v0.5.3 is a Docker-only, cloud-primary-only development release.** Inference uses
-an authenticated LiteLLM gateway with one cloud attempt and no automatic local
-fallback. Permanent-host production certification is a separate milestone.
+**v0.5.5 development: final technical qualification PASS.** Owner acceptance and
+hosted CI on the final commit remain pending, so milestone acceptance is **NO-GO**.
+No v0.5.5 tag or release is planned; publication is reserved for v0.6.0 and requires
+separate authorization. The package version remains 0.5.3. See the
+[v0.5.5 implementation tracker](docs/releases/v0.5.5-implementation.md) for evidence,
+limits and the owner acceptance checklist.
 
-**v0.5.4 is in development.** Tickets 1–3 implement bounded operator-run coding,
-independent callable acceptance and conservative crash recovery. Ticket 4 qualifies
-the integrated path on disposable data; production/release acceptance remains
-pending. The package version remains 0.5.3. See the [v0.5.4 implementation tracker](docs/releases/v0.5.4-implementation.md)
-for verified progress, blockers and the four-ticket dependency chain.
+v0.5.5 adds explicitly granted, tool-free independent review on the original task
+card. Verified local output requires current checks and a distinct reviewer
+approval. One rework requires a fresh owner grant, new checks and fresh review on
+that card. Execution stays disabled by default; real-use enablement remains gated
+on milestone acceptance.
+
+The runtime remains Docker-only and cloud-primary-only. Inference uses an
+authenticated LiteLLM gateway with one cloud attempt and no automatic local
+fallback. Permanent-host production certification is a separate milestone.
 
 ## What you can do
 
@@ -37,6 +38,11 @@ for verified progress, blockers and the four-ticket dependency chain.
   selected-file workspace and authenticated status. See the
   [coder runbook](docs/RUNBOOK.md#bounded-operator-run-coding-v054-development).
   Production enablement and vault result capture remain separate gates.
+- With explicit review authority, require independent review before verified local
+  completion. Findings can request changes or block unsafe work. Authorize at most
+  one rework on the same card; a second rejection is terminal. Repeated launches
+  inspect existing facts, and uncertain work is never automatically replayed. See
+  [review and rework operation](docs/RUNBOOK.md#disposable-integrated-coding-qualification).
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
@@ -115,11 +121,6 @@ runtime, gateway, lifecycle and rollback without a live Telegram poller.
 
 - [RUNBOOK](docs/RUNBOOK.md): setup, daily operation and troubleshooting.
 - [ARCHITECTURE](docs/ARCHITECTURE.md): repository map, state and safety boundaries.
-- [v0.5.1 acceptance](docs/releases/v0.5.1-acceptance.md): owner-confirmed M1 results,
-  automated evidence and remaining release gates.
-- [v0.5.3 acceptance](docs/releases/v0.5.3-acceptance.md): isolated read-only scout.
-- [v0.5.4 implementation](docs/releases/v0.5.4-implementation.md): current progress,
-  qualification evidence, CI results and release gates.
-- [v0.5.2 acceptance](docs/releases/v0.5.2-acceptance.md): native project tracking,
-  pinned contracts and remaining acceptance gates.
+- [v0.5.5 implementation](docs/releases/v0.5.5-implementation.md): technical
+  qualification, review/rework evidence, remaining gates and owner acceptance checklist.
 - [Deployment backlog](docs/deployment-backlog.md): future permanent-host setup and recovery tooling.
