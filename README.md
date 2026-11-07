@@ -4,8 +4,8 @@ EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately
 with your Telegram bot to find notes, follow links, save Inbox notes, and review
 proposed project or task changes. Conversation history persists across restarts.
 
-**v0.5.5 development: final technical qualification PASS.** Owner acceptance and
-hosted CI on the final commit remain pending, so milestone acceptance is **NO-GO**.
+**v0.5.5 development: milestone acceptance GO.** Final technical qualification,
+owner acceptance and owner-confirmed hosted CI on the final M5 commit are **PASS**.
 No v0.5.5 tag or release is planned; publication is reserved for v0.6.0 and requires
 separate authorization. The package version remains 0.5.3. See the
 [v0.5.5 implementation tracker](docs/releases/v0.5.5-implementation.md) for evidence,
