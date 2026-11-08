@@ -129,7 +129,6 @@ def validate_request(request):
     review = request.get("role") == "reviewer"
     if ("supervised" in request or "deadline_ns" in request) and (
         request.get("supervised") is not True
-        or review
         or type(request.get("deadline_ns")) is not int
         or request["deadline_ns"] <= 0
     ):

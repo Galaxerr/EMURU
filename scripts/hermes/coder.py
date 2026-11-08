@@ -70,7 +70,17 @@ def _prior_status(home, root, task_id):
         return coder_board.status(kb, db, card, home, root)
 
 
-def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=False):
+def launch(
+    home,
+    vault,
+    policy,
+    task_id,
+    root=ROOT,
+    *,
+    reconcile=False,
+    cleanup=False,
+    review=False,
+):
     home = private_path(home)
     os.environ["HERMES_HOME"] = str(home)
     os.environ["HERMES_KANBAN_HOME"] = str(home)
@@ -91,8 +101,21 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
         from emuru.projects import supervisor, supervisor_coder
 
         supervised = supervisor.enabled(home)
-        if supervised and grant["schema"] == 3:
-            supervisor.refuse_unsupported(home)
+        if review:
+            if not supervised or grant["schema"] not in {2, 3}:
+                raise ValueError(
+                    "Explicit first reviewer requires supervised review authority."
+                )
+            from emuru.projects.supervisor_reviewer import handoff
+
+            folder = coder_board.attempt_path(home, grant)
+            stage = supervisor_coder.CoderStage(home, vault, root, grant)
+            return handoff(
+                stage,
+                folder,
+                coder_board._read_json(folder / "run.json"),
+                first_review=True,
+            )
         try:
             prior = coder_board._find_attempt(home, task_id)
         except (OSError, ValueError, TypeError, KeyError):
@@ -219,14 +242,15 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                 if supervision is not None
                 else coder_board.finish(home, vault, root, task_id, grant, folder, run)
             )
-            if (
-                supervision is None
-                and grant.get("schema") in {2, 3}
-                and receipt["status"] == "awaiting_review"
-            ):
+            if grant.get("schema") in {2, 3} and receipt["status"] == "awaiting_review":
                 from emuru.projects.reviewer import execute
 
-                receipt = execute(home, vault, root, task_id, grant, folder)
+                if supervision is None:
+                    receipt = execute(home, vault, root, task_id, grant, folder)
+                else:
+                    from emuru.projects.supervisor_reviewer import handoff
+
+                    receipt = handoff(supervision, folder, run)
         except (OSError, ValueError, subprocess.SubprocessError):
             # Completion may commit before its acknowledgment fails.
             prior = _prior_status(home, root, task_id)
@@ -268,6 +292,11 @@ def main():
         action="store_true",
         help="Record verified evidence only after proven process stop; never execute code",
     )
+    recovery.add_argument(
+        "--review",
+        action="store_true",
+        help="First reviewer only after explicit held-before-review intent and continue",
+    )
     args = parser.parse_args()
     os.umask(0o077)
     signal.signal(signal.SIGTERM, interrupted)
@@ -287,6 +316,7 @@ def main():
                 args.task,
                 reconcile=args.reconcile,
                 cleanup=args.cleanup,
+                review=args.review,
             )
         ).decode()
     )

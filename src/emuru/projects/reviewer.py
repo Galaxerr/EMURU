@@ -282,15 +282,19 @@ def packet(home, vault, root, task_id, grant, folder, run):
     return value, report, hashlib.sha256(raw).hexdigest()
 
 
-def begin(home, vault, root, task_id, grant, folder, run):
+def begin(home, vault, root, task_id, grant, folder, run, *, supervision=None):
     from emuru.deployment import source_identity
-    from emuru.projects import board, coder_board
     from emuru.projects.supervisor import refuse_unsupported
     from emuru.vault.mutations import directory
 
-    refuse_unsupported(home)
+    if supervision is None:
+        refuse_unsupported(home)
+    else:
+        supervision.check()
 
-    initialized = time.monotonic_ns()
+    initialized = (
+        time.monotonic_ns() if supervision is None else supervision.stage["started_ns"]
+    )
     _stopped(folder)
     value, report, evidence = packet(home, vault, root, task_id, grant, folder, run)
     review = folder / "review"
@@ -333,6 +337,17 @@ def begin(home, vault, root, task_id, grant, folder, run):
         },
     )
     _stage(review, launching=True)
+    if supervision is not None:
+        return supervision.claim(
+            lambda: _claim_review(home, root, task_id, grant, folder, run)
+        )
+    return _claim_review(home, root, task_id, grant, folder, run)
+
+
+def _claim_review(home, root, task_id, grant, folder, run):
+    from emuru.projects import board, coder_board
+
+    review = folder / "review"
     with board.project_board(home, root) as (kb, db):
         coder_board._require_run(kb.get_task(db, task_id), task_id, run["run"])
         coder_board._attach_artifacts(kb, db, task_id, grant, folder, run["run"])
@@ -365,7 +380,7 @@ def begin(home, vault, root, task_id, grant, folder, run):
     return {"status": "awaiting_review", "task": task_id, "run": claimed.current_run_id}
 
 
-def execute(home, vault, root, task_id, grant, folder):
+def execute(home, vault, root, task_id, grant, folder, *, supervision=None):
     """One reviewer invocation only. Restart never calls this path again."""
     import secrets
     import tempfile
@@ -375,7 +390,10 @@ def execute(home, vault, root, task_id, grant, folder):
     from emuru.projects.coder_inference import run_inference
     from emuru.projects.supervisor import refuse_unsupported
 
-    refuse_unsupported(home)
+    if supervision is None:
+        refuse_unsupported(home)
+    else:
+        supervision.check()
 
     review = folder / "review"
     stage = _stage(review, launching=True)
@@ -396,6 +414,7 @@ def execute(home, vault, root, task_id, grant, folder):
             "stage_sha256": digest(stage),
         },
     )
+    options = {} if supervision is None else {"supervision": supervision}
     with tempfile.TemporaryDirectory(
         prefix="emuru-coder-gateway-", dir=root / ".runtime"
     ) as temporary:
@@ -404,6 +423,7 @@ def execute(home, vault, root, task_id, grant, folder):
         with cloud_gateway(
             gateway,
             deadline=deadline,
+            **options,
             process_event=lambda name, phase: coder_board.process_event(
                 folder, name, "gateway", phase
             ),
@@ -427,12 +447,18 @@ def execute(home, vault, root, task_id, grant, folder):
                     "model": "emuru",
                     "max_iterations": ITERATIONS,
                     "deadline_seconds": SECONDS,
+                    **(
+                        {"supervised": True, "deadline_ns": stage["deadline_ns"]}
+                        if supervision is not None
+                        else {}
+                    ),
                 },
                 lambda *_: (_ for _ in ()).throw(
                     ValueError("Reviewer tools forbidden.")
                 ),
                 name="emuru-coder-review-" + secrets.token_hex(16),
                 deadline=deadline,
+                **options,
                 process_event=lambda name, phase: coder_board.process_event(
                     folder, name, "reviewer", phase
                 ),
@@ -454,6 +480,14 @@ def execute(home, vault, root, task_id, grant, folder):
         },
     )
     parse_verdict(outcome["verdict"], grant["read_files"])
+    if supervision is not None:
+        supervision.check()
+        # Receipt persists before native completion; accounting is checked before transition.
+        with board.project_board_readonly(home, root) as (kb, db):
+            receipt = verify(home, vault, root, task_id, grant, folder, kb, db)
+        from emuru.projects.supervisor_reviewer import complete
+
+        return complete(supervision, folder, receipt)
     return finalize(home, vault, root, task_id, grant, folder)
 
 
@@ -688,37 +722,70 @@ def finalize(home, vault, root, task_id, grant, folder):
         card = kb.get_task(db, task_id)
         if card.status != "running":
             return status(kb, db, card, home, root, grant, folder)
-        target = folder / "review/receipt.json"
-        if target.exists():
-            if _read(target, OUTPUT_BYTES) != receipt:
-                raise ValueError("Conflicting review receipt.")
-        else:
-            _save(target.parent, target.name, receipt)
-        if receipt["status"] == "verified":
-            ok = kb.complete_task(
-                db,
-                task_id,
-                result=json.dumps(receipt, sort_keys=True),
-                metadata={"emuru_review": receipt},
-                expected_run_id=receipt["run"],
-            )
-        elif receipt["status"] == "changes_requested":
-            ok, _ = kb.request_changes(
-                db,
-                task_id,
-                reason=json.dumps(receipt["verdict"], sort_keys=True),
-                expected_run_id=receipt["run"],
-            )
-        else:
-            ok = kb.block_task(
-                db,
-                task_id,
-                reason="Independent review blocked; inspect private evidence.",
-                kind="needs_input",
-                expected_run_id=receipt["run"],
-            )
-        if not ok:
-            raise ValueError("Native review result transition refused.")
+        return _accept(kb, db, task_id, folder, receipt)
+
+
+def _accept(kb, db, task_id, folder, receipt):
+    """Native-only transition for a receipt already fully verified by the controller."""
+    card = kb.get_task(db, task_id)
+    if card is None or receipt["task"] != task_id:
+        raise ValueError("Native reviewer task changed.")
+    if card.status != "running":
+        current = kb.latest_run(db, task_id)
+        expected = {
+            "verified": ("done", "completed"),
+            "changes_requested": ("ready", "changes_requested"),
+            "blocked": ("blocked", "blocked"),
+            "review_rejected": ("blocked", "blocked"),
+        }[receipt["status"]]
+        if (
+            current is None
+            or current.id != receipt["run"]
+            or (card.status, current.outcome) != expected
+            or current.ended_at is None
+            or _read(folder / "review/receipt.json", OUTPUT_BYTES) != receipt
+            or receipt["status"] == "verified"
+            and json.loads(card.result or "null") != receipt
+        ):
+            raise ValueError("Native review terminal receipt changed.")
+        return receipt
+    if (
+        card.current_run_id != receipt["run"]
+        or card.claim_lock != REVIEWER
+        or card.assignee != REVIEWER
+    ):
+        raise ValueError("Native reviewer ownership changed.")
+    target = folder / "review/receipt.json"
+    if target.exists():
+        if _read(target, OUTPUT_BYTES) != receipt:
+            raise ValueError("Conflicting review receipt.")
+    else:
+        _save(target.parent, target.name, receipt)
+    if receipt["status"] == "verified":
+        ok = kb.complete_task(
+            db,
+            task_id,
+            result=json.dumps(receipt, sort_keys=True),
+            metadata={"emuru_review": receipt},
+            expected_run_id=receipt["run"],
+        )
+    elif receipt["status"] == "changes_requested":
+        ok, _ = kb.request_changes(
+            db,
+            task_id,
+            reason=json.dumps(receipt["verdict"], sort_keys=True),
+            expected_run_id=receipt["run"],
+        )
+    else:
+        ok = kb.block_task(
+            db,
+            task_id,
+            reason="Independent review blocked; inspect private evidence.",
+            kind="needs_input",
+            expected_run_id=receipt["run"],
+        )
+    if not ok:
+        raise ValueError("Native review result transition refused.")
     return receipt
 
 

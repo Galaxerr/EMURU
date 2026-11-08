@@ -621,10 +621,50 @@ def run(image, live):
     }
 
 
+def run_supervised(image, *, rework=False):
+    """Matching-image M6 matrix; actual native workers with isolated SDK replies."""
+    import pytest
+
+    source, current = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))[
+        "ensure_image"
+    ](build=False)
+    if image != current:
+        raise ValueError("Review qualification requires the current verified image.")
+    output = ROOT / ".runtime" / ("review-supervisor-" + str(time.time_ns()))
+    output.mkdir(mode=0o700)
+    fixture = runpy.run_path(str(ROOT / "scripts/hermes/coder-task-check.py"))[
+        "prepare"
+    ](image)
+    fixture["queue"].close()
+    os.environ["EMURU_CODER_TEST_IMAGE"] = image
+    os.environ["EMURU_CODER_QUALIFICATION"] = str(output)
+    args = ["-q", "--tb=short", str(ROOT / "tests/test_reviewer_supervisor_native.py")]
+    args += ["-k", "rework" if rework else "not rework"]
+    code = pytest.main(args)
+    cases = {path.stem: json.loads(path.read_text()) for path in output.glob("*.json")}
+    report = {
+        "status": "PASS" if code == 0 and cases else "FAIL",
+        "source": source,
+        "image": image,
+        "cases": cases,
+        "pytest_exit": int(code),
+        "limitations": "Synthetic SDK replies and isolated gateway; no provider/model usefulness claim.",
+    }
+    (output / "matrix.json").write_text(json.dumps(report, sort_keys=True, indent=2))
+    print(f"Supervised review qualification: {report['status']} ({output})", flush=True)
+    if report["status"] != "PASS":
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--matrix", action="store_true")
+    parser.add_argument("--supervised", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
-    print(json.dumps(run(args.image, args.live), indent=2))
+    if args.supervised:
+        run_supervised(args.image)
+    else:
+        print(json.dumps(run(args.image, args.live), indent=2))

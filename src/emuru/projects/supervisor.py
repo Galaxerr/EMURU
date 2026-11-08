@@ -201,7 +201,7 @@ def _records(parent, size, marker):
             from emuru.projects.supervisor_scout import validate_record
 
             validate_record(value, records)
-        elif value.get("kind") == "coder-stage":
+        elif value.get("kind") in {"coder-stage", "reviewer-stage"}:
             from emuru.projects.supervisor_coder import validate_record
 
             validate_record(value, records)
@@ -280,16 +280,19 @@ def _append(folder, records, size, value, *, emergency=False):
         "previous": digest(records[-1]) if records else None,
         **value,
     }
-    if value["kind"] in {"stage", "coder-stage"}:
+    if value["kind"] in {"stage", "coder-stage", "reviewer-stage"}:
         from emuru.projects.supervisor_scout import validate_record
 
-        if value["kind"] == "coder-stage":
+        if value["kind"] in {"coder-stage", "reviewer-stage"}:
             from emuru.projects.supervisor_coder import validate_record
         validate_record(value, records)
     data = encoded(value)
     from emuru.projects.supervisor_scout import metadata_pending
 
-    prepaid = value["kind"] in {"stage", "coder-stage"} and value["phase"] != "admitted"
+    prepaid = (
+        value["kind"] in {"stage", "coder-stage", "reviewer-stage"}
+        and value["phase"] != "admitted"
+    )
     if len(data) > RECEIPT_BYTES or size + len(data) + metadata_pending(
         [*records, value]
     ) > METADATA_BYTES - (0 if emergency or prepaid else EMERGENCY_BYTES):

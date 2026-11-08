@@ -666,5 +666,11 @@ if __name__ == "__main__":
     parser.add_argument("--image", required=True)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--matrix", action="store_true")
+    parser.add_argument("--supervised", action="store_true")
     args = parser.parse_args()
-    run(args.image, live=args.live, matrix=args.matrix)
+    if args.supervised:
+        runpy.run_path(str(ROOT / "scripts/hermes/reviewer-check.py"))[
+            "run_supervised"
+        ](args.image, rework=True)
+    else:
+        run(args.image, live=args.live, matrix=args.matrix)

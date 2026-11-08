@@ -1,4 +1,4 @@
-"""One enrolled coder stage; shared durable accounting and owner controls."""
+"""Enrolled coder/reviewer transport; shared durable accounting and owner controls."""
 
 import hashlib
 import json
@@ -57,6 +57,7 @@ def validate_record(value, records):
         "enrollment",
         "phase",
     }
+    review = value["kind"] == "reviewer-stage"
     if len(encoded(value)) > EVENT_BYTES:
         raise ValueError("Coder lifecycle receipt capacity exhausted.")
     if value.get("phase") != "admitted":
@@ -87,22 +88,40 @@ def validate_record(value, records):
         or value["image"] != enrollment["identity"]["image"]
         or not _valid_process(value["launcher"])
         or any(type(value[k]) is not int for k in ("started_ns", "deadline_ns"))
-        or not 0 < value["deadline_ns"] - value["started_ns"] <= 600 * 10**9
+        or not 0
+        < value["deadline_ns"] - value["started_ns"]
+        <= (300 if review else 600) * 10**9
         or not isinstance(value["reserved"], dict)
         or set(value["reserved"]) != set(supervisor.COUNTERS)
         or any(
             type(v) is not int or not 0 <= v <= PROJECT_LIMITS[k]
             for k, v in value["reserved"].items()
         )
-        or value["reserved"]["coder_runs"] != 1
+        or value["reserved"]["reviewer_runs" if review else "coder_runs"] != 1
         or any(
             value["reserved"][k]
-            for k in ("reviewer_runs", "scout_runs", "reviewer_iterations")
+            for k in (
+                (
+                    "coder_runs",
+                    "scout_runs",
+                    "coder_iterations",
+                    "checks",
+                    "artifact_bytes",
+                )
+                if review
+                else ("reviewer_runs", "scout_runs", "reviewer_iterations")
+            )
         )
         or value["reserved"]["active_seconds"] * 10**9
         != value["deadline_ns"] - value["started_ns"]
     ):
         raise ValueError("Coder reservation or enrollment binding invalid.")
+    if review:
+        from emuru.projects.supervisor_reviewer import allowance as review_allowance
+
+        if value["reserved"] != review_allowance():
+            raise ValueError("Reviewer reservation changed.")
+        return
     from emuru.projects.coder import LIMITS
 
     for counter, limit in (
@@ -139,6 +158,8 @@ def validate_event(value, records, common):
         "awaiting-review": {"native_task", "run", "evidence_sha256"},
         "stopped": {"native_task", "run", "observer"},
     }
+    if value["kind"] == "reviewer-stage":
+        extensions["completion-started"] |= {"receipt_sha256"}
     phase = value.get("phase")
     if (
         phase not in extensions
@@ -149,7 +170,7 @@ def validate_event(value, records, common):
         (
             r
             for r in records
-            if r["kind"] == "coder-stage"
+            if r["kind"] == value["kind"]
             and r["phase"] == "admitted"
             and r["generation"] == value["admission"]
         ),
@@ -239,7 +260,15 @@ def validate_event(value, records, common):
             raise ValueError(
                 "Coder lifecycle capacity exhausted; stop/cleanup reserve retained."
             )
-        counter = "coder_iterations" if phase == "model-admitted" else "checks"
+        counter = (
+            (
+                "reviewer_iterations"
+                if stage["kind"] == "reviewer-stage"
+                else "coder_iterations"
+            )
+            if phase == "model-admitted"
+            else "checks"
+        )
         count = sum(r["phase"] == phase for r in prior)
         if (
             type(value["count"]) is not int
@@ -259,6 +288,12 @@ def validate_event(value, records, common):
             raise ValueError("Coder completion lacks exact resource stop proof.")
         if not any(r["phase"] == "claimed" and r["run"] == value["run"] for r in prior):
             raise ValueError("Coder completion native run changed.")
+    if (
+        phase == "completion-started"
+        and value["kind"] == "reviewer-stage"
+        and not re.fullmatch("[0-9a-f]{64}", str(value["receipt_sha256"]))
+    ):
+        raise ValueError("Reviewer acceptance receipt digest invalid.")
     if phase == "stopped" and (
         not _valid_process(value["observer"])
         or value["observer"] == stage["launcher"]
@@ -332,7 +367,7 @@ def event(home, stage, phase, **fields):
             records,
             size,
             {
-                "kind": "coder-stage",
+                "kind": stage["kind"],
                 "phase": phase,
                 "project": stage["project"],
                 "task": stage["task"],
@@ -346,10 +381,10 @@ def event(home, stage, phase, **fields):
 def reserve(home, vault, root, grant, image):
     """Full stage charge before intent/claim; never refunded or replayed."""
     validate_grant(grant)
-    if grant["schema"] not in {1, 2}:
-        raise ValueError("Supervised rework unavailable until Ticket 04.")
     coder_board.authorize(home, vault, root, grant["task"], grant, readonly=True)
-    coder_board.ensure_idle(home, root, grant["task"])
+    coder_board.ensure_idle(
+        home, root, grant["task"], rework_grant=grant if grant["schema"] == 3 else None
+    )
     identity = supervisor.identity(root, image)
     with supervisor._locked(home, write=True) as (parent, size, marker):
         records, size = supervisor._records(parent, size, marker)
@@ -357,7 +392,7 @@ def reserve(home, vault, root, grant, image):
             (
                 r
                 for r in reversed(records)
-                if r["kind"] == "enrollment" and r["task"] == grant["task"]
+                if r["kind"] == "enrollment" and r["grant_sha256"] == digest(grant)
             ),
             None,
         )
@@ -380,16 +415,20 @@ def reserve(home, vault, root, grant, image):
         if any(
             r["kind"] == "coder-stage"
             and r["phase"] == "admitted"
-            and r["task"] == grant["task"]
+            and r["grant_sha256"] == digest(grant)
             for r in records
         ):
             raise ValueError("Coder stage already attempted; no replay.")
         charge = allowance(grant)
         used = reserved(records, grant["project"])
-        if used["coder_runs"]:
+        if used["coder_runs"] and grant["schema"] != 3:
             raise ValueError(
                 "Project initial coder already attempted; only separately authorized rework may follow."
             )
+        if grant["schema"] == 3:
+            from emuru.projects.supervisor_reviewer import rework_predecessor
+
+            rework_predecessor(records, grant)
         if any(used[k] + charge[k] > PROJECT_LIMITS[k] for k in charge):
             raise ValueError("Project coder budget exhausted; no refund.")
         started = supervisor.time.monotonic_ns()
@@ -422,7 +461,7 @@ def load(home, grant):
                 for r in records
                 if r["kind"] == "coder-stage"
                 and r["phase"] == "admitted"
-                and r["task"] == grant["task"]
+                and r["grant_sha256"] == digest(grant)
             ),
             None,
         )
@@ -433,7 +472,7 @@ def load(home, grant):
         ):
             raise ValueError("Exact coder admission/grant/reservation required.")
         folder = coder_board.attempt_path(home, grant)
-        if grant["schema"] == 2 and folder.exists():
+        if grant["schema"] in {2, 3} and folder.exists():
             from emuru.projects.reviewer import check_loop
 
             check_loop(folder, grant)
@@ -872,8 +911,8 @@ def projection(home, root, records, enrollment, *, inspect=True):
     stage = next(
         (
             r
-            for r in records
-            if r["kind"] == "coder-stage"
+            for r in reversed(records)
+            if r["kind"] in {"coder-stage", "reviewer-stage"}
             and r["phase"] == "admitted"
             and r["enrollment"] == enrollment["generation"]
         ),
@@ -882,7 +921,8 @@ def projection(home, root, records, enrollment, *, inspect=True):
     if stage is None:
         return {}
     result = {
-        "adapter": "coder",
+        "adapter": "reviewer" if stage["kind"] == "reviewer-stage" else "coder",
+        "stage": "reviewer" if stage["kind"] == "reviewer-stage" else "coder",
         "execution": "uncertain",
         "stage_deadline_ns": stage["deadline_ns"],
         "stop_requested": control_state(records, enrollment) == "revoked",
@@ -908,8 +948,15 @@ def projection(home, root, records, enrollment, *, inspect=True):
         elif observed["status"] == "awaiting_review":
             result.update(
                 execution="awaiting_review",
-                verified_outcome="checked coder evidence; independent review unavailable",
+                verified_outcome="checked coder evidence; awaiting first independent review",
             )
+        elif observed["status"] in {
+            "verified",
+            "changes_requested",
+            "review_rejected",
+            "blocked",
+        }:
+            result.update(execution="finished", verified_outcome=observed["status"])
         elif observed["status"] == "running":
             result["execution"] = "running"
     if any(r["phase"] in {"planned", "stopped"} for r in events) and resources_stopped(
@@ -948,7 +995,7 @@ def evidence(stage, folder, run):
 
 
 def finish(stage, folder, run, *, reconciling=False):
-    """Verify existing coder artifacts; schema 2 never claims a reviewer here."""
+    """Verify existing coder artifacts before any independent-review admission."""
     report, sha, events = evidence(stage, folder, run)
     if not resources_stopped(events):
         raise ValueError("Coder exact client/container stop unproven.")
@@ -999,7 +1046,7 @@ def finish(stage, folder, run, *, reconciling=False):
             raise InterruptedError(
                 "Coder stop requested before completion; effects uncertain."
             )
-        phase = "awaiting-review" if stage.grant["schema"] == 2 else "verified"
+        phase = "awaiting-review" if stage.grant["schema"] in {2, 3} else "verified"
         if phase == "verified":
             result = coder_board._complete_success(
                 stage.home,
@@ -1037,11 +1084,14 @@ def finish(stage, folder, run, *, reconciling=False):
     return result
 
 
-def recover(home, vault, root, task_id, grant, *, cleanup=False):
+def recover(home, vault, root, task_id, grant, *, cleanup=False, stage=None):
     """Explicit exact-resource cleanup or metadata-only reconciliation; no execution."""
     from emuru.projects import board
 
-    stage = CoderStage(home, vault, root, grant)
+    if stage is None:
+        from emuru.projects.supervisor_reviewer import current_stage
+
+        stage = current_stage(home, vault, root, grant)
     records = stage.records()
     enrollment = next(
         r for r in records if r["generation"] == stage.stage["enrollment"]
@@ -1158,17 +1208,22 @@ def recover(home, vault, root, task_id, grant, *, cleanup=False):
                 coder_board.process_event(
                     folder, event["name"], event["kind"], "stopped"
                 )
-        try:
-            private = coder_board._read_json(folder / "gateway.json")
-        except FileNotFoundError:
-            pass
-        else:
-            coder_board._cleanup_gateway_secrets(root, private)
+        for name in ("gateway.json", "review-gateway.json"):
+            try:
+                private = coder_board._read_json(folder / name)
+            except FileNotFoundError:
+                pass
+            else:
+                coder_board._cleanup_gateway_secrets(root, private)
     if cleanup:
         return {
             "status": "uncertain",
             "detail": "Exact recorded resources stopped; effects uncertain; explicit reconciliation required.",
         }
+    if stage.stage["kind"] == "reviewer-stage":
+        from emuru.projects.supervisor_reviewer import reconcile
+
+        return reconcile(stage, folder)
     with board.project_board_readonly(home, root) as (kb, db):
         card = kb.get_task(db, task_id)
         if (
@@ -1199,7 +1254,7 @@ def recover(home, vault, root, task_id, grant, *, cleanup=False):
             and claim is None
             and (
                 not any(r["phase"] == "claim-started" for r in events)
-                or len(kb.list_runs(db, task_id)) != 1
+                or len(kb.list_runs(db, task_id)) != (3 if grant["schema"] == 3 else 1)
             )
         ):
             raise ValueError("Coder claim outcome cannot be uniquely associated.")
@@ -1270,7 +1325,16 @@ def native_status(home, root, grant, card, kb, db, *, inspect=True):
         for r in records
     ):
         return coder_board._status(kb, db, card, home, root, folder, grant)
-    stage = CoderStage(home, None, root, grant)
+    from emuru.projects.supervisor_reviewer import (
+        current_stage,
+    )
+    from emuru.projects.supervisor_reviewer import (
+        native_status as review_status,
+    )
+
+    stage = current_stage(home, None, root, grant)
+    if stage.stage["kind"] == "reviewer-stage":
+        return review_status(stage, folder, card, kb, db)
     enrollment = next(
         r for r in records if r["generation"] == stage.stage["enrollment"]
     )

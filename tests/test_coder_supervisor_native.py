@@ -347,10 +347,28 @@ def test_lifecycle_capacity_preserves_cancel_and_independent_stop(native_fixture
         child.close()
 
 
-def bootstrap(fixture, blocked):
-    initial = hashlib.sha256(
-        (fixture["repo"] / "sum_prices.py").read_bytes()
-    ).hexdigest()
+def bootstrap(fixture, blocked, *, review=False):
+    source_path = fixture["repo"] / "sum_prices.py"
+    if fixture["grant"]["schema"] == 3:
+        source_path = (
+            fixture["home"]
+            / "emuru-projects/coder-attempts"
+            / fixture["grant"]["rework"]["loop"]
+            / "final-source/sum_prices.py"
+        )
+    initial = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    source = fixture.get(
+        "coder_source", "def sum_prices(prices):\n    return sum(prices)\n"
+    )
+    verdict = fixture.get(
+        "review_verdict",
+        {
+            "verdict": "approve",
+            "summary": "Synthetic checked review.",
+            "blockers": [],
+            "suggestions": [],
+        },
+    )
     return f"""import sys,json,time
 sys.path.insert(0,'/opt/emuru/src')
 from emuru.projects import coder_native as native
@@ -362,10 +380,13 @@ def respond(request):
     global calls
     calls+=1
     if {blocked is True!r}: time.sleep(10)
+    if {review!r}:
+        message={{'role':'assistant','content':{json.dumps(verdict)!r}}}
+        return httpx.Response(200,json={{'id':'synthetic','object':'chat.completion','created':0,'model':'emuru','choices':[{{'index':0,'message':message,'finish_reason':'stop'}}],'usage':{{'prompt_tokens':1,'completion_tokens':1,'total_tokens':2}}}})
     if calls==1:
         name,args='coder_read',{{'path':'sum_prices.py'}}
     elif calls==2:
-        name,args='coder_write',{{'path':'sum_prices.py','content':'def sum_prices(prices):\\n    return sum(prices)\\n','expected_sha256':{initial!r}}}
+        name,args='coder_write',{{'path':'sum_prices.py','content':{source!r},'expected_sha256':{initial!r}}}
     elif {blocked == "cap-check"!r} and calls<=5:
         name,args='coder_check',{{'check_id':'python_unittest'}}
     else:
@@ -392,7 +413,14 @@ def launch_child(fixture, window, connection):
             command = [*command]
             command[-1] = bootstrap(
                 fixture,
-                "cap-check" if window == "cap-check" else window == "cancel-inference",
+                "cap-check"
+                if window == "cap-check"
+                else (
+                    window == "cancel-inference"
+                    or self.stage["kind"] == "reviewer-stage"
+                    and window in {"cancel-review", "kill-review"}
+                ),
+                review=self.stage["kind"] == "reviewer-stage",
             )
         identity = create(self, command, name, service, image, **kwargs)
         if (
@@ -444,11 +472,14 @@ def launch_child(fixture, window, connection):
     @contextmanager
     def gateway(folder, *, process_event, supervision, deadline):
         assert deadline == supervision.deadline
-        name = "emuru-coder-gateway-" + fixture["grant"]["grant_id"][:16]
+        suffix = fixture["grant"]["grant_id"][:12] + str(
+            supervision.stage["generation"]
+        )
+        name = "emuru-coder-gateway-" + suffix
         process_event(name, "starting")
         network_names = [
-            "emuru-coder-model-" + fixture["grant"]["grant_id"][:16],
-            "emuru-coder-egress-" + fixture["grant"]["grant_id"][:16],
+            "emuru-coder-model-" + suffix,
+            "emuru-coder-egress-" + suffix,
         ]
         for network in network_names:
             supervision.create_network(network, internal=True)
@@ -482,7 +513,7 @@ def launch_child(fixture, window, connection):
                 ]
                 == 0
             )
-            yield "none", "synthetic-no-provider-access", "synthetic"
+            yield network_names[0], "synthetic-no-provider-access", "synthetic"
         finally:
             supervision.remove(name)
             for network in reversed(network_names):
@@ -490,6 +521,44 @@ def launch_child(fixture, window, connection):
             process_event(name, "stopped")
 
     launch.__globals__["cloud_gateway"] = gateway
+    from emuru.projects import coder_gateway, supervisor_reviewer
+
+    coder_gateway.cloud_gateway = gateway
+    if window in {"handoff", "schema-two"}:
+        original_handoff = supervisor_reviewer.handoff
+
+        def handoff(*args, **kwargs):
+            connection.send("handoff")
+            assert connection.recv() == "proceed"
+            return original_handoff(*args, **kwargs)
+
+        supervisor_reviewer.handoff = handoff
+    if window in {"review-request", "review-claim", "review-ack", "rework-claim"}:
+        kb = board.native_api(ROOT)
+        name = {
+            "review-request": "request_review",
+            "review-claim": "claim_review_task",
+            "review-ack": "complete_task",
+            "rework-claim": "claim_task",
+        }[window]
+        original_native = getattr(kb, name)
+
+        def native(*args, **kwargs):
+            result = original_native(*args, **kwargs)
+            connection.send(window)
+            connection.recv()
+            return result
+
+        setattr(kb, name, native)
+    if window == "verdict":
+        original_complete = supervisor_reviewer.complete
+
+        def complete(*args, **kwargs):
+            connection.send("verdict")
+            connection.recv()
+            return original_complete(*args, **kwargs)
+
+        supervisor_reviewer.complete = complete
     if window == "hold":
         original = coder_board.create_attempt
 
@@ -527,6 +596,7 @@ def launch_child(fixture, window, connection):
             fixture["policy"],
             fixture["task_id"],
             ROOT,
+            review=fixture.get("first_review", False),
         )
         (fixture["root"] / "child-result.json").write_text(json.dumps(result))
     except BaseException as error:
@@ -608,9 +678,15 @@ def test_supervised_launcher_native_docker_matrix(native_fixture, window):
     process.start()
     observation = None
     try:
-        if window in {"hold", "evidence", "native-ack"}:
+        if window in {"hold", "schema-two", "evidence", "native-ack"}:
             assert parent.poll(90), "Controlled crash/admission barrier not reached"
-            assert parent.recv() == ("admitted" if window == "hold" else window)
+            assert parent.recv() == (
+                "admitted"
+                if window == "hold"
+                else "handoff"
+                if window == "schema-two"
+                else window
+            )
         elif window in {"cancel-inference", "cancel-check", "kill-check", "cap-check"}:
             observation = wait_active(fixture, process, window)
             before = files(fixture["home"])
@@ -624,16 +700,22 @@ def test_supervised_launcher_native_docker_matrix(native_fixture, window):
                     cleanup=True,
                 )
             assert files(fixture["home"]) == before
-        if window == "hold" or window.startswith("cancel") or window == "cap-check":
+        if (
+            window in {"hold", "schema-two"}
+            or window.startswith("cancel")
+            or window == "cap-check"
+        ):
             detail, _, _ = facts(fixture)
             requested = time.monotonic_ns()
             response = fixture["project_command"](
-                f"/project {'hold' if window == 'hold' else 'cancel'} {fixture['proposal']} {fixture['task_id']} {detail['token']}"
+                f"/project {'hold' if window in {'hold', 'schema-two'} else 'cancel'} {fixture['proposal']} {fixture['task_id']} {detail['token']}"
             )
             assert (
-                "held" in response if window == "hold" else "stop_requested" in response
+                "held" in response
+                if window in {"hold", "schema-two"}
+                else "stop_requested" in response
             )
-            if window == "hold":
+            if window in {"hold", "schema-two"}:
                 parent.send("proceed")
         if window in {"kill-check", "evidence", "native-ack"}:
             os.kill(process.pid, signal.SIGKILL)

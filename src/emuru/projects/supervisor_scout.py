@@ -55,15 +55,22 @@ def metadata_pending(records):
     for stage in (
         r
         for r in records
-        if r["kind"] in {"stage", "coder-stage"} and r["phase"] == "admitted"
+        if r["kind"] in {"stage", "coder-stage", "reviewer-stage"}
+        and r["phase"] == "admitted"
     ):
+        if stage["kind"] != "stage" and any(
+            r.get("admission") == stage["generation"]
+            and r.get("phase") in {"verified", "stopped", "awaiting-review"}
+            for r in records
+        ):
+            continue
         used = sum(
             len(encoded(r))
             for r in records
             if r is stage or r.get("admission") == stage["generation"]
         )
         capacity = METADATA_RESERVATION
-        if stage["kind"] == "coder-stage":
+        if stage["kind"] in {"coder-stage", "reviewer-stage"}:
             from emuru.projects.supervisor_coder import METADATA_RESERVATION as capacity
         if used > capacity:
             raise ValueError("Scout metadata reservation exceeded.")
@@ -75,7 +82,7 @@ def reserved(records, project):
     total = dict.fromkeys(supervisor.COUNTERS, 0)
     for record in records:
         if (
-            record["kind"] in {"stage", "coder-stage"}
+            record["kind"] in {"stage", "coder-stage", "reviewer-stage"}
             and record["phase"] == "admitted"
             and record["project"] == project
         ):
@@ -87,18 +94,26 @@ def reserved(records, project):
 
 
 def unresolved(records):
+    completed = {
+        r.get("admission")
+        for r in records
+        if r.get("phase") == "verified"
+        or r.get("phase") == "stopped"
+        and r.get("native_task") is not None
+    }
+    reviewed = {
+        r["grant_sha256"]
+        for r in records
+        if r["kind"] == "reviewer-stage"
+        and r["phase"] == "admitted"
+        and r["generation"] in completed
+    }
     return any(
-        not any(
-            r.get("admission") == stage["generation"]
-            and (
-                r.get("phase") == "verified"
-                or r.get("phase") == "stopped"
-                and r.get("native_task") is not None
-            )
-            for r in records
-        )
+        stage["generation"] not in completed
+        and not (stage["kind"] == "coder-stage" and stage["grant_sha256"] in reviewed)
         for stage in records
-        if stage["kind"] in {"stage", "coder-stage"} and stage["phase"] == "admitted"
+        if stage["kind"] in {"stage", "coder-stage", "reviewer-stage"}
+        and stage["phase"] == "admitted"
     )
 
 
