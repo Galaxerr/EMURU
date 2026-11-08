@@ -387,6 +387,11 @@ def record_launcher(folder):
 
 def _launcher_stopped(folder):
     record = _read_json(Path(folder) / "launcher.json")
+    return launcher_stopped(record)
+
+
+def launcher_stopped(record):
+    """Shared boot/start-time fenced process observation; never PID alone."""
     if (
         set(record) != {"pid", "start_time", "boot_id"}
         or type(record["pid"]) is not int

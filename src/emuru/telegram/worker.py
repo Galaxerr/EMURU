@@ -96,6 +96,16 @@ class TelegramWorker:
             row := self.queue.claim(bot, username, local_status=True)
         ):
             try:
+                if queue_module.project_control(row["text"]):
+                    outcome = await self.execution.project_control(
+                        queue_module.as_update(row)
+                    )
+                    if not isinstance(outcome, TurnResult):
+                        raise TypeError("Execution adapter must return TurnResult")
+                    self.queue.finish(
+                        row["sequence"], outcome.success, outcome.error_code
+                    )
+                    continue
                 if row["text"].split(maxsplit=1)[0].split("@")[0] == "/stop":
                     interrupted = self.execution.interrupt()
                     self.retired |= interrupted

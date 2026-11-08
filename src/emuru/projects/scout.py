@@ -11,6 +11,7 @@ import re
 import signal
 import stat
 import subprocess
+import time
 from pathlib import Path, PurePosixPath
 
 from emuru.models.gateway import private_path
@@ -211,17 +212,27 @@ def _stopped(signum, frame):
     raise TimeoutError("Scout stopped or exceeded its time budget.")
 
 
-def limit_runtime(seconds):
+def limit_runtime(seconds, *, deadline_ns=None):
     if type(seconds) is not int or not 1 <= seconds <= 120:
         raise ValueError("Invalid scout time budget.")
     # Container PID 1 ignores default dispositions; explicit handlers enforce deadlines.
     signal.signal(signal.SIGTERM, _stopped)
     signal.signal(signal.SIGALRM, _stopped)
-    signal.alarm(seconds)
+    remaining = (
+        seconds
+        if deadline_ns is None
+        else min(seconds, (deadline_ns - time.monotonic_ns()) / 10**9)
+    )
+    if remaining <= 0:
+        raise TimeoutError("Scout original deadline exhausted.")
+    signal.setitimer(signal.ITIMER_REAL, remaining)
 
 
 def worker_main():
     limit_runtime(
-        json.loads(Path("/repo/manifest.json").read_bytes())["timeout_seconds"]
+        json.loads(Path("/repo/manifest.json").read_bytes())["timeout_seconds"],
+        deadline_ns=int(os.environ["EMURU_SCOUT_DEADLINE_NS"])
+        if "EMURU_SCOUT_DEADLINE_NS" in os.environ
+        else None,
     )
     print(encoded(inspect_snapshot(Path("/repo"))).decode())

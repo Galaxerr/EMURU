@@ -103,7 +103,7 @@ def _records(parent, size, marker):
         value, length = _read(parent, name)
         size += length
         if (
-            size > METADATA_BYTES - EMERGENCY_BYTES
+            size > METADATA_BYTES
             or type(value) is not dict
             or type(value.get("schema")) is not int
             or value.get("schema") != STATE_SCHEMA
@@ -142,7 +142,7 @@ def _records(parent, size, marker):
                 "identity",
             }
             if (
-                set(value) != required
+                set(value) not in (required, required | {"authority"})
                 or value["stage"] not in {"coder", "scout"}
                 or not isinstance(value["boot_id"], str)
                 or not value["boot_id"]
@@ -155,6 +155,26 @@ def _records(parent, size, marker):
                 )
             ):
                 raise ValueError("Supervisor enrollment invalid.")
+            if "authority" in value:
+                authority = value["authority"]
+                if (
+                    not isinstance(authority, dict)
+                    or set(authority)
+                    != {"owner", "bot", "vault", "revision", "approval"}
+                    or any(
+                        type(authority[k]) is not int or authority[k] <= 0
+                        for k in ("owner", "bot")
+                    )
+                    or not isinstance(authority["vault"], str)
+                    or not Path(authority["vault"]).is_absolute()
+                    or authority["vault"] != os.path.abspath(authority["vault"])
+                    or any(
+                        not isinstance(authority[k], str)
+                        or not re.fullmatch("[0-9a-f]{64}", authority[k])
+                        for k in ("revision", "approval")
+                    )
+                ):
+                    raise ValueError("Supervisor owner authority binding invalid.")
             identity = value["identity"]
             if (
                 not isinstance(identity, dict)
@@ -173,6 +193,14 @@ def _records(parent, size, marker):
                 )
             ):
                 raise ValueError("Supervisor execution identity invalid.")
+        elif value.get("kind") in {"control", "control-receipt"}:
+            from emuru.projects.supervisor_controls import validate_record
+
+            validate_record(value, records)
+        elif value.get("kind") == "stage":
+            from emuru.projects.supervisor_scout import validate_record
+
+            validate_record(value, records)
         else:
             raise ValueError("Unknown supervisor record; preserve newest state.")
         for key, pattern in (
@@ -191,6 +219,12 @@ def _records(parent, size, marker):
     ):
         raise ValueError(
             "Supervisor committed history missing or interrupted; preserve newest state."
+        )
+    from emuru.projects.supervisor_scout import metadata_pending
+
+    if size + metadata_pending(records) > METADATA_BYTES:
+        raise ValueError(
+            "Supervisor metadata and committed lifecycle reservations exceed capacity."
         )
     return records, size
 
@@ -233,7 +267,7 @@ def _initialize(home):
             _write_new(folder / "supervisor", "control.lock", b"")
 
 
-def _append(folder, records, size, value):
+def _append(folder, records, size, value, *, emergency=False):
     from emuru.projects.coder_board import _write_new
 
     value = {
@@ -242,24 +276,23 @@ def _append(folder, records, size, value):
         "previous": digest(records[-1]) if records else None,
         **value,
     }
+    if value["kind"] == "stage":
+        from emuru.projects.supervisor_scout import validate_record
+
+        validate_record(value, records)
     data = encoded(value)
-    if len(data) > RECEIPT_BYTES or size + len(data) > METADATA_BYTES - EMERGENCY_BYTES:
+    from emuru.projects.supervisor_scout import metadata_pending
+
+    prepaid = value["kind"] == "stage" and value["phase"] != "admitted"
+    if len(data) > RECEIPT_BYTES or size + len(data) + metadata_pending(
+        [*records, value]
+    ) > METADATA_BYTES - (0 if emergency or prepaid else EMERGENCY_BYTES):
         raise ValueError(
             "Supervisor metadata admission exhausted; 4 KiB emergency reserve retained."
         )
-    # Reserve compact hold/cancel/fence facts for every admitted binding before enrollment.
-    bindings = {
-        (r["project"], r["task"])
-        for r in [*records, value]
-        if r["kind"] == "enrollment"
-    }
-    emergency = {
-        "sleep": True,
-        "bindings": [
-            [p, t, "hold", "cancel", "stop_requested"] for p, t in sorted(bindings)
-        ],
-    }
-    if len(encoded(emergency)) > EMERGENCY_BYTES:
+    from emuru.projects.supervisor_controls import emergency_size
+
+    if emergency_size([*records, value]) > EMERGENCY_BYTES:
         raise ValueError("Supervisor emergency stop/fence capacity exhausted.")
     _write_new(folder, f"{value['generation']:08d}.json", data)
     from emuru.models.gateway import write_private
@@ -394,6 +427,32 @@ def enroll(
         _initialize(home)
         with _locked(home, write=True) as (parent, size, marker):
             records, size = _records(parent, size, marker)
+            from emuru.projects.supervisor_scout import reserved, unresolved
+
+            if unresolved(records):
+                raise ValueError(
+                    "Prior stage ownership uncertain; registration cannot replace it."
+                )
+            current_binding = next(
+                (
+                    r
+                    for r in reversed(records)
+                    if r["kind"] == "enrollment" and r["task"] == task
+                ),
+                None,
+            )
+            if current_binding is not None:
+                from emuru.projects.supervisor_controls import control_state
+
+                if control_state(records, current_binding) != "unrestricted":
+                    raise ValueError(
+                        "Restricted enrollment cannot be renewed or cleared by registration."
+                    )
+
+            if stage == "scout" and reserved(records, project)["scout_runs"]:
+                raise ValueError(
+                    "Project Scout allowance already reserved; registration cannot reset attempted work."
+                )
             previous = next(
                 (
                     r
@@ -446,6 +505,17 @@ def enroll(
                     "started_ns": started,
                     "deadline_ns": started + seconds * 10**9,
                     "identity": current_identity,
+                    "authority": {
+                        "owner": grant["owner"] if stage == "coder" else owner,
+                        "bot": grant["bot"] if stage == "coder" else bot,
+                        "vault": os.path.abspath(vault),
+                        "revision": grant["revision"]
+                        if stage == "coder"
+                        else preview["after_revision"],
+                        "approval": grant["approval"]
+                        if stage == "coder"
+                        else preview["approval_digest"],
+                    },
                 },
             )[0]
 
@@ -478,29 +548,21 @@ def status(home, root, project, card):
         binding = json.loads(card.body)
         if card.tenant != project or binding.get("proposal") != value["proposal"]:
             raise ValueError("Supervisor native project/task/proposal mismatch.")
-        budget = next(
-            r["reserved"]
-            for r in records
-            if r["kind"] == "project" and r["project"] == project
-        )
-        token = digest(
-            [
-                value["generation"],
-                project,
-                card.id,
-                value["grant_sha256"],
-                card.current_run_id,
-            ]
-        )
+        from emuru.projects.supervisor_scout import reserved
+
+        budget = reserved(records, project)
+        from emuru.projects.supervisor_controls import control_state
+
+        generation, token, current_run = token_binding(records, value, card)
         expired = (
             value["boot_id"] != boot_id() or time.monotonic_ns() >= value["deadline_ns"]
         )
-        return {
+        result = {
             "task": card.id,
             "native": card.status,
-            "run": card.current_run_id,
+            "run": current_run,
             "authority": "expired" if expired else "enrolled",
-            "generation": value["generation"],
+            "generation": generation,
             "token": token,
             "grant_sha256": value["grant_sha256"],
             "deadline_ns": value["deadline_ns"],
@@ -514,10 +576,38 @@ def status(home, root, project, card):
             "stop_proof": "unavailable",
             "provider_usage": "unavailable",
             "proposal": value["proposal"],
-            "control": "unrestricted",
+            "control": control_state(records, value),
             "adapter": "unavailable",
             "stage": value["stage"],
         }
+        from emuru.projects.supervisor_scout import projection as scout_projection
+
+        result.update(scout_projection(home, root, records, value))
+        return result
+
+
+def token_binding(records, enrollment, card):
+    bound = [
+        r
+        for r in records
+        if r is enrollment or r.get("enrollment") == enrollment["generation"]
+    ]
+    generation = max(r["generation"] for r in bound)
+    claimed = next((r for r in reversed(bound) if r.get("phase") == "claimed"), None)
+    run = claimed["run"] if claimed else card.current_run_id
+    return (
+        generation,
+        digest(
+            [
+                generation,
+                enrollment["project"],
+                card.id,
+                enrollment["grant_sha256"],
+                run,
+            ]
+        ),
+        run,
+    )
 
 
 def projection(home, root, project, card, *, preview=None):

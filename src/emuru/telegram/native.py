@@ -360,10 +360,53 @@ class NativeTelegram:
             self._active_turn.open = False
         return task.cancel()
 
+    async def project_control(self, payload):
+        """Commit owner restrictions without borrowing the active conversation claim."""
+        from emuru.projects.supervisor_controls import owner_control
+        from emuru.vault import mutations
+
+        bot, username = self.identity()
+        committed = True
+        owner, uid = self.queue.owner_id, payload["update_id"]
+        if (
+            queue_module.admit_update(
+                payload, owner, self.queue.settings, self.queue.now(), username, bot
+            )
+            is None
+        ):
+            raise ValueError("Owner-private admission required.")
+        if self.mutation_target is None:
+            result = "Project controls require an enabled bound private vault."
+        else:
+            home, vault = self.mutation_target
+            text = payload["message"]["text"]
+            request, _ = mutations.begin_request(
+                home, vault, owner, bot, uid, text, fresh=True
+            )
+            try:
+                self.queue.mark_tools_started(bot, uid)
+                result = owner_control(
+                    home, vault, self.root, text, owner, bot, request, uid
+                )
+            except ValueError as error:
+                result = str(error)
+            except OSError:
+                committed = False
+                result = "Project control outcome is uncertain; inspect status. No rollback or safe retry is implied."
+            finally:
+                mutations.finish_request(home, request)
+        if len(result) > 3500:
+            raise ValueError("Control response limit exceeded.")
+        with self._turn_scope(uid, notice=True):
+            await self._app.bot.send_message(chat_id=owner, text=result)
+        return TurnResult(committed, None if committed else "queue_database_error")
+
     async def _execute(self, payload, session_key):
         from emuru.vault import mutations
 
         text = payload["message"]["text"]
+        if queue_module.project_control(text):
+            return await self.project_control(payload)
         command = text.split(maxsplit=1)[0].split("@")[0]
         controls = {
             "/apply",
@@ -676,13 +719,19 @@ class NativeTelegram:
             else self.queue.terminal_notice(self.identity()[0], uid)
         )
         if status is None and self.mutation_target is not None:
+            from emuru.projects.supervisor_controls import outcome
             from emuru.vault.mutations import application_outcomes
 
             home, vault = self.mutation_target
+            control_result = outcome(
+                home, vault, self.queue.owner_id, self.identity()[0], uid
+            )
+            if control_result is not None:
+                text = control_result
             outcomes = application_outcomes(
                 home, vault, self.queue.owner_id, self.identity()[0], uid
             )
-            if outcomes:
+            if outcomes and control_result is None:
                 text = (
                     "Mutation outcome: "
                     + json.dumps(outcomes)

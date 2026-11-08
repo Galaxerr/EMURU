@@ -11,67 +11,102 @@ from emuru.projects.scout import MAX_REPORT_BYTES, SCOUT, digest, encoded, limit
 from emuru.vault import mutations
 
 
-def claim(home, root, grant):
+def claim(home, root, grant, *, admission=None):
     """One immutable grant/card per source task, baseline, selection and budget."""
-    from emuru.projects.coder_board import ensure_idle
-    from emuru.projects.supervisor import refuse_unsupported
+    from emuru.projects.supervisor import enabled, refuse_unsupported
 
-    refuse_unsupported(home)
+    if enabled(home):
+        if admission is None:
+            refuse_unsupported(home)
+        from emuru.projects.supervisor_scout import claim as supervised_claim
+
+        return supervised_claim(home, root, grant, admission)
+    if admission is not None:
+        raise ValueError("Supervised Scout requires durable opt-in.")
+    return _claim(home, root, grant)
+
+
+def _claim(home, root, grant):
+    from emuru.projects.coder_board import ensure_idle
 
     with project_board(home, root) as (kb, db):
-        source = kb.get_task(db, grant["source_task"])
-        binding = json.loads(source.body) if source else {}
-        if (
-            not source
-            or source.created_by != "emuru-owner"
-            or source.assignee is not None
-            or source.status != "blocked"
-            or binding.get("schema") != 1
-            or "scout" in binding
-            or not all(
-                re.fullmatch(r"[0-9a-f]{64}", binding.get(key, ""))
-                for key in ("revision", "approval")
-            )
-            or not re.fullmatch(r"[0-9a-f]{32}", binding.get("proposal", ""))
-        ):
-            raise ValueError("Scout requires an unchanged M2 tracked task.")
-        body = {**binding, "scout": grant}
-        key = "emuru-scout:" + digest([source.id, source.tenant, body])
-        cards = kb.list_tasks(db, tenant=source.tenant, include_archived=True)
-        existing = next((card for card in cards if card.idempotency_key == key), None)
-        if existing:
-            return status(kb, db, existing, home)
-        for active in kb.list_tasks(db, include_archived=True):
-            if active.assignee == SCOUT and active.status in {
-                "running",
-                "ready",
-                "blocked",
-            }:
-                return status(kb, db, active, home)
+        source, body, key, existing = _claim_binding(kb, db, home, grant)
+        if existing is not None:
+            return existing
         ensure_idle(home, root, None)
-        identity = kb.create_task(
-            db,
-            title="Read-only repository reconnaissance",
-            body=json.dumps(body, sort_keys=True),
-            assignee=SCOUT,
-            created_by="emuru-scout-owner",
-            tenant=source.tenant,
-            initial_status="blocked",
-            workspace_kind="scratch",
-            project_id="",
-            idempotency_key=key,
-            max_retries=0,
-            max_runtime_seconds=grant["timeout_seconds"],
-            skills=[],
+        return _create_scout(kb, db, source, body, key, grant)
+
+
+def _claim_native(home, root, grant):
+    """Fresh local native fence after lifetime-locked expensive evidence preflight."""
+    from emuru.projects.coder_board import _active_work
+
+    with project_board(home, root) as (kb, db):
+        source, body, key, existing = _claim_binding(kb, db, home, grant)
+        if existing is not None:
+            return existing
+        if _active_work(kb, db, None):
+            raise ValueError("Another task has active or unresolved native ownership.")
+        return _create_scout(kb, db, source, body, key, grant)
+
+
+def _claim_binding(kb, db, home, grant):
+    source = kb.get_task(db, grant["source_task"])
+    binding = json.loads(source.body) if source else {}
+    if (
+        not source
+        or source.created_by != "emuru-owner"
+        or source.assignee is not None
+        or source.status != "blocked"
+        or binding.get("schema") != 1
+        or "scout" in binding
+        or not all(
+            re.fullmatch(r"[0-9a-f]{64}", binding.get(key, ""))
+            for key in ("revision", "approval")
         )
-        if not kb.unblock_task(db, identity):
-            raise ValueError("Native scout authorization refused.")
-        card = kb.claim_task(
-            db, identity, claimer=SCOUT, ttl_seconds=grant["timeout_seconds"] + 60
-        )
-        if not card:
-            raise ValueError("Native scout claim refused.")
-        return {"task": card.id, "run": card.current_run_id, "status": "claimed"}
+        or not re.fullmatch(r"[0-9a-f]{32}", binding.get("proposal", ""))
+    ):
+        raise ValueError("Scout requires an unchanged M2 tracked task.")
+    body = {**binding, "scout": grant}
+    key = "emuru-scout:" + digest([source.id, source.tenant, body])
+    cards = kb.list_tasks(db, tenant=source.tenant, include_archived=True)
+    existing = next((card for card in cards if card.idempotency_key == key), None)
+    if existing:
+        return source, body, key, status(kb, db, existing, home)
+    for active in kb.list_tasks(db, include_archived=True):
+        if active.assignee == SCOUT and active.status in {
+            "running",
+            "ready",
+            "blocked",
+        }:
+            return source, body, key, status(kb, db, active, home)
+    return source, body, key, None
+
+
+def _create_scout(kb, db, source, body, key, grant):
+    identity = kb.create_task(
+        db,
+        title="Read-only repository reconnaissance",
+        body=json.dumps(body, sort_keys=True),
+        assignee=SCOUT,
+        created_by="emuru-scout-owner",
+        tenant=source.tenant,
+        initial_status="blocked",
+        workspace_kind="scratch",
+        project_id="",
+        idempotency_key=key,
+        max_retries=0,
+        max_runtime_seconds=grant["timeout_seconds"],
+        skills=[],
+    )
+    if not kb.unblock_task(db, identity):
+        raise ValueError("Native scout authorization refused.")
+    card = kb.claim_task(
+        db, identity, claimer=SCOUT, ttl_seconds=grant["timeout_seconds"] + 60
+    )
+    if not card:
+        raise ValueError("Native scout claim refused.")
+    return {"task": card.id, "run": card.current_run_id, "status": "claimed"}
 
 
 def status(kb, db, card, home):
@@ -113,6 +148,18 @@ def status(kb, db, card, home):
 
 
 def finish(home, root, request):
+    from emuru.projects.supervisor import enabled
+
+    if enabled(home):
+        from emuru.projects.supervisor_scout import finish as supervised_finish
+
+        return supervised_finish(home, root, request)
+    if "admission" in request:
+        raise ValueError("Supervised Scout requires durable opt-in.")
+    return _finish(home, root, request)
+
+
+def _finish(home, root, request):
     with project_board(home, root) as (kb, db):
         card = kb.get_task(db, request["task"])
         if not card or card.assignee != SCOUT or card.created_by != "emuru-scout-owner":
@@ -179,13 +226,22 @@ def main():
     import sys
 
     os.umask(0o077)
-    limit_runtime(30)
+    limit_runtime(
+        30,
+        deadline_ns=int(os.environ["EMURU_SCOUT_DEADLINE_NS"])
+        if "EMURU_SCOUT_DEADLINE_NS" in os.environ
+        else None,
+    )
     request = json.loads(sys.stdin.buffer.read(MAX_REPORT_BYTES + 32768))
     home, root = Path(os.environ["EMURU_SCOUT_HOME"]), Path("/opt/emuru")
     if request["action"] == "claim":
-        result = claim(home, root, request["grant"])
+        result = claim(home, root, request["grant"], admission=request.get("admission"))
     elif request["action"] == "finish":
         result = finish(home, root, request)
+    elif request["action"] in {"inspect-stage", "stop"}:
+        from emuru.projects.supervisor_scout import inspect_native
+
+        result = inspect_native(home, root, request)
     else:
         raise ValueError("Unknown scout ledger action.")
     print(encoded(result).decode())

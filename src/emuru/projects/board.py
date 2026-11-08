@@ -209,6 +209,20 @@ def project_board_readonly(home, root):
 def project_command(home, vault, root, text, owner, bot):
     """Called only by the admitted owner transport, behind its tools-started fence."""
     fields = text.split()
+    if len(fields) >= 2 and fields[1] in {"hold", "continue", "cancel"}:
+        from emuru.projects.supervisor_controls import owner_control
+
+        request = mutations.authenticated_request(home, vault, read_only=True)
+        with mutations._read_database(
+            Path(home) / "emuru-mutations/mutations.sqlite"
+        ) as db:
+            active = db.execute(
+                "SELECT update_id FROM active_request WHERE slot=1 AND request_id=?",
+                (request,),
+            ).fetchone()
+        if active is None:
+            raise ValueError("Active admitted project control required.")
+        return owner_control(home, vault, root, text, owner, bot, request, active[0])
     if (
         len(fields) != 3
         or fields[0].split("@")[0] != "/project"

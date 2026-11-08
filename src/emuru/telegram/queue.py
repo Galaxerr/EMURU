@@ -56,6 +56,66 @@ _SCHEMA = f"""CREATE TABLE IF NOT EXISTS updates (
     UNIQUE (bot_id, update_id))"""
 
 
+def project_control(text):
+    fields = text.split()
+    return (
+        len(fields) >= 2
+        and fields[0].split("@")[0] == "/project"
+        and fields[1] in {"hold", "continue", "cancel"}
+    )
+
+
+def control_receipt(path, bot, uid, request, text_hash, *, response=None):
+    """Queue-owned outcome receipt; no extra queue, schema or execution authority."""
+    from emuru.projects.coder_board import _write_new
+    from emuru.projects.coder_runtime import _read_private
+    from emuru.vault.mutations import directory, private_directory
+
+    folder = Path(path).parent / "project-control-receipts"
+    name = f"{bot}-{uid}.json"
+    if any(type(value) is not int or value <= 0 for value in (bot, uid)):
+        raise ValueError("Invalid control transport identity.")
+    try:
+        with directory(folder) as parent:
+            private_directory(parent)
+        value = json.loads(_read_private(folder / name, 4096))
+    except FileNotFoundError:
+        if response is None:
+            return None
+        value = {
+            "schema": 1,
+            "request": request,
+            "text_hash": text_hash,
+            "response": response,
+        }
+        data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        if len(data) > 4096 or len(response) > 3500:
+            raise ValueError("Control response limit exceeded.")
+        with directory(Path(path).parent) as parent:
+            private_directory(parent)
+            try:
+                os.mkdir(folder.name, 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            os.fsync(parent)
+        with directory(folder) as parent:
+            private_directory(parent)
+        _write_new(folder, name, data)
+        return response
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "request", "text_hash", "response"}
+        or type(value["schema"]) is not int
+        or value["schema"] != 1
+        or value["request"] != request
+        or value["text_hash"] != text_hash
+        or not isinstance(value["response"], str)
+        or len(value["response"]) > 3500
+    ):
+        raise ValueError("Control receipt bytes or identity changed.")
+    return value["response"]
+
+
 class QueueDiagnosticsError(RuntimeError):
     """Content-free diagnostic code; never expose database or file error text."""
 
@@ -539,6 +599,21 @@ class TelegramQueue:
         return now
 
     def _prune(self, now):
+        folder = self.path.parent / "project-control-receipts"
+        if folder.exists() or folder.is_symlink():
+            from emuru.vault.mutations import directory, private_directory
+
+            with directory(folder) as parent:
+                private_directory(parent)
+                for row in self.db.execute(
+                    "SELECT bot_id,update_id FROM updates WHERE state NOT IN ('queued','started') AND finished_at < ?",
+                    (now - 7 * 86400,),
+                ):
+                    try:
+                        os.unlink(f"{row[0]}-{row[1]}.json", dir_fd=parent)
+                    except FileNotFoundError:
+                        pass
+                os.fsync(parent)
         self.db.execute(
             """DELETE FROM updates WHERE state NOT IN ('queued','started')
             AND finished_at < ?""",
@@ -666,6 +741,7 @@ class TelegramQueue:
                         row
                         for row in rows
                         if not local_status
+                        or project_control(row["text"])
                         or row["text"].split(maxsplit=1)[0].lower()
                         in {
                             "/status",
