@@ -315,9 +315,12 @@ def _remove_snapshot(folder):
 class Qualification:
     """One bounded task attempt; live attempts bind evidence to their native run."""
 
-    def __init__(self, folder, grant, image, *, task_run=None):
+    def __init__(self, folder, grant, image, *, task_run=None, supervision=None):
         self.folder, self.grant, self.image = Path(folder), validate_grant(grant), image
         self.task_run = task_run
+        self.supervision = supervision
+        if supervision is not None:
+            supervision.check()
         if grant["catalogue"] != catalogue_digest() or (
             task_run is None and grant["repository"] != "coder-qualification"
         ):
@@ -363,6 +366,8 @@ class Qualification:
         self.workspace = Workspace(self.folder / "source", grant, reserve=self._reserve)
         self.workspace.snapshot(self.folder / "initial-source")
         self.deadline = time.monotonic() + grant["limits"]["attempt_seconds"]
+        if supervision is not None:
+            self.deadline = supervision.deadline
         self.checks, self.trace = [], []
         self.failure = None
 
@@ -394,6 +399,8 @@ class Qualification:
 
     def run(self, native, sandbox):
         def execute(name, arguments):
+            if self.supervision is not None:
+                self.supervision.admit("tool")
             if time.monotonic() >= self.deadline:
                 raise TimeoutError("Qualification attempt deadline exhausted.")
             validate_call(name, arguments)

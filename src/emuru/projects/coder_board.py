@@ -246,12 +246,16 @@ def authorize(
         return grant
 
 
-def create_attempt(home, grant):
+def create_attempt(home, grant, *, supervision=None):
     """Exclusive-create the immutable grant and intent before native claim."""
     initialized = time.monotonic_ns()
     from emuru.projects.supervisor import refuse_unsupported
 
-    refuse_unsupported(home)
+    if supervision is None:
+        refuse_unsupported(home)
+    else:
+        supervision.check()
+        initialized = supervision.stage["started_ns"]
     if grant["schema"] == 3:
         from emuru.projects.rework import preflight
 
@@ -294,12 +298,19 @@ def create_attempt(home, grant):
     return folder
 
 
-def claim(home, vault, root, task_id, grant, folder):
+def claim(home, vault, root, task_id, grant, folder, *, supervision=None):
     """Claim original task only after durable intent and shared exclusion checks."""
     from emuru.projects.supervisor import refuse_unsupported
 
-    refuse_unsupported(home)
+    if supervision is None:
+        refuse_unsupported(home)
     authorize(home, vault, root, task_id, grant)
+    if supervision is not None:
+        return supervision.claim(folder)
+    return _claim_native(home, root, task_id, grant, folder)
+
+
+def _claim_native(home, root, task_id, grant, folder):
     with board.project_board(home, root) as (kb, db):
         active = _active_work(kb, db, task_id)
         if active:
@@ -456,6 +467,12 @@ def _cleanup_gateway_secrets(root, receipt):
 
 def cleanup(home, root, task_id, grant):
     """Stop only durably named attempt resources; preserve all task/evidence state."""
+    from emuru.projects import supervisor
+
+    if supervisor.enabled(home):
+        from emuru.projects.supervisor_coder import recover
+
+        return recover(home, None, root, task_id, grant, cleanup=True)
     folder = _find_attempt(home, task_id)
     if folder is None or digest(load_grant(folder / "grant.json")) != digest(grant):
         raise ValueError("Coder cleanup grant does not match its intent.")
@@ -520,6 +537,12 @@ def cleanup(home, root, task_id, grant):
 
 def reconcile(home, vault, root, task_id, grant):
     """Explicit metadata-only finalization; caller holds the shared dispatcher lock."""
+    from emuru.projects import supervisor
+
+    if supervisor.enabled(home):
+        from emuru.projects.supervisor_coder import recover
+
+        return recover(home, vault, root, task_id, grant)
     folder = _find_attempt(home, task_id)
     if folder is None or digest(load_grant(folder / "grant.json")) != digest(grant):
         raise ValueError("Coder reconciliation grant does not match its intent.")
@@ -621,6 +644,19 @@ def finish(home, vault, root, task_id, grant, folder, run):
         from emuru.projects.reviewer import begin
 
         return begin(home, vault, root, task_id, grant, folder, run)
+    return _complete_success(
+        home,
+        root,
+        task_id,
+        grant,
+        folder,
+        run,
+        report,
+        hashlib.sha256(data).hexdigest(),
+    )
+
+
+def _complete_success(home, root, task_id, grant, folder, run, report, evidence_sha256):
     with board.project_board(home, root) as (kb, db):
         card = kb.get_task(db, task_id)
         _require_run(card, task_id, run["run"])
@@ -632,7 +668,7 @@ def finish(home, vault, root, task_id, grant, folder, run):
             "run": run["run"],
             "grant_id": grant["grant_id"],
             "grant_sha256": digest(grant),
-            "evidence_sha256": hashlib.sha256(data).hexdigest(),
+            "evidence_sha256": evidence_sha256,
             "diff_sha256": report["diff_sha256"],
             "attachments": refs,
         }
@@ -744,6 +780,16 @@ def status(kb, db, card, home, root):
         return {"status": "uncertain", "detail": "coder intent unavailable"}
     grant = load_grant(folder / "grant.json")
     check_intent(folder, grant)
+    from emuru.projects import supervisor
+
+    if supervisor.enabled(home):
+        from emuru.projects.supervisor_coder import native_status
+
+        return native_status(home, root, grant, card, kb, db)
+    return _status(kb, db, card, home, root, folder, grant)
+
+
+def _status(kb, db, card, home, root, folder, grant):
     if grant["schema"] in {2, 3}:
         from emuru.projects.reviewer import status as review_status
 

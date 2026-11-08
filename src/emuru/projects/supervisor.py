@@ -201,6 +201,10 @@ def _records(parent, size, marker):
             from emuru.projects.supervisor_scout import validate_record
 
             validate_record(value, records)
+        elif value.get("kind") == "coder-stage":
+            from emuru.projects.supervisor_coder import validate_record
+
+            validate_record(value, records)
         else:
             raise ValueError("Unknown supervisor record; preserve newest state.")
         for key, pattern in (
@@ -276,14 +280,16 @@ def _append(folder, records, size, value, *, emergency=False):
         "previous": digest(records[-1]) if records else None,
         **value,
     }
-    if value["kind"] == "stage":
+    if value["kind"] in {"stage", "coder-stage"}:
         from emuru.projects.supervisor_scout import validate_record
 
+        if value["kind"] == "coder-stage":
+            from emuru.projects.supervisor_coder import validate_record
         validate_record(value, records)
     data = encoded(value)
     from emuru.projects.supervisor_scout import metadata_pending
 
-    prepaid = value["kind"] == "stage" and value["phase"] != "admitted"
+    prepaid = value["kind"] in {"stage", "coder-stage"} and value["phase"] != "admitted"
     if len(data) > RECEIPT_BYTES or size + len(data) + metadata_pending(
         [*records, value]
     ) > METADATA_BYTES - (0 if emergency or prepaid else EMERGENCY_BYTES):
@@ -580,10 +586,13 @@ def status(home, root, project, card):
             "adapter": "unavailable",
             "stage": value["stage"],
         }
-        from emuru.projects.supervisor_scout import projection as scout_projection
+    from emuru.projects.supervisor_scout import projection as scout_projection
 
-        result.update(scout_projection(home, root, records, value))
-        return result
+    result.update(scout_projection(home, root, records, value))
+    from emuru.projects.supervisor_coder import projection as coder_projection
+
+    result.update(coder_projection(home, root, records, value))
+    return result
 
 
 def token_binding(records, enrollment, card):

@@ -387,7 +387,49 @@ def run(image):
     print(f"Ticket 3 crash matrix: PASS ({output})", flush=True)
 
 
+def run_supervised(image):
+    """Matching-image M6 seams, using the same disposable native fixture and workers."""
+    import pytest
+
+    from emuru.projects.scout import digest
+
+    source, current = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))[
+        "ensure_image"
+    ](build=False)
+    if image != current:
+        raise ValueError(
+            "Supervised qualification requires the current verified image."
+        )
+    output = ROOT / ".runtime" / ("coder-supervisor-" + str(time.time_ns()))
+    output.mkdir(mode=0o700)
+    prepare = runpy.run_path(str(ROOT / "scripts/hermes/coder-task-check.py"))[
+        "prepare"
+    ]
+    fixture = prepare(image)
+    fixture["queue"].close()
+    os.environ["EMURU_CODER_TEST_IMAGE"] = image
+    os.environ["EMURU_CODER_QUALIFICATION"] = str(output)
+    code = pytest.main(["-q", str(ROOT / "tests/test_coder_supervisor_native.py")])
+    cases = {path.stem: json.loads(path.read_text()) for path in output.glob("*.json")}
+    report = {
+        "status": "PASS" if code == 0 and len(cases) == 13 else "FAIL",
+        "source": source,
+        "image": image,
+        "runtime": str(fixture["root"]),
+        "cases": cases,
+        "cases_sha256": digest(cases),
+        "pytest_exit": int(code),
+        "limitations": "Synthetic SDK transport and isolated gateway stand-in prove mechanics; no provider/model usefulness claim.",
+    }
+    (output / "matrix.json").write_text(json.dumps(report, sort_keys=True, indent=2))
+    print(f"Supervised coder qualification: {report['status']} ({output})", flush=True)
+    if report["status"] != "PASS":
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
-    run(parser.parse_args().image)
+    parser.add_argument("--supervised", action="store_true")
+    args = parser.parse_args()
+    (run_supervised if args.supervised else run)(args.image)

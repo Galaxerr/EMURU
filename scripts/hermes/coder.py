@@ -88,9 +88,11 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
             return coder_board.cleanup(home, root, task_id, grant)
         if reconcile:
             return coder_board.reconcile(home, vault, root, task_id, grant)
-        from emuru.projects.supervisor import refuse_unsupported
+        from emuru.projects import supervisor, supervisor_coder
 
-        refuse_unsupported(home)
+        supervised = supervisor.enabled(home)
+        if supervised and grant["schema"] == 3:
+            supervisor.refuse_unsupported(home)
         try:
             prior = coder_board._find_attempt(home, task_id)
         except (OSError, ValueError, TypeError, KeyError):
@@ -121,14 +123,25 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
             home, root, task_id, rework_grant=grant if rework_start else None
         )
         stage_deadline = time.monotonic() + grant["limits"]["attempt_seconds"]
-        folder = coder_board.create_attempt(home, grant)
+        supervision = None
+        options = {}
+        if supervised:
+            supervisor_coder.reserve(home, vault, root, grant, image)
+            supervision = supervisor_coder.CoderStage(home, vault, root, grant)
+            stage_deadline = supervision.deadline
+            options["supervision"] = supervision
+        folder = coder_board.create_attempt(home, grant, **options)
         coder_board.record_launcher(folder)
-        run = coder_board.claim(home, vault, root, task_id, grant, folder)
+        run = coder_board.claim(home, vault, root, task_id, grant, folder, **options)
         coder_board.authorize(home, vault, root, task_id, grant, run_id=run["run"])
-        attempt = Qualification(folder, grant, image, task_run=run)
+        attempt = Qualification(folder, grant, image, task_run=run, **options)
         attempt.deadline = min(attempt.deadline, stage_deadline)
         task = _task(home, root, task_id)
         request = _request(grant, task)
+        if supervision is not None:
+            request.update(
+                supervised=True, deadline_ns=supervision.stage["deadline_ns"]
+            )
         if grant["schema"] == 3:
             from emuru.projects.rework import lineage
 
@@ -152,6 +165,7 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                 process_event=lambda name, phase: coder_board.process_event(
                     folder, name, "gateway", phase
                 ),
+                **options,
             ) as (network, gateway_key, _primary):
                 output_usage = {"native": 0, "checks": 0}
                 sandbox = DockerSandbox(
@@ -163,6 +177,7 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                     process_event=lambda name, phase: coder_board.process_event(
                         folder, name, "check", phase
                     ),
+                    **options,
                 )
                 inference_name = "emuru-coder-inference-" + secrets.token_hex(16)
                 result = attempt.run(
@@ -179,6 +194,7 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                         process_event=lambda name, phase: coder_board.process_event(
                             folder, name, "inference", phase
                         ),
+                        **options,
                     ),
                     sandbox,
                 )
@@ -198,8 +214,16 @@ def launch(home, vault, policy, task_id, root=ROOT, *, reconcile=False, cleanup=
                 },
             )
         try:
-            receipt = coder_board.finish(home, vault, root, task_id, grant, folder, run)
-            if grant.get("schema") in {2, 3} and receipt["status"] == "awaiting_review":
+            receipt = (
+                supervisor_coder.finish(supervision, folder, run)
+                if supervision is not None
+                else coder_board.finish(home, vault, root, task_id, grant, folder, run)
+            )
+            if (
+                supervision is None
+                and grant.get("schema") in {2, 3}
+                and receipt["status"] == "awaiting_review"
+            ):
                 from emuru.projects.reviewer import execute
 
                 receipt = execute(home, vault, root, task_id, grant, folder)

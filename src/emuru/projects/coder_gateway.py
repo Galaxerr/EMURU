@@ -22,12 +22,34 @@ def _docker(arguments, seconds=30):
 
 
 @contextlib.contextmanager
-def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None):
+def cloud_gateway(
+    folder, daemon_root=None, process_event=None, *, deadline=None, supervision=None
+):
     now = time.monotonic()
     attempt_deadline = min(now + 600, deadline) if deadline is not None else now + 600
     deadline = min(now + 120, attempt_deadline)
+    maintenance = False
+
+    def process(command, payload, seconds, output_bytes):
+        if supervision is not None:
+            return supervision.command(
+                command,
+                payload=payload,
+                seconds=seconds,
+                output_bytes=output_bytes,
+                maintenance=maintenance,
+            )
+        return bounded_process(command, payload, seconds, output_bytes)
+
+    def docker(arguments, seconds=30):
+        observed = process(["docker", *arguments], b"", seconds, 65536)
+        if observed["exit_code"]:
+            raise RuntimeError("Disposable coder gateway operation failed.")
+        return observed["stdout"].strip()
 
     def remaining(seconds):
+        if supervision is not None:
+            supervision.check()
         budget = deadline - time.monotonic()
         if budget <= 0:
             raise TimeoutError("Coder gateway exceeded its attempt deadline.")
@@ -67,7 +89,7 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
     created_networks = []
     container_owned = False
     try:
-        existing = bounded_process(
+        existing = process(
             ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
             b"",
             remaining(5),
@@ -76,7 +98,7 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
         if existing["exit_code"] or existing["stdout"].strip():
             raise RuntimeError("Coder gateway container identity is unavailable.")
         for network in (model_network, egress_network):
-            found = bounded_process(
+            found = process(
                 ["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"],
                 b"",
                 remaining(5),
@@ -88,8 +110,12 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
             process_event(name, "starting")
         container_owned = True
         created_networks.extend((model_network, egress_network))
-        _docker(["network", "create", "--internal", model_network], remaining(30))
-        _docker(["network", "create", egress_network], remaining(30))
+        if supervision is not None:
+            supervision.create_network(model_network, internal=True)
+            supervision.create_network(egress_network)
+        else:
+            docker(["network", "create", "--internal", model_network], remaining(30))
+            docker(["network", "create", egress_network], remaining(30))
         argv = [
             "run",
             "-d",
@@ -146,13 +172,24 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
             "--port",
             "4000",
         ]
-        _docker(argv, remaining(30))
-        _docker(
+        if supervision is not None:
+            pinned = supervision.command(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", pins["litellm"]]
+            )
+            if pinned["exit_code"]:
+                raise ValueError("Pinned coder gateway image unavailable.")
+            identity = supervision.create(
+                ["docker", *argv], name, "gateway", pinned["stdout"].strip()
+            )
+            docker(["start", identity], remaining(30))
+        else:
+            docker(argv, remaining(30))
+        docker(
             ["network", "connect", "--alias", "litellm", model_network, name],
             remaining(30),
         )
         while True:
-            health = bounded_process(
+            health = process(
                 [
                     "docker",
                     "exec",
@@ -168,13 +205,22 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
             if health["exit_code"] == 0:
                 remaining(1)
                 break
-            time.sleep(remaining(1))
+            if supervision is None:
+                time.sleep(remaining(1))
+            else:
+                # Bound probe receipts while still observing cancel during the idle wait.
+                until = time.monotonic() + 2
+                while time.monotonic() < until:
+                    time.sleep(remaining(min(0.1, until - time.monotonic())))
         yield model_network, gateway_key, route["primary"]
     finally:
+        maintenance = True
         cleanup_error = None
         try:
             if container_owned:
-                found = bounded_process(
+                if supervision is not None:
+                    supervision.remove(name)
+                found = process(
                     ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
                     b"",
                     5,
@@ -183,8 +229,8 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
                 if found["exit_code"]:
                     raise RuntimeError("Coder gateway inspection is unavailable.")
                 if found["stdout"].strip():
-                    _docker(["rm", "--force", name], 15)
-                remaining = bounded_process(
+                    docker(["rm", "--force", name], 15)
+                remaining = process(
                     ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
                     b"",
                     5,
@@ -201,7 +247,10 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
                 (folder / secret).unlink(missing_ok=True)
         for network in reversed(created_networks):
             try:
-                found = bounded_process(
+                if supervision is not None:
+                    supervision.remove_network(network)
+                    continue
+                found = process(
                     ["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"],
                     b"",
                     5,
@@ -212,8 +261,8 @@ def cloud_gateway(folder, daemon_root=None, process_event=None, *, deadline=None
                         "Coder gateway network inspection is unavailable."
                     )
                 if found["stdout"].strip():
-                    _docker(["network", "rm", network], 15)
-                remaining = bounded_process(
+                    docker(["network", "rm", network], 15)
+                remaining = process(
                     ["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"],
                     b"",
                     5,

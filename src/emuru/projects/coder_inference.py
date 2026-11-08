@@ -101,6 +101,7 @@ def run_inference(
     deadline=None,
     output_bytes=None,
     output_usage=None,
+    supervision=None,
 ):
     validate_request(request)
     review = request.get("role") == "reviewer"
@@ -182,25 +183,45 @@ def run_inference(
     docker_environment = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}
     if process_event:
         process_event(name, "starting")
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        env={
-            **docker_environment,
-            "EMURU_GATEWAY_KEY": gateway_key,
-        },
-    )
+    observer = None
+    process = None
     buffer, sequence, final = bytearray(), 0, None
     received = 0
+    model_calls = 0
     try:
+        if supervision is not None:
+            identity = supervision.create(
+                command,
+                name,
+                "inference",
+                image,
+                env={**docker_environment, "EMURU_GATEWAY_KEY": gateway_key},
+            )
+            command = ["docker", "start", "--attach", "--interactive", identity]
+            observer = supervision.client(command)
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env={**docker_environment, "EMURU_GATEWAY_KEY": gateway_key},
+            )
+        except BaseException:
+            if observer is not None:
+                observer(None, "unstarted")
+            raise
+        if observer is not None:
+            observer(process, "bound")
+            supervision.check()
         process.stdin.write(json.dumps(request).encode() + b"\n")
         process.stdin.flush()
         with selectors.DefaultSelector() as poller:
             poller.register(process.stdout, selectors.EVENT_READ)
             while poller.get_map():
+                if supervision is not None:
+                    supervision.check()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Native coding inference exceeded its deadline.")
@@ -231,6 +252,26 @@ def run_inference(
                                 )
                             final = event
                             continue
+                        if event.get("type") == "model":
+                            if (
+                                supervision is None
+                                or set(event) != {"type", "id"}
+                                or type(event["id"]) is not int
+                                or event["id"] != model_calls + 1
+                            ):
+                                raise ValueError(
+                                    "Native model admission correlation failed."
+                                )
+                            supervision.admit("model")
+                            model_calls += 1
+                            process.stdin.write(
+                                json.dumps(
+                                    {"id": model_calls, "result": {"admitted": True}}
+                                ).encode()
+                                + b"\n"
+                            )
+                            process.stdin.flush()
+                            continue
                         sequence += 1
                         if review:
                             raise ValueError("Reviewer attempted a tool call.")
@@ -254,9 +295,19 @@ def run_inference(
                         process.stdin.flush()
         if buffer or final is None:
             raise ValueError("Native coding final outcome is missing.")
+        if supervision is not None:
+            supervision.check()
+            if final["success"] and final.get("model_calls") != model_calls:
+                raise ValueError(
+                    "Coder mandatory model counter conflicts with native evidence."
+                )
         code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
-        inspected = bounded_process(
-            ["docker", "inspect", name], b"", 5, 65536, env=docker_environment
+        inspected = (
+            supervision.command(["docker", "inspect", name], env=docker_environment)
+            if supervision is not None
+            else bounded_process(
+                ["docker", "inspect", name], b"", 5, 65536, env=docker_environment
+            )
         )
         if inspected["exit_code"]:
             raise ValueError("Native coding lifecycle inspection unavailable.")
@@ -284,23 +335,29 @@ def run_inference(
             outcome["model_calls"] = final["model_calls"]
             outcome["output_bytes"] = received
     finally:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5)
-        process.stdin.close()
-        process.stdout.close()
-        removed = bounded_process(
-            ["docker", "rm", "--force", name], b"", 10, 4096, env=docker_environment
-        )
-        absent = bounded_process(
-            ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
-            b"",
-            5,
-            4096,
-            env=docker_environment,
-        )
-        if removed["exit_code"] or absent["exit_code"] or absent["stdout"].strip():
-            raise RuntimeError("Native coding inference termination is uncertain.")
+        if process is not None:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            process.stdin.close()
+            process.stdout.close()
+            if observer is not None:
+                observer(process, "stopped")
+        if supervision is not None:
+            supervision.remove(name)
+        elif process is not None:
+            removed = bounded_process(
+                ["docker", "rm", "--force", name], b"", 10, 4096, env=docker_environment
+            )
+            absent = bounded_process(
+                ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
+                b"",
+                5,
+                4096,
+                env=docker_environment,
+            )
+            if removed["exit_code"] or absent["exit_code"] or absent["stdout"].strip():
+                raise RuntimeError("Native coding inference termination is uncertain.")
         if process_event:
             process_event(name, "stopped")
     outcome["native_lifecycle"]["removed"] = True

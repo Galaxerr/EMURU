@@ -82,7 +82,19 @@ class CoderProtocol:
     def __init__(self, incoming, outgoing):
         self.incoming, self.outgoing = incoming, outgoing
         self.tool_calls = 0
+        self.model_calls = 0
         self.lock = threading.Lock()
+
+    def model(self):
+        with self.lock:
+            self.model_calls += 1
+            self.outgoing.write(
+                json.dumps({"type": "model", "id": self.model_calls}) + "\n"
+            )
+            self.outgoing.flush()
+            reply = read_message(self.incoming)
+            if reply != {"id": self.model_calls, "result": {"admitted": True}}:
+                raise ValueError("coder_model_admission_refused")
 
     def call(self, name, arguments):
         validate_call(name, arguments)
@@ -110,9 +122,18 @@ def validate_request(request):
         "model",
         "endpoint",
         "role",
+        "supervised",
+        "deadline_ns",
     }:
         raise ValueError("coder_request_refused")
     review = request.get("role") == "reviewer"
+    if ("supervised" in request or "deadline_ns" in request) and (
+        request.get("supervised") is not True
+        or review
+        or type(request.get("deadline_ns")) is not int
+        or request["deadline_ns"] <= 0
+    ):
+        raise ValueError("coder_supervised_request_refused")
     if (
         request.get("role") not in {None, "reviewer"}
         or not isinstance(request.get("prompt"), str)
@@ -215,7 +236,9 @@ def _install_tools(agent_class, rpc, deadline, *, review=False):
     return close
 
 
-def _install_inference_guard(agent_class, deadline, *, review=False, model_limit=12):
+def _install_inference_guard(
+    agent_class, deadline, *, review=False, model_limit=12, model_admission=None
+):
     original_client = agent_class._create_openai_client
     closed = False
 
@@ -272,6 +295,9 @@ def _install_inference_guard(agent_class, deadline, *, review=False, model_limit
                 raise ValueError("coder_inference_schema_refused")
             if close.calls >= model_limit:
                 raise ValueError("coder_model_budget")
+            if model_admission is not None:
+                model_admission()
+                check(agent)
             close.calls += 1
             result = original_create(*args, **kwargs)
             check(agent)
@@ -292,13 +318,19 @@ def _install_inference_guard(agent_class, deadline, *, review=False, model_limit
     return close
 
 
-def run_native(request, rpc, agent_class=None):
+def run_native(request, rpc, agent_class=None, *, model_admission=None):
     """Run one native turn; narrative is never independent acceptance evidence."""
     validate_request(request)
     review = request.get("role") == "reviewer"
     if not os.environ.get("EMURU_GATEWAY_KEY"):
         raise ValueError("coder_model_access_missing")
     deadline = time.monotonic() + request.get("deadline_seconds", 600)
+    if request.get("supervised"):
+        if model_admission is None:
+            raise ValueError("coder_model_admission_missing")
+        deadline = min(deadline, request["deadline_ns"] / 10**9)
+        if time.monotonic() >= deadline:
+            raise ValueError("coder_deadline")
     with tempfile.TemporaryDirectory(prefix="emuru-coder-") as home:
         os.environ["HERMES_HOME"] = home
         os.environ["HERMES_SAFE_MODE"] = "1"
@@ -325,6 +357,7 @@ def run_native(request, rpc, agent_class=None):
             deadline,
             review=review,
             model_limit=request.get("max_iterations", 4 if review else 12),
+            model_admission=model_admission,
         )
         agent = None
         try:
@@ -469,7 +502,15 @@ def main(incoming=None, outgoing=None):
     try:
         request = read_message(incoming)
         with contextlib.redirect_stdout(sys.stderr):
-            result = run_native(request, protocol.call)
+            result = run_native(
+                request,
+                protocol.call,
+                **(
+                    {"model_admission": protocol.model}
+                    if request.get("supervised")
+                    else {}
+                ),
+            )
         final = {"type": "final", **result, "tool_calls": protocol.tool_calls}
     except Exception as error:  # noqa: BLE001 -- do not expose SDK exceptions or source
         # SDK/native exceptions may contain keys or source. Do not serialize them.

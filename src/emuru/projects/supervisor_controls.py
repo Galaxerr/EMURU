@@ -163,7 +163,10 @@ def owner_control(home, vault, root, text, owner, bot, request, uid):
     if cached is not None:
         return cached
     try:
-        return _owner_control(home, vault, root, text, owner, bot, request, uid)
+        proof = _coder_continue_proof(home, root, text)
+        return _owner_control(
+            home, vault, root, text, owner, bot, request, uid, coder_proof=proof
+        )
     except ValueError as error:
         response = _retain_outcome(home, request, text_hash, str(error))
         return control_receipt(queue, bot, uid, request, text_hash, response=response)
@@ -209,7 +212,61 @@ def _retain_outcome(home, request, text_hash, response, *, locked=None):
     return response
 
 
-def _owner_control(home, vault, root, text, owner, bot, request, uid):
+def _native_signature(card):
+    return [
+        card.id,
+        card.status,
+        card.current_run_id,
+        getattr(card, "assignee", None),
+        getattr(card, "claim_lock", None),
+        hashlib.sha256(card.body.encode()).hexdigest(),
+    ]
+
+
+def _coder_continue_proof(home, root, text):
+    """Potentially blocking evidence inspection happens before the short control lock."""
+    fields = text.split()
+    if len(fields) != 5 or fields[1] != "continue":
+        return None
+    with supervisor._locked(home) as (parent, size, marker):
+        records, _ = supervisor._records(parent, size, marker)
+    enrollment = next(
+        (
+            r
+            for r in reversed(records)
+            if r["kind"] == "enrollment" and r["task"] == fields[3]
+        ),
+        None,
+    )
+    if (
+        enrollment is None
+        or enrollment["stage"] != "coder"
+        or not any(
+            r.get("enrollment") == enrollment["generation"]
+            and r.get("phase") == "admitted"
+            for r in records
+        )
+    ):
+        return None
+    from emuru.projects import board
+    from emuru.projects.supervisor_coder import projection
+
+    with board.project_board_readonly(home, root) as (kb, db):
+        card = kb.get_task(db, enrollment["task"])
+        if card is None:
+            raise ValueError("Coder native task unavailable.")
+        _, token, _ = supervisor.token_binding(records, enrollment, card)
+        signature = _native_signature(card)
+    return {
+        "token": token,
+        "native": signature,
+        "projection": projection(home, root, records, enrollment),
+    }
+
+
+def _owner_control(
+    home, vault, root, text, owner, bot, request, uid, *, coder_proof=None
+):
     from emuru.projects import board
     from emuru.telegram.queue import control_receipt
 
@@ -328,6 +385,28 @@ def _owner_control(home, vault, root, text, owner, bot, request, uid):
                 response=response,
             )
         if action == "continue":
+            if (
+                enrollment["stage"] == "coder"
+                and any(
+                    r.get("enrollment") == enrollment["generation"]
+                    and r.get("phase") == "admitted"
+                    for r in records
+                )
+                and (
+                    coder_proof is None
+                    or coder_proof["token"] != expected
+                    or coder_proof["native"] != _native_signature(card)
+                    or coder_proof["projection"].get("execution")
+                    not in {
+                        "finished",
+                        "awaiting_review",
+                        "running",
+                    }
+                )
+            ):
+                raise ValueError(
+                    "Coder ownership/outcome uncertain; continue cannot replay attempted work."
+                )
             if enrollment["stage"] == "scout" and any(
                 r.get("enrollment") == enrollment["generation"]
                 and r.get("phase") == "admitted"

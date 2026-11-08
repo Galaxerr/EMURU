@@ -53,16 +53,21 @@ def _valid_process(value):
 def metadata_pending(records):
     total = 0
     for stage in (
-        r for r in records if r["kind"] == "stage" and r["phase"] == "admitted"
+        r
+        for r in records
+        if r["kind"] in {"stage", "coder-stage"} and r["phase"] == "admitted"
     ):
         used = sum(
             len(encoded(r))
             for r in records
             if r is stage or r.get("admission") == stage["generation"]
         )
-        if used > METADATA_RESERVATION:
+        capacity = METADATA_RESERVATION
+        if stage["kind"] == "coder-stage":
+            from emuru.projects.supervisor_coder import METADATA_RESERVATION as capacity
+        if used > capacity:
             raise ValueError("Scout metadata reservation exceeded.")
-        total += METADATA_RESERVATION - used
+        total += capacity - used
     return total
 
 
@@ -70,7 +75,7 @@ def reserved(records, project):
     total = dict.fromkeys(supervisor.COUNTERS, 0)
     for record in records:
         if (
-            record["kind"] == "stage"
+            record["kind"] in {"stage", "coder-stage"}
             and record["phase"] == "admitted"
             and record["project"] == project
         ):
@@ -93,7 +98,7 @@ def unresolved(records):
             for r in records
         )
         for stage in records
-        if stage["kind"] == "stage" and stage["phase"] == "admitted"
+        if stage["kind"] in {"stage", "coder-stage"} and stage["phase"] == "admitted"
     )
 
 

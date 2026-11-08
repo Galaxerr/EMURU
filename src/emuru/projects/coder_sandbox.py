@@ -1,5 +1,7 @@
 """Fixed offline candidate execution; authoritative assertions stay outside it."""
 
+import csv
+import io
 import json
 import os
 import selectors
@@ -55,30 +57,54 @@ def install_exec_guard():
         raise OSError(error, "Coding syscall confinement unavailable.")
 
 
-def bounded_process(command, payload, seconds, output_bytes, *, env=None):
+def bounded_process(
+    command,
+    payload,
+    seconds,
+    output_bytes,
+    *,
+    env=None,
+    stopped=None,
+    process_event=None,
+):
     """Stop overflowing producers while they run; never buffer unlimited output."""
-    if seconds <= 0 or output_bytes <= 0 or len(payload) > 4096:
-        raise ValueError("Invalid coding process bounds.")
-    deadline = time.monotonic() + seconds
-    streams = {"stdout": bytearray(), "stderr": bytearray()}
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        env=env,
-    )
     try:
+        if seconds <= 0 or output_bytes <= 0 or len(payload) > 4096:
+            raise ValueError("Invalid coding process bounds.")
+        if stopped is not None and stopped():
+            raise InterruptedError("Coder stop requested; effects remain uncertain.")
+        deadline = time.monotonic() + seconds
+        streams = {"stdout": bytearray(), "stderr": bytearray()}
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            env=env,
+        )
+    except BaseException:
+        if process_event is not None:
+            process_event(None, "unstarted")
+        raise
+    try:
+        if process_event is not None:
+            process_event(process, "bound")
         process.stdin.write(payload)
         process.stdin.close()
         with selectors.DefaultSelector() as poller:
             poller.register(process.stdout, selectors.EVENT_READ, "stdout")
             poller.register(process.stderr, selectors.EVENT_READ, "stderr")
-            while poller.get_map():
+            while poller.get_map() or process.poll() is None:
+                if stopped is not None and stopped():
+                    raise InterruptedError(
+                        "Coder stop requested; effects remain uncertain."
+                    )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Coding process exceeded its deadline.")
+                if not poller.get_map():
+                    time.sleep(min(remaining, 0.1))
                 for key, _ in poller.select(min(remaining, 0.1)):
                     chunk = os.read(key.fileobj.fileno(), 16384)
                     if not chunk:
@@ -102,6 +128,8 @@ def bounded_process(command, payload, seconds, output_bytes, *, env=None):
         process.stdout.close()
         process.stderr.close()
         process.stdin.close()
+        if process_event is not None:
+            process_event(process, "stopped")
 
 
 def run_acceptance(invoke):
@@ -275,6 +303,68 @@ def inspect_confinement(record, snapshot, uid, gid, limits):
     }
 
 
+def check_create_command(service, name):
+    """Create the existing check configuration stopped, with attachable stdin."""
+    command = [
+        "docker",
+        "create",
+        "--interactive",
+        "--pull",
+        "never",
+        "--name",
+        name,
+        "--read-only",
+    ]
+    for flag, key in (
+        ("--user", "user"),
+        ("--network", "network_mode"),
+        ("--memory", "mem_limit"),
+        ("--memory-swap", "memswap_limit"),
+        ("--pids-limit", "pids_limit"),
+        ("--cpus", "cpus"),
+        ("--restart", "restart"),
+    ):
+        command.extend([flag, str(service[key])])
+    for flag, key in (
+        ("--cap-drop", "cap_drop"),
+        ("--security-opt", "security_opt"),
+        ("--tmpfs", "tmpfs"),
+    ):
+        for value in service[key]:
+            command.extend([flag, value])
+    for key, value in service["environment"].items():
+        command.extend(["--env", f"{key}={value}"])
+    for mount in service["volumes"]:
+        if (
+            mount["type"] != "bind"
+            or mount.get("read_only") is not True
+            or mount["bind"].get("create_host_path") is not False
+        ):
+            raise ValueError("Coder check requires existing read-only source.")
+        encoded_mount = io.StringIO()
+        csv.writer(encoded_mount, lineterminator="").writerow(
+            [
+                "type=bind",
+                "src=" + mount["source"],
+                "dst=" + mount["target"],
+                "readonly",
+            ]
+        )
+        command.extend(["--mount", encoded_mount.getvalue()])
+    return [
+        *command,
+        "--log-driver",
+        service["logging"]["driver"],
+        "--stop-timeout",
+        str(int(service["stop_grace_period"].removesuffix("s"))),
+        "--entrypoint",
+        service["entrypoint"][0],
+        service["image"],
+        *service["entrypoint"][1:],
+        *service["command"],
+    ]
+
+
 class DockerSandbox:
     """Trusted fixed-check adapter; no repository command or environment input."""
 
@@ -287,6 +377,7 @@ class DockerSandbox:
         daemon_root=None,
         process_event=None,
         output_usage=None,
+        supervision=None,
     ):
         import re
 
@@ -296,6 +387,7 @@ class DockerSandbox:
         self.limits = dict(limits)
         self.daemon_root = Path(daemon_root) if daemon_root else self.root
         self.process_event = process_event
+        self.supervision = supervision
         self.total_output = 0
         self.output_usage = (
             output_usage if output_usage is not None else {"native": 0, "checks": 0}
@@ -364,8 +456,26 @@ class DockerSandbox:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("Coding check deadline exhausted.")
-            result = bounded_process(command, payload, remaining, remaining_output)
-            inspected = bounded_process(["docker", "inspect", name], b"", 5, 65536)
+            if self.supervision is not None:
+                identity = self.supervision.create(
+                    check_create_command(service, name),
+                    name,
+                    "check",
+                    self.image,
+                    deadline_ns=min(
+                        self.supervision.stage["deadline_ns"], int(deadline * 10**9)
+                    ),
+                )
+                result = self.supervision.command(
+                    ["docker", "start", "--attach", "--interactive", identity],
+                    payload=payload,
+                    seconds=remaining,
+                    output_bytes=remaining_output,
+                )
+                inspected = self.supervision.command(["docker", "inspect", identity])
+            else:
+                result = bounded_process(command, payload, remaining, remaining_output)
+                inspected = bounded_process(["docker", "inspect", name], b"", 5, 65536)
             if inspected["exit_code"]:
                 raise ValueError("Coding container inspection unavailable.")
             actual = json.loads(inspected["stdout"])[0]
@@ -398,14 +508,21 @@ class DockerSandbox:
         finally:
             # A Docker client exit does not terminate its container.
             try:
-                removed = bounded_process(
-                    ["docker", "rm", "--force", name], b"", 10, 4096
-                )
-                absent = bounded_process(
-                    ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"], b"", 5, 4096
-                )
-                if absent["exit_code"] or absent["stdout"].strip():
-                    raise RuntimeError("Coding container termination is uncertain.")
+                if self.supervision is not None:
+                    self.supervision.remove(name)
+                    removed = {"exit_code": 0}
+                else:
+                    removed = bounded_process(
+                        ["docker", "rm", "--force", name], b"", 10, 4096
+                    )
+                    absent = bounded_process(
+                        ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
+                        b"",
+                        5,
+                        4096,
+                    )
+                    if absent["exit_code"] or absent["stdout"].strip():
+                        raise RuntimeError("Coding container termination is uncertain.")
             except BaseException:
                 self._fail("termination_uncertain")
                 raise
@@ -426,6 +543,8 @@ class DockerSandbox:
             raise ValueError("Coding attempt already failed closed.")
         if self.executions >= self.limits["check_executions"]:
             raise ValueError("Coding check budget exhausted.")
+        if self.supervision is not None:
+            self.supervision.admit("check")
         self.executions += 1
         seconds = self.limits["check_seconds"]
         if remaining_seconds is not None:
