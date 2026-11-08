@@ -1,5 +1,6 @@
 """Exercise real wake in disposable Docker state, with synthetic inference and no Telegram HTTP."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -381,10 +383,53 @@ mutations.finish_request(home, request)
             compose("down", "--timeout", "10", "--remove-orphans")
 
 
+def verify_supervised(image):
+    """Reuse the matching-image native fixture for separate project workers."""
+    import pytest
+
+    source, current = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))[
+        "ensure_image"
+    ](build=False)
+    if image != current:
+        raise ValueError("Service qualification requires the current verified image.")
+    output = ROOT / ".runtime" / ("service-supervisor-" + str(time.time_ns()))
+    output.mkdir(mode=0o700)
+    fixture = runpy.run_path(str(ROOT / "scripts/hermes/coder-task-check.py"))[
+        "prepare"
+    ](image)
+    fixture["queue"].close()
+    os.environ["EMURU_CODER_TEST_IMAGE"] = image
+    os.environ["EMURU_CODER_QUALIFICATION"] = str(output)
+    code = pytest.main(
+        ["-q", "--tb=short", str(ROOT / "tests/test_service_supervisor_native.py")]
+    )
+    cases = {path.stem: json.loads(path.read_text()) for path in output.glob("*.json")}
+    report = {
+        "status": "PASS" if code == 0 and len(cases) == 5 else "FAIL",
+        "source": source,
+        "image": image,
+        "cases": cases,
+        "pytest_exit": int(code),
+        "limitations": "Synthetic SDK replies; no provider/model usefulness claim.",
+    }
+    (output / "matrix.json").write_text(json.dumps(report, sort_keys=True, indent=2))
+    print(
+        f"Supervised service qualification: {report['status']} ({output})", flush=True
+    )
+    if report["status"] != "PASS":
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--supervised", action="store_true")
+    parser.add_argument("--image")
+    args = parser.parse_args()
+    if args.supervised and not args.image:
+        parser.error("--supervised requires --image")
     os.umask(0o077)
     try:
-        verify()
+        verify_supervised(args.image) if args.supervised else verify()
     except subprocess.CalledProcessError as error:
         print((error.stderr or error.stdout or "")[-4000:])
         raise

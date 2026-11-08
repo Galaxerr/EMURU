@@ -388,6 +388,9 @@ def reserve(home, vault, root, grant, image):
     identity = supervisor.identity(root, image)
     with supervisor._locked(home, write=True) as (parent, size, marker):
         records, size = supervisor._records(parent, size, marker)
+        from emuru.projects.supervisor_lifecycle import require_admission
+
+        require_admission(records)
         enrollment = next(
             (
                 r

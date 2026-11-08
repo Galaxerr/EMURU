@@ -407,7 +407,11 @@ def test_uncertain_worker_state_blocks_update(tmp_path, monkeypatch, state):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     scope = module["wake"].__globals__
     monkeypatch.setitem(scope, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
-    monkeypatch.setitem(scope, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        scope,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")},
+    )
     calls = []
 
     def run(command, **kwargs):
@@ -474,7 +478,11 @@ def test_systemd_starting_during_update_blocks_worker_cutover(tmp_path, monkeypa
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     scope = module["wake"].__globals__
     monkeypatch.setitem(scope, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
-    monkeypatch.setitem(scope, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        scope,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")},
+    )
     monkeypatch.setitem(scope, "prepare_update", lambda *args: {})
     calls, systemd_checks = [], 0
 

@@ -275,7 +275,11 @@ def test_stopped_wake_sleep_and_simulated_reboot_preserve_state(
     from telegram_helpers import update
 
     d = deployment
-    monkeypatch.setitem(d.globals, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        d.globals,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(d.home / "profiles/emuru")},
+    )
     monkeypatch.setitem(d.globals, "valid_qualification", lambda route: True)
     monkeypatch.setitem(d.globals, "prepare_update", lambda command, values: {})
     monkeypatch.setitem(d.globals, "verify_release", lambda command, env: None)

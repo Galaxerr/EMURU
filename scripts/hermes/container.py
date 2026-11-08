@@ -32,6 +32,7 @@ from emuru.models.gateway import (
     valid_qualification,
     write_private,
 )
+from emuru.projects import supervisor, supervisor_lifecycle
 from emuru.telegram.queue import QueueDiagnosticsError, diagnostics
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -476,7 +477,7 @@ def prepare_update(command, values, rollback_source=None):
             raise ValueError("Rollback source snapshot mismatch")
         from emuru.deployment import check_review_state
 
-        check_review_state(home, snapshot)
+        check_review_state(Path(values["EMURU_PROFILE"]), snapshot)
         # Orchestration and runtime must match; schema/guidance checks run in the target image.
         for name in (
             "infra/docker/compose.yaml",
@@ -607,6 +608,8 @@ def require_systemd_idle():
 def wake(home=None, *, rollback_source=None):
     with lifecycle_lock():
         values = saved_deployment(home)
+        profile_home = Path(values["EMURU_PROFILE"])
+        project_warning = supervisor_lifecycle.wake_inspection(profile_home, ROOT)
         require_systemd_idle()
         command = [
             "docker",
@@ -627,6 +630,24 @@ def wake(home=None, *, rollback_source=None):
         if running.stdout.strip() == "emuru":
             if rollback_source is not None:
                 raise ValueError("Stop the worker before rollback")
+            if supervisor.enabled(profile_home):
+                try:
+                    identity, image = ensure_image(build=False)
+                    verify_release(
+                        command,
+                        {
+                            **os.environ,
+                            "EMURU_SOURCE_ID": identity,
+                            "EMURU_IMAGE": image,
+                        },
+                    )
+                    project_warning = supervisor_lifecycle.clear_after_wake(
+                        profile_home, ROOT, image=image
+                    )
+                except (ValueError, OSError, subprocess.CalledProcessError) as error:
+                    project_warning = f"Running release compatibility unproven; sleep fence retained ({type(error).__name__})."
+            if project_warning:
+                print(project_warning)
             print(
                 "EMURU worker already running; updates deferred until explicit sleep/wake"
             )
@@ -766,6 +787,12 @@ def wake(home=None, *, rollback_source=None):
         finally:
             if not ready:
                 subprocess.run([*command, "stop", "emuru"], check=True, env=env)
+        if supervisor.enabled(profile_home):
+            project_warning = supervisor_lifecycle.clear_after_wake(
+                profile_home, Path(env["EMURU_SOURCE_ROOT"]), image=env["EMURU_IMAGE"]
+            )
+        if project_warning:
+            print(project_warning)
         print("EMURU READY")
 
 
@@ -834,17 +861,22 @@ def containers():
 
 def sleep(home=None, *, remove=False):
     with lifecycle_lock():
-        deployment_metadata(home)
-        docker_compose("stop", "--timeout", "660", "emuru")
-        worker = containers().get("emuru")
-        if worker and worker["status"] not in STOPPED_STATES:
-            raise ValueError("Worker stop not confirmed; inference retained")
-        docker_compose("stop", "litellm", "ollama")
-        if any(item["status"] not in STOPPED_STATES for item in containers().values()):
-            raise ValueError("Inference stop not confirmed")
-        if remove:
-            docker_compose("down", "--remove-orphans")
+        values = deployment_metadata(home)
+        with supervisor_lifecycle.sleeping(Path(values["EMURU_PROFILE"]), ROOT):
+            _sleep_services(remove)
     print("EMURU STOPPED")
+
+
+def _sleep_services(remove):
+    docker_compose("stop", "--timeout", "660", "emuru")
+    worker = containers().get("emuru")
+    if worker and worker["status"] not in STOPPED_STATES:
+        raise ValueError("Worker stop not confirmed; inference retained")
+    docker_compose("stop", "litellm", "ollama")
+    if any(item["status"] not in STOPPED_STATES for item in containers().values()):
+        raise ValueError("Inference stop not confirmed")
+    if remove:
+        docker_compose("down", "--remove-orphans")
 
 
 def status(home=None):

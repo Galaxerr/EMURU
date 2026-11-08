@@ -27,6 +27,9 @@ def reserve(home, vault, root, grant, coder, image, *, held_intent=None):
             raise ValueError("Another native stage is active or unresolved.")
     with supervisor._locked(home, write=True) as (parent, size, marker):
         records, size = supervisor._records(parent, size, marker)
+        from emuru.projects.supervisor_lifecycle import require_admission
+
+        require_admission(records)
         if not any(
             r.get("admission") == coder["generation"]
             and r.get("phase") == "awaiting-review"

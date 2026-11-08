@@ -251,7 +251,11 @@ def test_failed_current_readiness_stops_worker(tmp_path, monkeypatch, failure, c
     monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
     monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
-    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        globals_,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")},
+    )
     monkeypatch.setitem(globals_, "time", SimpleNamespace(sleep=lambda _: None))
     calls = []
 
@@ -290,7 +294,11 @@ def test_uncertain_systemd_state_blocks_docker(tmp_path, monkeypatch, code, outp
     monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
     monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
-    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        globals_,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")},
+    )
     calls = []
 
     def run(command, **kwargs):
@@ -310,7 +318,11 @@ def test_wake_reuses_running_worker_without_restarting(tmp_path, monkeypatch):
     monkeypatch.setitem(globals_, "verify_release", lambda *args: None)
     monkeypatch.setitem(globals_, "record_release", lambda *args: None)
     monkeypatch.setitem(globals_, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
-    monkeypatch.setitem(globals_, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        globals_,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")},
+    )
     calls = []
 
     def run(command, **kwargs):

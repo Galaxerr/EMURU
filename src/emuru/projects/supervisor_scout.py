@@ -362,6 +362,9 @@ def _event(home, records, size, stage, phase, **fields):
 
 
 def _eligible(records, home, vault, root, policy, task, image):
+    from emuru.projects.supervisor_lifecycle import require_admission
+
+    require_admission(records)
     enrollment = next(
         (
             r

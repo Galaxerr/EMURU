@@ -77,6 +77,23 @@ scripts/service/sleep.sh
 Services use `restart: "no"`. After reboot, inspect status and wake manually.
 Never start a second poller or use plain `hermes gateway` to bypass the guards.
 
+For profiles explicitly enrolled in v0.5.6 supervision, sleep/down first commits
+a profile-wide sleep fence. New Scout, coder and reviewer admissions then refuse;
+an already admitted stage retains its original bounded allowance. Active,
+uncertain or uninspectable project work refuses sleep before any service stops,
+even when Compose has no `emuru` container. The fence survives refusal or interruption.
+Inspect, cancel, wait or explicitly clean up through the existing project commands,
+then retry. Process stop alone does not resolve unknown effects.
+
+Wake inspects project state before starting services and never launches project
+work. Compatible services may start for diagnostics while the fence remains.
+After verifying the actual release, wake clears only the sleep fence when idle is
+proven, including when conversation services already run. Holds, revocations,
+deadlines, reservations and uncertain effects remain. Source/image/pin/schema
+mismatch cannot clear the fence. Incompatible old executors cannot synchronize
+or roll back supervised state; preserve the newest board, WAL/SHM, grants,
+receipts and artifacts together.
+
 ## Owner-approved proposals
 
 Inbox capture works without broader mutation permission. To enable project/task

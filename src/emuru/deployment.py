@@ -130,8 +130,8 @@ def _schema(path):
         ).fetchall()
 
 
-def check_state(home, *, allow_proposal_upgrade=False):
-    check_review_state(home, Path(__file__).resolve().parents[2])
+def check_state(home, *, allow_proposal_upgrade=False, target_root=None):
+    check_review_state(home, target_root or Path(__file__).resolve().parents[2])
     upgrade = False
     queue = home / "emuru-telegram/queue.sqlite3"
     if queue.exists():
@@ -174,6 +174,9 @@ def check_state(home, *, allow_proposal_upgrade=False):
 
 def check_review_state(home, target_root):
     """Never roll newest review facts into an executor unaware of their schema."""
+    from emuru.projects.supervisor_lifecycle import check_compatible
+
+    check_compatible(home, target_root)
     from emuru.projects.coder_runtime import _read_private
     from emuru.projects.reviewer import _read, unique_fields
     from emuru.vault.mutations import directory, private_directory
@@ -266,7 +269,7 @@ def _sync_profile(root, home, *, apply=False):
     """Only reviewed stock guidance and compatible managed registration may change."""
     import yaml
 
-    check_state(home)
+    check_state(home, target_root=root)
     guidance = _private_file(home / "SOUL.md")
     desired = (root / "agents/emuru/SOUL.md").read_bytes()
     reviewed = json.loads((root / "infra/hermes/profile-updates.json").read_text())

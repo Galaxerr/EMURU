@@ -197,6 +197,10 @@ def _records(parent, size, marker):
             from emuru.projects.supervisor_controls import validate_record
 
             validate_record(value, records)
+        elif value.get("kind") == "sleep-fence":
+            from emuru.projects.supervisor_lifecycle import validate_record
+
+            validate_record(value)
         elif value.get("kind") == "stage":
             from emuru.projects.supervisor_scout import validate_record
 
@@ -561,6 +565,7 @@ def status(home, root, project, card):
 
         budget = reserved(records, project)
         from emuru.projects.supervisor_controls import control_state
+        from emuru.projects.supervisor_lifecycle import fenced
 
         generation, token, current_run = token_binding(records, value, card)
         expired = (
@@ -586,6 +591,7 @@ def status(home, root, project, card):
             "provider_usage": "unavailable",
             "proposal": value["proposal"],
             "control": control_state(records, value),
+            "sleep_fence": fenced(records),
             "adapter": "unavailable",
             "stage": value["stage"],
         }
