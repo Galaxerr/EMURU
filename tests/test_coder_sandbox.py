@@ -262,3 +262,25 @@ def test_native_transport_and_all_checks_share_the_coder_output_ceiling(
         sandbox.check(tmp_path, "python_unittest")
     assert allowances == [1024, 1024 - len(authoritative.encode())]
     assert usage["checks"] == len(authoritative.encode())
+
+
+@pytest.mark.parametrize("ceiling", [65536, 262144])
+def test_stage_output_accepts_exact_ceiling_and_refuses_shared_stream_overflow(ceiling):
+    result = bounded_process(
+        [sys.executable, "-c", f"import sys; sys.stdout.write('x'*{ceiling})"],
+        b"",
+        5,
+        ceiling,
+    )
+    assert len(result["stdout"].encode()) == ceiling and result["exit_code"] == 0
+    with pytest.raises(ValueError, match="output"):
+        bounded_process(
+            [
+                sys.executable,
+                "-c",
+                f"import sys; sys.stdout.write('x'*{ceiling}); sys.stderr.write('x')",
+            ],
+            b"",
+            5,
+            ceiling,
+        )

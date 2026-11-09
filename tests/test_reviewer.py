@@ -207,3 +207,12 @@ def test_unknown_loop_schema_refuses_pre_review_native_mutation(
             coder_board.cleanup(home, tmp_path, grant["task"], grant)
         else:
             coder_board.reconcile(home, tmp_path, tmp_path, grant["task"], grant)
+
+
+def test_complete_verdict_accepts_32_kib_and_refuses_one_byte_over():
+    expected = verdict()
+    raw = json.dumps(expected)
+    raw += " " * (32768 - len(raw.encode()))
+    assert reviewer.parse_verdict(raw, ["sum_prices.py"]) == expected
+    with pytest.raises(ValueError, match="verdict exceeds its bound"):
+        reviewer.parse_verdict(raw + " ", ["sum_prices.py"])

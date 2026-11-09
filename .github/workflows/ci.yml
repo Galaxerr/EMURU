@@ -214,6 +214,10 @@ jobs:
           fi
           "${runner[@]}" scripts/hermes/coder-check.py --image "$EMURU_TEST_IMAGE" --native-self-check --sandbox-self-check --isolation-probes
           "${runner[@]}" scripts/hermes/reviewer-check.py --image "$EMURU_TEST_IMAGE"
+          "${runner[@]}" scripts/hermes/coder-lifecycle-check.py --image "$EMURU_TEST_IMAGE" --supervised
+          "${runner[@]}" scripts/hermes/reviewer-check.py --image "$EMURU_TEST_IMAGE" --supervised
+          "${runner[@]}" scripts/hermes/rework-check.py --image "$EMURU_TEST_IMAGE" --supervised
+          "${runner[@]}" scripts/hermes/wake-check.py --image "$EMURU_TEST_IMAGE" --supervised
           "${runner[@]}" - <<'PYTHON'
           import os
           import runpy

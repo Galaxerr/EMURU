@@ -551,3 +551,27 @@ def test_worker_uses_original_absolute_deadline():
     )
     assert result.returncode != 0 and b"Scout stopped or exceeded" in result.stderr
     assert time.monotonic() - started < 1.5
+
+
+@pytest.mark.parametrize("length", [65536, 65537])
+def test_durable_scout_report_exact_limit_and_overflow(registered_scout, length):
+    from emuru.projects.scout import encoded
+
+    home, _grant, card, policy, worker_grant = registered_scout
+    report = {"text": "x" * (length - len(encoded({"text": ""})))}
+    assert len(encoded(report)) == length
+    worker_grant["report_sha256"] = digest(report)
+    stage = supervisor_scout.reserve(
+        home, home, ROOT, policy, card.id, "sha256:" + "a" * 64, worker_grant
+    )
+    before = durable(home)
+    if length == 65536:
+        supervisor_scout.save_report(home, digest(stage), report)
+        target = home / "emuru-projects/scout-artifacts" / (digest(report) + ".json")
+        assert target.read_bytes() == encoded(report)
+        supervisor_scout.save_report(home, digest(stage), report)
+        assert target.read_bytes() == encoded(report)
+    else:
+        with pytest.raises(ValueError, match="report bound or digest invalid"):
+            supervisor_scout.save_report(home, digest(stage), report)
+        assert durable(home) == before

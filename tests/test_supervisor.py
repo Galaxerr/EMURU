@@ -379,3 +379,68 @@ def test_all_supervised_execution_entrances_refuse_before_native_calls(
     with pytest.raises(ValueError, match="adapter unavailable"):
         calls[entry]()
     assert durable(home) == before
+
+
+@pytest.mark.parametrize("length", [4096, 4097])
+def test_receipt_boundary_status_never_changes_durable_bytes(enrollment, length):
+    home, policy, grant, card = enrollment
+    supervisor.enroll(home, home, ROOT, "coder", policy, card.id, "sha256:" + "a" * 64)
+    receipt = home / "emuru-projects/supervisor/00000002.json"
+    data = receipt.read_bytes()
+    receipt.write_bytes(data + b" " * (length - len(data)))
+    before = durable(home)
+    if length == 4096:
+        assert (
+            supervisor.status(home, ROOT, grant["project"], card)["execution"]
+            == "unstarted"
+        )
+    else:
+        with pytest.raises(ValueError, match="receipt exceeds 4 KiB"):
+            supervisor.status(home, ROOT, grant["project"], card)
+    assert durable(home) == before
+
+
+@pytest.mark.parametrize(
+    "counter,ceiling",
+    [
+        ("coder_runs", 2),
+        ("reviewer_runs", 2),
+        ("scout_runs", 1),
+        ("active_seconds", 1920),
+        ("coder_iterations", 24),
+        ("reviewer_iterations", 8),
+        ("checks", 8),
+        ("output_bytes", 655360),
+        ("artifact_bytes", 17891328),
+    ],
+)
+def test_project_totals_accept_boundary_refuse_overflow_and_ignore_other_projects(
+    counter,
+    ceiling,
+):
+    from emuru.projects.supervisor_scout import reserved
+
+    first = dict.fromkeys(supervisor.COUNTERS, 0)
+    first[counter] = ceiling - 1
+    last = {**dict.fromkeys(supervisor.COUNTERS, 0), counter: 1}
+    records = [
+        {
+            "kind": "coder-stage",
+            "phase": "admitted",
+            "project": "project",
+            "reserved": first,
+        },
+        {
+            "kind": "reviewer-stage",
+            "phase": "admitted",
+            "project": "project",
+            "reserved": last,
+        },
+        {"kind": "stage", "phase": "admitted", "project": "other", "reserved": last},
+    ]
+    assert reserved(records, "project")[counter] == ceiling
+    records.append(
+        {"kind": "stage", "phase": "admitted", "project": "project", "reserved": last}
+    )
+    with pytest.raises(ValueError, match="approved ceiling"):
+        reserved(records, "project")

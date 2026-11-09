@@ -137,6 +137,8 @@ def files(folder):
 def crash(fixture, boundary):
     home, vault, grant = fixture["home"], fixture["vault"], fixture["grant"]
     with dispatcher_lock(home):
+        if boundary == "before-reservation":
+            os.kill(os.getpid(), signal.SIGKILL)
         supervisor_coder.reserve(home, vault, ROOT, grant, IMAGE)
         if boundary == "reservation":
             os._exit(17)
@@ -162,6 +164,22 @@ def test_native_crash_retains_charge_status_readonly_and_reconcile_never_reclaim
     native_fixture, boundary
 ):
     fixture = native_fixture
+    if boundary == "reservation":
+        before = files(fixture["home"])
+        unstarted = multiprocessing.get_context("fork").Process(
+            target=crash, args=(fixture, "before-reservation")
+        )
+        unstarted.start()
+        unstarted.join(15)
+        if unstarted.is_alive():
+            unstarted.kill()
+            unstarted.join(5)
+            pytest.fail("Pre-reservation crash seam stalled")
+        assert unstarted.exitcode == -signal.SIGKILL
+        detail, _, count = facts(fixture)
+        assert count == 0 and detail["execution"] == "unstarted"
+        assert not any(detail["reserved"].values())
+        assert files(fixture["home"]) == before
     process = multiprocessing.get_context("fork").Process(
         target=crash, args=(fixture, boundary)
     )
@@ -198,7 +216,13 @@ def test_native_crash_retains_charge_status_readonly_and_reconcile_never_reclaim
             fixture["home"], fixture["vault"], ROOT, fixture["grant"], IMAGE
         )
     assert files(fixture["home"]) == before
-    retain(fixture, "native-" + boundary, inspection_readonly=True, stop=result)
+    retain(
+        fixture,
+        "native-" + boundary,
+        inspection_readonly=True,
+        stop=result,
+        pre_reservation_sigkill=boundary == "reservation",
+    )
 
 
 @pytest.mark.parametrize("native_fixture", [2], indirect=True)

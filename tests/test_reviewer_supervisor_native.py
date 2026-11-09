@@ -293,6 +293,68 @@ def test_fresh_rework_keeps_one_loop_and_second_review(
     native_fixture, monkeypatch, ending
 ):
     fixture = native_fixture
+    before_repo, before_vault = files(fixture["repo"]), files(fixture["vault"])
+    if ending == "approve":
+        grant = fixture["grant"]
+        policy = fixture["root"] / "scout-policy.json"
+        policy.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "repository": grant["repository"],
+                    "path": grant["path"],
+                    "baseline": grant["baseline"],
+                    "files": grant["read_files"],
+                    "tasks": [fixture["task_id"]],
+                    "timeout_seconds": 120,
+                }
+            )
+        )
+        policy.chmod(0o600)
+        supervisor.enroll(
+            fixture["home"],
+            fixture["vault"],
+            ROOT,
+            "scout",
+            policy,
+            fixture["task_id"],
+            IMAGE,
+            owner=grant["owner"],
+            bot=grant["bot"],
+        )
+        scout = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))["launch"]
+        assert "held" in control(fixture, "hold")
+        before = files(fixture["home"])
+        with pytest.raises(ValueError, match="held or revoked"):
+            scout(
+                fixture["home"],
+                policy,
+                fixture["task_id"],
+                root=ROOT,
+                vault=fixture["vault"],
+            )
+        assert files(fixture["home"]) == before
+        assert "ready" in control(fixture, "continue")
+        assert (
+            scout(
+                fixture["home"],
+                policy,
+                fixture["task_id"],
+                root=ROOT,
+                vault=fixture["vault"],
+            )["status"]
+            == "done"
+        )
+        assert facts(fixture)[1].status == "blocked" and facts(fixture)[2] == 0
+        supervisor.enroll(
+            fixture["home"],
+            fixture["vault"],
+            ROOT,
+            "coder",
+            fixture["policy"],
+            fixture["task_id"],
+            IMAGE,
+        )
     fixture["coder_source"] = (
         "def sum_prices(prices):\n    if len(prices)>3:\n        return 0\n    return sum(prices)\n"
     )
@@ -309,11 +371,30 @@ def test_fresh_rework_keeps_one_loop_and_second_review(
         ],
         "suggestions": [],
     }
-    process, parent, child = invoke(fixture)
+    process, parent, child = invoke(
+        fixture, "handoff" if ending == "approve" else "review"
+    )
     try:
-        assert join(fixture, process)["status"] == "changes_requested"
+        if ending == "approve":
+            assert parent.poll(90) and parent.recv() == "handoff"
+            assert "held" in control(fixture, "hold")
+            parent.send("proceed")
+            assert join(fixture, process)["status"] == "awaiting_review"
+            assert facts(fixture)[2] == 1
+            assert "ready" in control(fixture, "continue")
+            assert facts(fixture)[2] == 1
+        else:
+            assert join(fixture, process)["status"] == "changes_requested"
     finally:
         stop(process, parent, child)
+    if ending == "approve":
+        fixture["first_review"] = True
+        process, parent, child = invoke(fixture)
+        try:
+            assert join(fixture, process)["status"] == "changes_requested"
+        finally:
+            stop(process, parent, child)
+        fixture.pop("first_review")
     original = fixture["grant"]
     second = runpy.run_path(str(ROOT / "scripts/hermes/rework-check.py"))["new_grant"](
         fixture
@@ -415,12 +496,27 @@ def test_fresh_rework_keeps_one_loop_and_second_review(
             card.status == ("done" if expected == "verified" else "blocked")
             and count == 4
         )
-        assert detail["reserved"]["active_seconds"] == 1800
+        assert detail["reserved"]["active_seconds"] == (
+            1920 if ending == "approve" else 1800
+        )
+        assert detail["reserved"]["scout_runs"] == (1 if ending == "approve" else 0)
+        assert files(fixture["repo"]) == before_repo
+        assert files(fixture["vault"]) == before_vault
         assert (
             detail["reserved"]["coder_runs"] == detail["reserved"]["reviewer_runs"] == 2
         )
         assert detail["reserved"]["checks"] == 8
         assert detail["reserved"]["output_bytes"] == 640 * 1024
+        if ending == "approve":
+            status = fixture["project_command"](
+                "/project status " + fixture["proposal"]
+            )
+            assert "verified" in status
+            assert "Terminal outcome unchanged" in control(fixture, "cancel")
+            cancelled, _, runs = facts(fixture)
+            assert cancelled["control"] == detail["control"]
+            assert cancelled["execution"] == "finished" and runs == 4
+            assert cancelled["reserved"] == detail["reserved"]
         retain(
             fixture, "review-rework-" + ending, original_grant=original, receipt=result
         )
