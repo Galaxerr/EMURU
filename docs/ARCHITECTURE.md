@@ -4,6 +4,11 @@ EMURU runs a pinned Hermes agent in Docker, exposes constrained vault tools over
 stdio MCP, and accepts owner-private Telegram text. Markdown is durable knowledge;
 native sessions are conversation history. Neither trains model weights.
 
+Current milestone: **v0.5.6 / M6**, technically qualified and owner-accepted.
+The [consolidated implementation record](releases/v0.5.6-implementation.md) binds
+historical local/hosted CI and runtime evidence to the exact qualified candidate.
+Package metadata remains `0.5.3`; M7–M9 are future work.
+
 ```text
 Telegram owner → native adapter → durable queue/worker → Hermes
 Hermes → authenticated LiteLLM gateway → one cloud-primary attempt
@@ -41,13 +46,12 @@ Interrupted work is blocked or uncertain; expired claims are never automatically
 reclaimed. The fixed worker and ledger have their own process deadlines, including
 when their Docker client dies. No model capability is qualified by this milestone.
 
-## v0.5.4 implementation boundary
+## Bounded coding and independent review
 
-Tickets 1–3 implement the approved development boundary; Ticket 4 qualifies its
-integrated behavior on disposable data. Native Hermes inference exposes exactly `coder_read`, `coder_write` and
-`coder_check`, a separate trusted host dispatcher, and disposable offline check
-containers. Approval does not establish runtime security or compatibility. The
-[implementation tracker](releases/v0.5.4-implementation.md) records actual evidence.
+The inherited M4 coding path is qualified on disposable data. Native Hermes
+inference exposes exactly `coder_read`, `coder_write` and `coder_check`. A separate
+trusted host dispatcher controls disposable offline check containers. Approval does not establish runtime security or compatibility. The
+[v0.5.6 implementation record](releases/v0.5.6-implementation.md) records actual evidence.
 
 The controller exports approved committed UTF-8 files under their original paths.
 The task workspace has no Git metadata, branch, commit or task HEAD. Mediated
@@ -73,23 +77,54 @@ finalizes existing verified evidence after proven stop. Neither action retries w
 The default owner-facing profile has no coding execution controls. Local acceptance
 means tested output awaiting owner review, not publication or project completion.
 
-## Repository map
-
-v0.5.5 development adds an explicit schema-2 review grant and a separate
+M5 adds an explicit schema-2 review grant and a separate
 tool-free reviewer context on the selected cloud route. The controller freezes a
 complete bounded packet, fences same-card coder/reviewer runs, and validates exact
 evidence before verified local completion. Private review receipts and reservations
 extend the existing attempt tree; no second queue or board schema is introduced.
 Unknown review state and incomplete process/transition facts remain uncertain.
-Legacy M4 results remain unreviewed. Ticket 2 adds one fresh schema-3 owner grant,
+Legacy M4 results remain unreviewed. M5 also adds one fresh schema-3 owner grant,
 explicit parent lineage and cumulative original-HEAD evidence. Immutable loop
 reservations bound both attempts; partial lineage stays uncertain. Default owner
-profiles gain no execution controls. See the v0.5.5 implementation tracker for
-qualification status; development code is not production enablement.
+profiles gain no execution authority. M6 enrollment and owner controls do not
+replace grants or operator launch; default execution remains disabled.
 
 Native board diagnostics copy validated DB/WAL descriptors into private scratch
 snapshots. SQLite never opens the original database for these reads, so WAL
 sidecars remain unchanged. Recovery journals or changing snapshots fail closed.
+
+## Project supervision (v0.5.6)
+
+M6 adds private schema-1 supervisor facts alongside the native board, without a
+second scheduler, queue or native/grant schema. Operator enrollment binds an
+existing grant/policy to applied approval, original card, stable project identity,
+source/image/pins and a boot-bound monotonic deadline of at most 24 hours.
+Immutable digest-linked generations and a committed head retain controls,
+reservations and exact resources. Admission refuses incompatible or uncertain state.
+
+Owner-only hold/continue/cancel binds admitted request bytes and current status
+token. Durable receipts make failed delivery and repeated requests safe. Controls
+and status launch no work. Native state, control, verification, stop proof and
+reserved allowances stay distinct; missing provider telemetry remains unavailable.
+Hold fences the next admission while admitted work retains its original deadline.
+Continue never resets budgets or launches; cancel revokes and requests stop without
+claiming unknown effects are resolved. A hold since coder admission prevents
+automatic reviewer handoff even after continue; explicit first review is required.
+
+One stable project shares at most one Scout and two coder/two reviewer stages,
+1,920 reserved active seconds and 1 MiB supervisor metadata. Coder/reviewer loops
+retain their original 1,800-second and artifact/check ceilings. Full allowances
+are reserved before claim without refunds. Exact cap and boundary evidence is in
+the [implementation record](releases/v0.5.6-implementation.md#resource-qualification-and-limits).
+
+Sleep/down and stage admission serialize on the same profile fence. Active,
+uncertain or uninspectable work blocks shutdown before services stop. Wake clears
+only the sleep fence after actual-release compatibility and proven idle state.
+Cleanup pins exact resource/process identities; stop observation and metadata-only
+reconciliation never replay work. Unsupported old executors cannot roll back or
+synchronize newest supervised state. Never-enrolled profiles retain legacy behavior.
+
+## Repository map
 
 Paths below are relative to the repository root.
 
@@ -104,6 +139,8 @@ Paths below are relative to the repository root.
 | `src/emuru/projects/{spec,board}.py` | Bounded planning projection and receipt-bound native Kanban tracking |
 | `src/emuru/projects/{scout,scout_board}.py`, `scripts/hermes/scout.py` | Fixed inspection, native run/evidence fences and owner-operated isolated dispatch |
 | `src/emuru/projects/coder*.py`, `scripts/hermes/coder*.py`, `infra/docker/coder.compose.yaml` | Grant-bound operator coding, selected-file confinement, evidence/status, conservative recovery and disposable qualification |
+| `src/emuru/projects/{reviewer,rework}.py`, `scripts/hermes/{reviewer,rework}-check.py` | Distinct tool-free review, single fresh-grant rework, lineage and disposable qualification |
+| `src/emuru/projects/supervisor*.py`, `scripts/hermes/supervisor.py` | Opt-in enrollment, immutable facts, exact-token controls, stage accounting, stop proof and lifecycle fences |
 | `src/emuru/models/` | Provider configuration, route/qualification contract and bounded gateway behavior |
 | `src/emuru/deployment.py`, `environment.py` | Source identity, stopped-state compatibility and private environment handling |
 | `scripts/hermes/container.py`, `scripts/service/` | Explicit initialization and Docker wake/sleep/status/rollback |
@@ -126,6 +163,8 @@ image; launchers do not install EMURU dependencies into Hermes.
 | `$HOME/.local/state/emuru/container/` | Default deployment home: private profile, general state, runtime, route/config, secret copies, Ollama cache, sources and `release.json` |
 | `profiles/emuru/` inside that home | Native DB/session maps/transcripts, queue, health, target/policy and mutation journal |
 | `profiles/emuru/emuru-projects/` | Native board/sidecars, binder/scout locks and private `scout-artifacts/`; schema-1 card bodies retain receipt/revision/task/grant bindings |
+| `profiles/emuru/emuru-projects/supervisor-enabled.json`, `supervisor/` | Private opt-in marker, immutable generations/head, controls, counters and lifecycle fence |
+| `profiles/emuru/emuru-projects/coder-attempts/` | Private attempt/review/rework receipts, lineage, checks, artifacts and reservation evidence |
 | Separate vault Git repository | Authoritative Markdown and derived `_index/` / `99_System/INDEX.md` |
 | `tests/fixtures/hermes-vault/`, ignored `.runtime/` | Synthetic fixtures and disposable validation state |
 
@@ -173,6 +212,6 @@ README-only edits change image provenance even when runtime code is unchanged.
 Re-verify the image/source pair for a future build or deployment; do not relabel an
 old image. Keep private runtime state, histories, credentials and real notes out of Git.
 
-The [v0.5.0 report](releases/v0.5.0-acceptance.md) records development acceptance.
+The [v0.5.6 record](releases/v0.5.6-implementation.md) records current milestone acceptance and inherited limits.
 Permanent-host setup, encrypted backup/restore, migration, operational recovery,
 cutover and reboot evidence belong to the [deployment backlog](deployment-backlog.md).

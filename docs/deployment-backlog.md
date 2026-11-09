@@ -1,7 +1,9 @@
 # Permanent-host deployment backlog
 
-Owner decision, 2026-10-20: this milestone follows v0.5.0 development-release
-closure. The temporary laptop does not require production certification. These
+Updated for v0.5.6 / M6, 2026-11-09. Technical qualification and owner acceptance
+are recorded in the [implementation record](releases/v0.5.6-implementation.md).
+Permanent-host certification remains separate from completed M6 acceptance.
+The temporary laptop does not require production certification. These
 items are out of scope for development acceptance, not failed tests or waived
 security mechanisms. No infrastructure or additional rollback image is requested
 as part of release closure.
@@ -42,6 +44,10 @@ as part of release closure.
   test the existing rollback implementation against restored newest state, including
   newer applied receipts and native history. Preserve exact pin/schema/profile and
   cloud-only checks; never relabel old images or edit locks to force compatibility.
+  Preserve v0.5.6 supervisor generations/head, enrollment marker, controls, original
+  deadlines/reservations and exact stop evidence with board/grant/artifact state.
+  Sleep refusal must leave its admission fence intact; incompatible old executors
+  cannot accept newest supervised state. README changes require fresh image provenance.
   A comment-only alternate proves mechanical compatibility, not recovery from shared
   code defects. For shared defects, stop admission, preserve newest state and review
   a fix-forward procedure. Never overwrite newer state with an older backup.
@@ -54,7 +60,7 @@ as part of release closure.
 
 The temporary laptop had no verified mounted encrypted backup destination during
 read-only discovery; no stopped backup, restore or production cutover occurred.
-This environmental prerequisite is not a v0.5.0 code-test failure.
+This environmental prerequisite is not an M6 code-test failure.
 
 The laptop's old production snapshot was rejected by the unchanged rollback guard:
 its deployment lock uses a different registry-qualified Python reference and its

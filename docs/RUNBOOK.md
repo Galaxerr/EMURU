@@ -5,6 +5,11 @@ runtime; host scripts are operator tools. For capabilities and credentials, star
 with [README](../README.md). Permanent-host certification is tracked separately in
 [the deployment backlog](deployment-backlog.md).
 
+Current milestone: **v0.5.6 / M6**, technically qualified and owner-accepted;
+execution remains opt-in and disabled by default. See the
+[implementation and acceptance record](releases/v0.5.6-implementation.md) for
+qualified identities, CI evidence and limits. Package metadata remains `0.5.3`.
+
 ## Container deployment
 
 **New installations only.** Before initialization, inspect existing profiles,
@@ -253,9 +258,9 @@ Disposable acceptance (no real profile/vault or provider needed):
 uv run --frozen python scripts/hermes/scout-check.py
 ```
 
-### Bounded operator-run coding (v0.5.4 development)
+### Bounded operator-run coding
 
-This is the delivered development path, not production enablement or release GO.
+The inherited M4 path remains available in v0.5.6.
 Use only under separate task execution authorization, as an unprivileged
 Docker-capable operator. The default Telegram profile cannot start coding.
 An approved note alone never grants repository access or execution authority.
@@ -334,7 +339,8 @@ General retry/retention controls remain outside this increment.
 
 ### Disposable integrated coding qualification
 
-For v0.5.5 development, review is explicitly enabled per private grant:
+The inherited M5 review/rework path remains available in v0.5.6.
+Review is explicitly enabled per private grant:
 schema `2` adds `review` equal to `emuru.projects.reviewer.authority()` (schema,
 enabled=true, current checklist digest). All original grant fields and limits
 remain required. Schema-1 grants retain M4 behavior and cannot authorize review.
@@ -350,7 +356,7 @@ facts remain `uncertain`; explicit cleanup/reconcile never launches a reviewer,
 reruns checks or fabricates an approval. Older executors cannot accept newest
 review state through the supported rollback workflow.
 
-Ticket 2 adds exactly one operator-authorized rework. Supply a new private grant
+Exactly one operator-authorized rework is supported. Supply a new private grant
 with schema `3`, a new `grant_id`, unchanged owner/task/HEAD/file/check scope and
 review authority, and limits no greater than the first grant. Its `rework` object
 has schema `1`, `loop` equal to the initial grant ID, `coder_run` and `reviewer_run`
@@ -415,6 +421,78 @@ acceptance, manual owner acceptance and publication remain separate release gate
 CI activates `COMPOSE_PROFILES=agent` for native/lifecycle fixture teardown so
 Compose also removes the profiled synthetic worker. Supply that environment
 variable when running those predecessor fixture scripts directly.
+
+### Project supervision (v0.5.6)
+
+Supervision is opt-in for an existing separately authorized Scout policy or coder
+grant. Run enrollment as the unprivileged Docker-capable operator. `--home` is the
+private Hermes profile directory, not the deployment home used by service scripts.
+The current-source image must already exist; enrollment does not build it.
+Use actual private absolute paths and the original tracked task ID:
+
+```bash
+uv run --frozen python scripts/hermes/supervisor.py \
+  --home /absolute/private/profile --vault /absolute/vault \
+  --policy /absolute/private/coder-grant.json --task NATIVE_TASK_ID \
+  --stage coder --seconds 86400
+```
+
+For Scout use `--stage scout`, its existing private policy, and required
+`--owner NUMERIC_OWNER_ID --bot NUMERIC_BOT_ID`. Enrollment revalidates the exact
+approval/card/grant/source/image/pins/schema and legacy exclusion. Its deadline
+cannot exceed 24 hours and expires across reboot. It launches nothing. Fresh
+rework still needs its own valid schema-3 grant and enrollment; stable project
+counters and original loop allowances remain shared, without resets or refunds.
+Never-enrolled profiles keep their existing operator behavior.
+
+In the authenticated owner's private Telegram chat:
+
+```text
+/project status <applied-spec-proposal-id>
+/project hold <applied-spec-proposal-id> <native-task-id> <control-token>
+/project continue <applied-spec-proposal-id> <native-task-id> <control-token>
+/project cancel <applied-spec-proposal-id> <native-task-id> <control-token>
+```
+
+Copy the exact current token from status; inspect status again after a transition
+or stale-token refusal. Status is read-only and distinguishes native outcome,
+control state, verification, stop evidence, original deadline and reserved totals.
+Missing provider usage is `unavailable`, not zero consumption.
+
+- **Hold:** refuses new admission; an already admitted stage may drain its original
+  remaining allowance. It does not stop an active stage immediately.
+- **Continue:** clears only a valid hold with no uncertainty/incompatible fence
+  and available original budget. It launches nothing and cannot revive revoked,
+  expired, attempted or uncertain work.
+- **Cancel:** revokes enrollment and requests stop, including blocked inference or
+  checks. Stop must be independently proven; reservations and uncertain effects
+  remain. Completed outcomes are unchanged. Repeated delivery reuses its receipt.
+
+After continue, explicitly invoke the existing Scout/coder launcher. If a hold
+occurred since coder admission, automatic first-review handoff stays fenced even
+when continue arrived before coder completion. Once status and retained intent
+prove a never-claimed first review, invoke the coder launcher with the same
+`--home`, `--policy`, `--task` and `--review`. Missing intent, attempted review or
+uncertainty refuses this path. It does not authorize rework or a new coder attempt.
+
+Use supported `--cleanup` only after proven launcher death to stop exact recorded
+resources; `--reconcile` only finalizes existing verified evidence after stop.
+Neither retries work. Never delete supervisor facts, receipts or reservations to
+clear a refusal. Cancellation does not establish that unknown effects are resolved.
+
+Sleep/down fences all new Scout/coder/reviewer stages before checking active work.
+A refused shutdown keeps that fence even if no conversation container exists.
+Inspect/cancel/wait or use supported cleanup, then retry. Wake clears only a sleep
+fence after compatible actual-release verification and proven idle state. Hold,
+revocation, deadline, budget and uncertainty persist. Incompatible rollback must
+refuse; retain newest profile, board/sidecars, grants, supervisor facts and artifacts.
+See [service lifecycle](#start-stop-and-status).
+
+The bounded project allowance is one Scout, two coders/two reviewers and 1,920
+reserved seconds, with the original 1,800-second coder/reviewer loop inside it.
+Metadata is capped at 1 MiB with emergency restriction capacity. Status reports
+reservations, not measured consumption or a guaranteed provider spend ceiling.
+See the [complete resource limits](releases/v0.5.6-implementation.md#resource-qualification-and-limits).
 
 ## Troubleshooting and recovery
 

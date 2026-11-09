@@ -4,18 +4,16 @@ EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately
 with your Telegram bot to find notes, follow links, save Inbox notes, and review
 proposed project or task changes. Conversation history persists across restarts.
 
-**v0.5.5 development: milestone acceptance GO.** Final technical qualification,
-owner acceptance and owner-confirmed hosted CI on the final M5 commit are **PASS**.
-No v0.5.5 tag or release is planned; publication is reserved for v0.6.0 and requires
-separate authorization. The package version remains 0.5.3. See the
-[v0.5.5 implementation tracker](docs/releases/v0.5.5-implementation.md) for evidence,
-limits and the owner acceptance checklist.
+**v0.5.6: M6 implementation and acceptance complete.** Technical qualification,
+owner acceptance and recorded local/hosted CI passed for the qualified candidate.
+See the [consolidated implementation and acceptance record](docs/releases/v0.5.6-implementation.md)
+for exact identities, evidence and limits. Package metadata remains `0.5.3`.
 
-v0.5.5 adds explicitly granted, tool-free independent review on the original task
-card. Verified local output requires current checks and a distinct reviewer
-approval. One rework requires a fresh owner grant, new checks and fresh review on
-that card. Execution stays disabled by default; real-use enablement remains gated
-on milestone acceptance.
+v0.5.6 adds opt-in project supervision: read-only status, owner hold/continue/cancel,
+shared Scout/coder/reviewer limits, durable stop evidence and service lifecycle
+fences. Enrollment and controls launch nothing. Execution stays disabled by default;
+operators still supply explicit grants and invoke bounded work. Independent review
+and one freshly authorized rework remain on the original task card.
 
 The runtime remains Docker-only and cloud-primary-only. Inference uses an
 authenticated LiteLLM gateway with one cloud attempt and no automatic local
@@ -36,13 +34,17 @@ fallback. Permanent-host production certification is a separate milestone.
   receipt. See [scout operation](docs/RUNBOOK.md#read-only-repository-scout-v053).
 - Qualify one separately authorized coding task with a private immutable grant,
   selected-file workspace and authenticated status. See the
-  [coder runbook](docs/RUNBOOK.md#bounded-operator-run-coding-v054-development).
-  Production enablement and vault result capture remain separate gates.
+  [coder runbook](docs/RUNBOOK.md#bounded-operator-run-coding).
+  Vault result capture remains future work.
 - With explicit review authority, require independent review before verified local
   completion. Findings can request changes or block unsafe work. Authorize at most
   one rework on the same card; a second rejection is terminal. Repeated launches
   inspect existing facts, and uncertain work is never automatically replayed. See
   [review and rework operation](docs/RUNBOOK.md#disposable-integrated-coding-qualification).
+- Inspect enrolled work with `/project status`; use exact-token owner controls to
+  hold, continue or cancel. Hold permits an admitted stage to drain; continue
+  launches nothing; cancel preserves uncertainty until stop is proven. See
+  [project supervision](docs/RUNBOOK.md#project-supervision-v056).
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
@@ -121,6 +123,7 @@ runtime, gateway, lifecycle and rollback without a live Telegram poller.
 
 - [RUNBOOK](docs/RUNBOOK.md): setup, daily operation and troubleshooting.
 - [ARCHITECTURE](docs/ARCHITECTURE.md): repository map, state and safety boundaries.
-- [v0.5.5 implementation](docs/releases/v0.5.5-implementation.md): technical
-  qualification, review/rework evidence, remaining gates and owner acceptance checklist.
+- [v0.5.6 implementation](docs/releases/v0.5.6-implementation.md): supervision,
+  independent review, final acceptance, exact CI evidence and retained limitations.
+- [Milestone roadmap](docs/plans/EMURU-v0.6.0-implementation-plan.md): completed M1–M6 and future M7–M9.
 - [Deployment backlog](docs/deployment-backlog.md): future permanent-host setup and recovery tooling.
