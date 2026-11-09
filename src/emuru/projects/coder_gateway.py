@@ -14,13 +14,6 @@ from emuru.projects.coder_sandbox import bounded_process
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def _docker(arguments, seconds=30):
-    result = bounded_process(["docker", *arguments], b"", seconds, 65536)
-    if result["exit_code"]:
-        raise RuntimeError("Disposable coder gateway operation failed.")
-    return result["stdout"].strip()
-
-
 @contextlib.contextmanager
 def cloud_gateway(
     folder, daemon_root=None, process_event=None, *, deadline=None, supervision=None
@@ -220,24 +213,25 @@ def cloud_gateway(
             if container_owned:
                 if supervision is not None:
                     supervision.remove(name)
-                found = process(
-                    ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
-                    b"",
-                    5,
-                    4096,
-                )
-                if found["exit_code"]:
-                    raise RuntimeError("Coder gateway inspection is unavailable.")
-                if found["stdout"].strip():
-                    docker(["rm", "--force", name], 15)
-                remaining = process(
-                    ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
-                    b"",
-                    5,
-                    4096,
-                )
-                if remaining["exit_code"] or remaining["stdout"].strip():
-                    raise RuntimeError("Coder gateway termination is uncertain.")
+                else:
+                    found = process(
+                        ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
+                        b"",
+                        5,
+                        4096,
+                    )
+                    if found["exit_code"]:
+                        raise RuntimeError("Coder gateway inspection is unavailable.")
+                    if found["stdout"].strip():
+                        docker(["rm", "--force", name], 15)
+                    remaining = process(
+                        ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
+                        b"",
+                        5,
+                        4096,
+                    )
+                    if remaining["exit_code"] or remaining["stdout"].strip():
+                        raise RuntimeError("Coder gateway termination is uncertain.")
                 if process_event:
                     process_event(name, "stopped")
         except BaseException as error:  # noqa: BLE001 -- finish cleanup after interruption

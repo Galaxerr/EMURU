@@ -9,7 +9,7 @@ from test_supervisor import (  # noqa: F401 -- shared public enrollment fixture
     enrollment,
 )
 
-from emuru.projects import supervisor
+from emuru.projects import supervisor, supervisor_lifecycle
 from emuru.projects.supervisor_controls import outcome, owner_control
 from emuru.telegram.queue import TelegramQueue, load_telegram_settings
 from emuru.vault import mutations
@@ -80,6 +80,22 @@ def test_hold_then_continue_only_changes_control_and_token(controls):
     assert "awaiting operator launch" in response
     assert ready["control"] == "unrestricted" and ready["execution"] == "unstarted"
     assert ready["reserved"] == first["reserved"]
+
+
+def test_continue_preserves_hold_while_sleep_fenced(controls):
+    home, grant, card, _queue, deliver = controls
+    first = supervisor.status(home, ROOT, grant["project"], card)
+    deliver("hold", first["token"], 1)
+    supervisor_lifecycle.fence(home)
+    held = supervisor.status(home, ROOT, grant["project"], card)
+    response, _, _ = deliver("continue", held["token"], 2)
+    after = supervisor.status(home, ROOT, grant["project"], card)
+    assert "sleep fence" in response
+    assert after["control"] == "held" and after["sleep_fence"]
+    assert after["reserved"] == held["reserved"]
+    assert after["deadline_ns"] == held["deadline_ns"]
+    assert after["execution"] == "unstarted"
+    assert deliver("continue", held["token"], 3)[0] == response
 
 
 def test_exact_binding_can_be_restricted_after_expiry_and_note_edit_without_renewal(

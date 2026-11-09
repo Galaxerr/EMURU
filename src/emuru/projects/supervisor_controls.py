@@ -385,6 +385,9 @@ def _owner_control(
                 response=response,
             )
         if action == "continue":
+            from emuru.projects.supervisor_lifecycle import require_admission
+
+            require_admission(records)
             if (
                 enrollment["stage"] == "coder"
                 and any(

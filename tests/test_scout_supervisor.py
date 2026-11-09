@@ -230,6 +230,94 @@ def test_cleanup_refuses_live_launcher_before_docker(tmp_path, monkeypatch):
         runner["cleanup_scout"](tmp_path, ROOT, {}, "t_abc", stage["image"], tmp_path)
 
 
+@pytest.mark.parametrize("exited_before_signal", [False, True])
+def test_cleanup_signals_only_rechecked_pidfd(
+    monkeypatch, tmp_path, exited_before_signal
+):
+    runner = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))
+    stage = {"image": "sha256:" + "a" * 64, "launcher": {"pid": 123}, "generation": 1}
+    process = {"pid": 456}
+    events = [
+        {"admission": 1, "phase": "client-planned", "name": "bound"},
+        {"admission": 1, "phase": "client-bound", "name": "bound", "process": process},
+        {"admission": 1, "phase": "client-planned", "name": "unacknowledged"},
+    ]
+    opened, signalled, closed, recorded = [], [], [], []
+
+    def stopped(value):
+        if value is stage["launcher"]:
+            return True
+        return bool(signalled) or bool(opened) and exited_before_signal
+
+    monkeypatch.setattr(supervisor_scout, "load", lambda *_: (stage, events))
+    monkeypatch.setattr(coder_board, "launcher_stopped", stopped)
+    monkeypatch.setattr(os, "pidfd_open", lambda pid: opened.append(pid) or 789)
+    monkeypatch.setattr(os, "close", lambda fd: closed.append(fd))
+    monkeypatch.setattr(
+        runner["signal"], "pidfd_send_signal", lambda fd, sig: signalled.append(fd)
+    )
+    monkeypatch.setattr(
+        os, "killpg", lambda *_: pytest.fail("Cleanup signalled reusable process group")
+    )
+    monkeypatch.setattr(
+        supervisor_scout, "event", lambda *a, **kw: recorded.append((a, kw))
+    )
+    result = runner["cleanup_scout"](
+        tmp_path, ROOT, {}, "t_abc", stage["image"], tmp_path
+    )
+    assert result["stop"] == "unproven"
+    assert opened == [456] and closed == [789]
+    assert signalled == ([] if exited_before_signal else [789])
+    assert recorded[0][0][2] == "client-stopped"
+    assert recorded[0][1]["process"] == process
+
+
+def test_cleanup_stops_exact_live_client_with_pidfd(monkeypatch, tmp_path):
+    runner = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            (
+                "import json,time; from emuru.projects.supervisor_scout import launcher_identity; "
+                "print(json.dumps(launcher_identity())); time.sleep(30)"
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        binding = json.loads(process.stdout.readline())
+        stage = {
+            "image": "sha256:" + "a" * 64,
+            "generation": 1,
+            "launcher": {**binding, "start_time": "0"},
+        }
+        events = [
+            {"admission": 1, "phase": "client-planned", "name": "bound"},
+            {
+                "admission": 1,
+                "phase": "client-bound",
+                "name": "bound",
+                "process": binding,
+            },
+            {"admission": 1, "phase": "client-planned", "name": "unacknowledged"},
+        ]
+        monkeypatch.setattr(supervisor_scout, "load", lambda *_: (stage, events))
+        monkeypatch.setattr(supervisor_scout, "event", lambda *a, **kw: None)
+        result = runner["cleanup_scout"](
+            tmp_path, ROOT, {}, "t_abc", stage["image"], tmp_path
+        )
+        assert result["stop"] == "unproven"
+        assert process.wait(timeout=5) == -runner["signal"].SIGKILL
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+
+
 @pytest.mark.parametrize(
     "message",
     [

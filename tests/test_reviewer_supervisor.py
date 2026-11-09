@@ -126,6 +126,58 @@ def test_review_charges_once_and_counts_models_separately(checked, monkeypatch):
     assert reserved(review.records(), coder.grant["project"])["reviewer_runs"] == 1
 
 
+def test_cleared_hold_requires_explicit_first_reviewer_invocation(checked):
+    from emuru.projects import supervisor_reviewer
+    from emuru.projects.supervisor_scout import reserved
+
+    coder, card = checked
+    for index, action in enumerate(("hold", "continue")):
+        with supervisor._locked(coder.home, write=True) as (parent, size, marker):
+            records, size = supervisor._records(parent, size, marker)
+            supervisor._append(
+                coder.home / "emuru-projects/supervisor",
+                records,
+                size,
+                {
+                    "kind": "control",
+                    "project": coder.grant["project"],
+                    "task": card.id,
+                    "enrollment": coder.stage["enrollment"],
+                    "action": action,
+                    "request": str(index) * 32,
+                    "text_hash": "c" * 64,
+                    "response": action,
+                    "token": "d" * 64,
+                    "grant_sha256": digest(coder.grant),
+                },
+                emergency=action == "hold",
+            )
+    intent = {"checked": "handoff"}
+    folder = coder_board.attempt_path(coder.home, coder.grant)
+    folder.mkdir(mode=0o700, parents=True)
+    folder.parent.chmod(0o700)
+    coder_board._write_new(folder, "grant.json", json.dumps(coder.grant).encode())
+    args = (
+        coder.home,
+        coder.vault,
+        ROOT,
+        coder.grant,
+        coder.stage,
+        "sha256:" + "a" * 64,
+    )
+    assert supervisor_reviewer.reserve(*args, held_intent=intent) is None
+    assert json.loads((folder / "held-before-review.json").read_text()) == intent
+    assert reserved(coder.records(), coder.grant["project"])["reviewer_runs"] == 0
+    assert (
+        supervisor_reviewer.reserve(*args, held_intent=intent, first_review=True)[
+            "phase"
+        ]
+        == "admitted"
+    )
+    with pytest.raises(ValueError, match="already attempted"):
+        supervisor_reviewer.reserve(*args, held_intent=intent, first_review=True)
+
+
 @pytest.mark.parametrize("restriction", ["hold", "cancel", "expiry", "boot"])
 def test_restriction_committed_before_review_reservation_blocks_charge(
     checked, monkeypatch, restriction

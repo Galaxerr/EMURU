@@ -17,6 +17,7 @@ from test_coder_supervisor_native import (
     launch_child,
     native_fixture,  # noqa: F401
     retain,
+    wait_active,
 )
 
 from emuru.projects import coder_board, supervisor
@@ -138,6 +139,30 @@ def test_held_first_review_requires_intent_continue_and_explicit_operator(
                 review=True,
             )
         retain(fixture, "review-held-first", held_intent=json.loads(raw))
+    finally:
+        stop(process, parent, child)
+
+
+@pytest.mark.parametrize("native_fixture", [2], indirect=True)
+def test_hold_cleared_during_coder_still_requires_explicit_review(native_fixture):
+    fixture = native_fixture
+    process, parent, child = invoke(fixture, "cancel-inference")
+    try:
+        wait_active(fixture, process, "cancel-inference")
+        assert "held" in control(fixture, "hold")
+        assert "ready" in control(fixture, "continue")
+        assert join(fixture, process)["status"] == "awaiting_review"
+        detail, _, count = facts(fixture)
+        assert count == 1 and detail["reserved"]["reviewer_runs"] == 0
+        folder = coder_board.attempt_path(fixture["home"], fixture["grant"])
+        assert (folder / "held-before-review.json").exists()
+        assert not (folder / "review").exists()
+        stop(process, parent, child)
+        fixture["first_review"] = True
+        process, parent, child = invoke(fixture)
+        assert join(fixture, process)["status"] == "verified"
+        assert facts(fixture)[2] == 2
+        retain(fixture, "review-cleared-hold-first")
     finally:
         stop(process, parent, child)
 

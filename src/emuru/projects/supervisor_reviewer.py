@@ -19,7 +19,9 @@ def allowance():
     }
 
 
-def reserve(home, vault, root, grant, coder, image, *, held_intent=None):
+def reserve(
+    home, vault, root, grant, coder, image, *, held_intent=None, first_review=False
+):
     """Revalidate next-stage authority and serialize admission with owner controls."""
     identity = supervisor.identity(root, image)
     with board.project_board_readonly(home, root) as (kb, db):
@@ -57,7 +59,16 @@ def reserve(home, vault, root, grant, coder, image, *, held_intent=None):
             raise ValueError(
                 "Reviewer already attempted; no replacement or deadline reset."
             )
-        if control_state(records, enrollment) == "held":
+        held_since_admission = any(
+            r["kind"] == "control"
+            and r["enrollment"] == enrollment["generation"]
+            and r["action"] == "hold"
+            and r["generation"] > coder["generation"]
+            for r in records
+        )
+        if control_state(records, enrollment) == "held" or (
+            held_since_admission and not first_review
+        ):
             if held_intent is None:
                 raise ValueError("Current unrestricted reviewer enrollment required.")
             target = coder_board.attempt_path(home, grant) / "held-before-review.json"
@@ -257,11 +268,12 @@ def handoff(coder, folder, run, *, first_review=False):
         coder.stage,
         report["image"],
         held_intent=intent,
+        first_review=first_review,
     )
     if admission is None:
         return {
             "status": "awaiting_review",
-            "detail": "Held before first review; continue then explicit --review required.",
+            "detail": "First review not admitted; clear any active hold, then explicit --review required.",
         }
     stage = ReviewStage(coder.home, coder.vault, coder.root, coder.grant)
     reviewer.begin(

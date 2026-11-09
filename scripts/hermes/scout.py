@@ -542,7 +542,12 @@ def cleanup_scout(home, root, policy, task, image, staging):
             continue
         process = bound["process"]
         if not launcher_stopped(process):
-            os.killpg(process["pid"], signal.SIGKILL)
+            fd = os.pidfd_open(process["pid"])
+            try:
+                if not launcher_stopped(process):
+                    signal.pidfd_send_signal(fd, signal.SIGKILL)
+            finally:
+                os.close(fd)
             until = time.monotonic() + 5
             while not launcher_stopped(process) and time.monotonic() < until:
                 time.sleep(0.05)

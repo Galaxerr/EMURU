@@ -70,6 +70,57 @@ def test_gateway_startup_uses_attempt_budget_and_cleanup_has_grace(
     assert not (tmp_path / "gateway/gateway.key").exists()
 
 
+def test_supervised_gateway_cleanup_preserves_reused_container_name(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(coder_gateway, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        coder_gateway, "read_route", lambda *_: {"primary": {"provider": "ollama"}}
+    )
+    monkeypatch.setattr(
+        coder_gateway, "read_env", lambda *_: {"OLLAMA_API_KEY": "synthetic"}
+    )
+    monkeypatch.setattr(coder_gateway, "render", lambda *_: "synthetic")
+    (tmp_path / "infra/docker").mkdir(parents=True)
+    (tmp_path / "infra/docker/deployment-lock.json").write_text('{"litellm":"fixture"}')
+    replaced = False
+    removed = []
+    events = []
+
+    def remove(name):
+        nonlocal replaced
+        replaced = True
+
+    def command(argv, **kwargs):
+        stdout = ""
+        if argv[1:3] == ["image", "inspect"]:
+            stdout = "sha256:" + "b" * 64
+        elif argv[1] == "ps" and replaced and not removed:
+            stdout = "c" * 64
+        elif argv[1] == "rm":
+            removed.append(argv)
+        return {"exit_code": 0, "stdout": stdout, "stderr": ""}
+
+    stage = SimpleNamespace(
+        check=lambda: None,
+        command=command,
+        create_network=lambda *a, **kw: None,
+        create=lambda *a: "a" * 64,
+        remove=remove,
+        remove_network=lambda *_: None,
+    )
+    with coder_gateway.cloud_gateway(
+        tmp_path / "gateway",
+        supervision=stage,
+        process_event=lambda name, phase: events.append(phase),
+    ):
+        pass
+    assert replaced and not removed
+    assert events == ["starting", "stopped"]
+    assert not (tmp_path / "gateway/provider.key").exists()
+    assert not (tmp_path / "gateway/gateway.key").exists()
+
+
 def test_launcher_shares_original_deadline_after_gateway_startup(monkeypatch, tmp_path):
     import contextlib
     import runpy
