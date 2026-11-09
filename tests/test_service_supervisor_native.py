@@ -18,6 +18,7 @@ from test_coder_supervisor_native import (
     files,
     native_fixture,  # noqa: F401
     retain,
+    scout_runner,
     wait_active,
 )
 from test_reviewer_supervisor_native import control, invoke, stop
@@ -150,7 +151,7 @@ def test_actual_worker_sleep_refusal_cancel_and_retry(
 
 
 def scout_child(fixture):
-    runner = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))
+    runner = scout_runner()
     backend = runner["DockerScout"]
     original = backend.__init__
 
@@ -261,7 +262,7 @@ def test_actual_scout_sleep_refusal_then_drain_or_launcher_death(
                 module["sleep"]()
             assert not calls
             assert "stop_requested" in control(fixture, "cancel")
-            cleanup = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))["launch"]
+            cleanup = scout_runner()["launch"]
             cleanup(
                 fixture["home"],
                 path,
@@ -308,7 +309,7 @@ def test_actual_scout_sleep_refusal_then_drain_or_launcher_death(
             process.join(10)
         if process.exitcode != 0:
             control(fixture, "cancel")
-            cleanup = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))["launch"]
+            cleanup = scout_runner()["launch"]
             cleanup(
                 fixture["home"],
                 path,

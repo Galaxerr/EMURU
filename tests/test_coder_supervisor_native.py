@@ -11,20 +11,51 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from functools import partialmethod
 from pathlib import Path
 
 import pytest
 
 from emuru.projects import board, coder_board, supervisor, supervisor_coder
+from emuru.projects.coder_sandbox import DockerSandbox
 from emuru.projects.dispatcher import dispatcher_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = os.environ.get("EMURU_CODER_TEST_IMAGE", "sha256:" + "a" * 64)
 
 
+def scout_runner():
+    module = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))
+    daemon_root = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))[
+        "docker_workspace"
+    ](ROOT)
+    initialize = module["DockerScout"].__init__
+
+    def mapped(self, *args, **kwargs):
+        initialize(self, *args, **kwargs)
+        config = json.loads(self.config_path.read_text())
+        for service in config["services"].values():
+            for volume in service["volumes"]:
+                volume["source"] = str(
+                    daemon_root / Path(volume["source"]).relative_to(ROOT)
+                )
+        self.config_path.write_text(json.dumps(config))
+
+    module["DockerScout"].__init__ = mapped
+    return module
+
+
 @pytest.fixture
 def native_fixture(monkeypatch, request):
     pytest.importorskip("hermes_cli.kanban_db")
+    daemon_root = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))[
+        "docker_workspace"
+    ](ROOT)
+    monkeypatch.setattr(
+        DockerSandbox,
+        "__init__",
+        partialmethod(DockerSandbox.__init__, daemon_root=daemon_root),
+    )
     prepare = runpy.run_path(str(ROOT / "scripts/hermes/coder-task-check.py"))[
         "prepare"
     ]

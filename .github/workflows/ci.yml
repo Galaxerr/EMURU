@@ -299,7 +299,8 @@ jobs:
             scout_uid=$(id -u nobody)
             scout_gid=$(id -g nobody)
             # Never change ownership of a host user's bind-mounted runtime directory.
-            test "$(stat -c %u .runtime)" -eq 0
+            runtime_uid=$(stat -c %u .runtime)
+            test "$runtime_uid" -eq 0 || test "$runtime_uid" -eq "$scout_uid"
             install -d -o "$scout_uid" -g "$scout_gid" -m 700 .runtime
             scout_home=$(mktemp -d "$RUNNER_TEMP/scout-home.XXXXXX")
             chown "$scout_uid:$scout_gid" "$scout_home"

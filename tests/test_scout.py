@@ -5,6 +5,7 @@ import json
 import os
 import runpy
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -273,6 +274,15 @@ def test_dispatcher_stdout_is_one_json_result(tmp_path, monkeypatch, capsys):
     (home / "emuru-projects").mkdir(mode=0o700)
     result = {"status": "done", "run": None, "evidence": {"run": 1}}
     scope = RUNNER["main"].__globals__
+    monkeypatch.setitem(
+        scope,
+        "tempfile",
+        SimpleNamespace(
+            TemporaryDirectory=lambda **kwargs: tempfile.TemporaryDirectory(
+                **{**kwargs, "dir": tmp_path}
+            )
+        ),
+    )
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(runpy, "run_path", lambda _: launcher)
     monkeypatch.setattr(

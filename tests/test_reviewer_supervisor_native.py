@@ -17,6 +17,7 @@ from test_coder_supervisor_native import (
     launch_child,
     native_fixture,  # noqa: F401
     retain,
+    scout_runner,
     wait_active,
 )
 
@@ -322,7 +323,7 @@ def test_fresh_rework_keeps_one_loop_and_second_review(
             owner=grant["owner"],
             bot=grant["bot"],
         )
-        scout = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))["launch"]
+        scout = scout_runner()["launch"]
         assert "held" in control(fixture, "hold")
         before = files(fixture["home"])
         with pytest.raises(ValueError, match="held or revoked"):

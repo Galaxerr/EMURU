@@ -347,6 +347,22 @@ def test_operator_cli_enrolls_only_explicit_supported_arguments(
             "30",
         ],
     )
+    scope = module["main"].__globals__
+    real_os = scope["os"]
+    before = durable(home)
+    monkeypatch.setitem(
+        scope,
+        "os",
+        SimpleNamespace(umask=real_os.umask, getuid=lambda: 0, getgid=lambda: 0),
+    )
+    with pytest.raises(ValueError, match="unprivileged owner"):
+        module["main"]()
+    assert durable(home) == before
+    monkeypatch.setitem(
+        scope,
+        "os",
+        SimpleNamespace(umask=real_os.umask, getuid=lambda: 1000, getgid=lambda: 1000),
+    )
     assert module["main"]() == 0
     assert json.loads(capsys.readouterr().out)["deadline_ns"] == 31000000000
     before = durable(home)

@@ -8,6 +8,7 @@ import os
 import runpy
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -198,6 +199,15 @@ def test_attempted_launch_refuses_before_source_preparation(
         home, home, ROOT, policy, card.id, "sha256:" + "a" * 64, worker
     )
     runner = runpy.run_path(str(ROOT / "scripts/hermes/scout.py"))
+    monkeypatch.setitem(
+        runner["launch"].__globals__,
+        "tempfile",
+        SimpleNamespace(
+            TemporaryDirectory=lambda **kwargs: tempfile.TemporaryDirectory(
+                **{**kwargs, "dir": home.parent}
+            )
+        ),
+    )
     monkeypatch.setattr(
         runpy,
         "run_path",
