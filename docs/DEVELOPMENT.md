@@ -7,6 +7,14 @@ coder/reviewer evidence and authenticated capture/apply pass. An owner-authorize
 exception permits provisional Ticket 3 lifecycle development; its acceptance
 remains blocked by Ticket 2.
 
+Groq candidate integration and the bounded initial provider investigation are
+recorded in [Groq investigation](groq-investigation.md). The initial ten-request
+budget and separately approved follow-up budgets total 30 requests. Exact
+arguments, multi-turn use and bounded native coder/reviewer qualification passed
+after the Groq JSON fake-stream repair. Scope, identities and remaining native
+completion limitations are in that record. Keep deterministic adapter checks
+separate from live evidence; release and capture acceptance remain blocked.
+
 ## Repeat on this Linux laptop
 
 Use the existing locked `.venv` (provision dependencies separately with

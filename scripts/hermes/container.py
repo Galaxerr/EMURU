@@ -12,7 +12,7 @@ import stat
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,6 +32,7 @@ from emuru.models.gateway import (
     valid_qualification,
     write_private,
 )
+from emuru.models.groq import gateway_secret
 from emuru.projects import supervisor, supervisor_lifecycle
 from emuru.telegram.queue import QueueDiagnosticsError, diagnostics
 
@@ -214,7 +215,8 @@ def initialize(
     if workspace_env is not None:
         write_env(workspace_env, {"EMURU_GATEWAY_KEY": gateway_key})
 
-    selected_key = UPSTREAM_KEYS[route["primary"]["provider"]]
+    provider = route["primary"]["provider"]
+    selected_key = "GROQ_API_KEY" if provider == "groq" else UPSTREAM_KEYS[provider]
     for name in UPSTREAM_KEYS.values():
         secret_path = values[f"EMURU_{name}_FILE"]
         value = os.environ.get(name, "") if name == selected_key else ""
@@ -606,7 +608,7 @@ def require_systemd_idle():
 
 
 def wake(home=None, *, rollback_source=None):
-    with lifecycle_lock():
+    with lifecycle_lock(), ExitStack() as resources:
         values = saved_deployment(home)
         profile_home = Path(values["EMURU_PROFILE"])
         project_warning = supervisor_lifecycle.wake_inspection(profile_home, ROOT)
@@ -674,6 +676,13 @@ def wake(home=None, *, rollback_source=None):
             if rollback_source is None
             else prepare_update(command, values, rollback_source)
         )
+        if (
+            "EMURU_ROUTE" in values
+            and read_route(values["EMURU_ROUTE"])["primary"]["provider"] == "groq"
+        ):
+            env["EMURU_GROQ_API_KEY_FILE"] = resources.enter_context(
+                gateway_secret(ROOT / ".env")
+            )
         subprocess.run(
             [
                 *command,

@@ -64,7 +64,8 @@ def main():
     parser.add_argument("--primary")
     parser.add_argument("--local-candidate")
     parser.add_argument(
-        "--provider", choices=("ollama", "gemini", "openai-api"), default="ollama"
+        "--provider",
+        choices=("ollama", "gemini", "groq", "openai-api"),
     )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     args = parser.parse_args()
@@ -83,7 +84,10 @@ def main():
 
         try:
             route = select_pair(
-                args.primary, args.local_candidate, args.base_url, args.provider
+                args.primary,
+                args.local_candidate,
+                args.base_url,
+                args.provider or "groq",
             )
             write_private(args.route, json.dumps(route, indent=2) + "\n")
         except (ValueError, RuntimeError, OSError) as error:
@@ -96,7 +100,7 @@ def main():
         parser.error(
             "Private route requires pair selection or --list; legacy selection remains separate"
         )
-    if args.provider != "ollama":
+    if args.provider not in (None, "ollama"):
         parser.error("--provider applies only to pair selection")
     if args.list and args.smoke:
         parser.error("--list cannot be combined with --smoke")

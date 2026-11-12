@@ -57,7 +57,7 @@ services:
       HOME: /tmp
     labels:
       io.emuru.source: ${EMURU_SOURCE_ID:-unrecorded}
-    secrets: [emuru_gateway_key, ollama_api_key, gemini_api_key, openai_api_key]
+    secrets: [emuru_gateway_key, ollama_api_key, gemini_api_key, openai_api_key, groq_api_key]
     volumes:
       - type: bind
         source: ${EMURU_SOURCE_ROOT:-../..}/src
@@ -106,3 +106,5 @@ secrets:
     file: ${EMURU_GEMINI_API_KEY_FILE:?}
   openai_api_key:
     file: ${EMURU_OPENAI_API_KEY_FILE:?}
+  groq_api_key:
+    file: ${EMURU_GROQ_API_KEY_FILE:-/dev/null}

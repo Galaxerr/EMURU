@@ -32,6 +32,17 @@ histories, vault bindings and deployment metadata. If state already exists, use
    ```
 
    Add `--provider gemini` or `--provider openai-api` for another primary provider.
+   Groq is the picker's development candidate default. Use
+   `--provider groq --primary openai/gpt-oss-120b`; use `--provider ollama`
+   explicitly for the previous cloud route. See the bounded qualification and
+   remaining limits in [Groq investigation](groq-investigation.md). Keep the
+   key exclusively in the owner-owned mode-0600 workspace `.env`. Groq launch
+   uses a temporary mode-0600 secret on verified `/dev/shm` tmpfs, mounted only
+   into LiteLLM and removed afterward; it never copies the key into deployment
+   state or exports it to generic native launchers. Linux with local Docker and
+   accessible `/dev/shm` tmpfs is required. Bounded development qualification is
+   not a release claim or permission to activate an existing deployment. Confirm
+   global ZDR and the Free plan for the actual key's organization before use.
    An existing reviewed route can be supplied instead of running the picker.
 3. Initialize the deployment. This writes private files, copies credentials, fetches
    pinned infrastructure images and builds the application; it does not start polling.

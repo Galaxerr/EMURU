@@ -45,6 +45,7 @@ def check():
     key = {
         "ollama": "OLLAMA_API_KEY",
         "gemini": "GEMINI_API_KEY",
+        "groq": "GROQ_API_KEY",
         "openai-api": "OPENAI_API_KEY",
     }[route["primary"]["provider"]]
     settings = upstream(route["primary"])

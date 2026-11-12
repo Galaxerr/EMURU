@@ -69,7 +69,12 @@ ${EDITOR:-nano} .env
 
 Set `TELEGRAM_BOT_TOKEN`, `EMURU_TELEGRAM_OWNER_ID`, `EMURU_VAULT_PATH` (absolute
 vault path), and the selected provider key in `.env`. Keep it owner-owned and out
-of Git. Ollama Cloud is the default; Gemini and OpenAI are explicit alternatives.
+of Git. Groq `openai/gpt-oss-120b` is the development candidate default; Ollama
+Cloud/local, Gemini and OpenAI remain explicitly selectable.
+
+Groq is implemented as an explicit candidate through the same gateway, but is
+**not promoted** pending native qualification. See the
+[Groq investigation](docs/groq-investigation.md) before selecting it.
 
 For a **new installation**, follow [container deployment](docs/RUNBOOK.md#container-deployment)
 to select the route, initialize private state and install guidance. Existing

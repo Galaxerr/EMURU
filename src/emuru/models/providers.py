@@ -1,8 +1,8 @@
 """Dispatch provider configuration while keeping vault policy provider-independent."""
 
-from emuru.models import gemini, ollama, openai
+from emuru.models import gemini, groq, ollama, openai
 
-PROVIDERS = {"gemini": gemini, "openai-api": openai, "ollama": ollama}
+PROVIDERS = {"gemini": gemini, "groq": groq, "openai-api": openai, "ollama": ollama}
 
 
 def provider_settings(selection: dict, *, cloud: bool | None = None) -> dict:
@@ -16,7 +16,7 @@ def provider_settings(selection: dict, *, cloud: bool | None = None) -> dict:
         )
     name, model = selection["provider"], selection["model"]
     if not isinstance(name, str) or name not in PROVIDERS:
-        raise ValueError("Select gemini, openai-api or ollama explicitly")
+        raise ValueError("Select gemini, groq, openai-api or ollama explicitly")
     if not isinstance(model, str) or not model or model.strip() != model:
         raise ValueError("Model must be a nonempty, unquoted model ID")
     if any(character.isspace() or character in ('"', "'") for character in model):

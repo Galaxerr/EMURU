@@ -9,6 +9,7 @@ from pathlib import Path
 
 from emuru.environment import read_env
 from emuru.models.gateway import read_route, render, write_private
+from emuru.models.groq import gateway_secret
 from emuru.projects.coder_sandbox import bounded_process
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -57,6 +58,7 @@ def cloud_gateway(
         "ollama": "OLLAMA_API_KEY",
         "gemini": "GEMINI_API_KEY",
         "openai-api": "OPENAI_API_KEY",
+        "groq": "GROQ_API_KEY",
     }[route["primary"]["provider"]]
     upstream_key = values.get(selected) or (
         values.get("GOOGLE_API_KEY") if selected == "GEMINI_API_KEY" else None
@@ -66,7 +68,8 @@ def cloud_gateway(
     folder.mkdir(mode=0o700)
     gateway_key = "sk-" + secrets.token_hex(32)
     write_private(folder / "gateway.key", gateway_key + "\n")
-    write_private(folder / "provider.key", upstream_key + "\n")
+    if selected != "GROQ_API_KEY":
+        write_private(folder / "provider.key", upstream_key + "\n")
     write_private(folder / "route.json", json.dumps(route))
     write_private(folder / "litellm.yaml", render(route))
     suffix = secrets.token_hex(8)
@@ -81,7 +84,13 @@ def cloud_gateway(
 
     created_networks = []
     container_owned = False
+    resources = contextlib.ExitStack()
     try:
+        provider_source = (
+            resources.enter_context(gateway_secret(ROOT / ".env"))
+            if selected == "GROQ_API_KEY"
+            else mapped(folder / "provider.key")
+        )
         existing = process(
             ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
             b"",
@@ -140,7 +149,6 @@ def cloud_gateway(
             (ROOT / "src", "/opt/emuru/src"),
             (ROOT / "infra/docker/secret-exec.py", "/opt/emuru/secret-exec.py"),
             (folder / "gateway.key", "/run/secrets/emuru_gateway_key"),
-            (folder / "provider.key", "/run/secrets/" + selected.lower()),
             (folder / "route.json", "/run/emuru/route.json"),
             (folder / "litellm.yaml", "/run/emuru/litellm.yaml"),
         ]
@@ -149,6 +157,10 @@ def cloud_gateway(
                 "--mount",
                 f"type=bind,source={mapped(source)},target={target},readonly",
             ]
+        argv += [
+            "--mount",
+            f"type=bind,source={provider_source},target=/run/secrets/{selected.lower()},readonly",
+        ]
         pins = json.loads((ROOT / "infra/docker/deployment-lock.json").read_text())
         argv += [
             "--entrypoint",
@@ -237,6 +249,7 @@ def cloud_gateway(
         except BaseException as error:  # noqa: BLE001 -- finish cleanup after interruption
             cleanup_error = error
         finally:
+            resources.close()
             for secret in ("gateway.key", "provider.key"):
                 (folder / secret).unlink(missing_ok=True)
         for network in reversed(created_networks):
