@@ -130,10 +130,12 @@ def check_artifacts(folder, grant, additional=0):
         raise ValueError("Rework loop artifact budget exceeded.")
 
 
-def authorize(home, vault, root, grant, *, starting=False):
+def authorize(home, vault, root, grant, *, starting=False, capture=False):
     """Validate fresh owner authority against stopped, native-authenticated history."""
     from emuru.projects import board, coder_board, reviewer
 
+    if capture and starting:
+        raise ValueError("Capture verification cannot start rework.")
     folder = coder_board.attempt_path(home, grant)
     previous, original, report, receipt = lineage(folder, grant)
     if starting and not coder_board._launcher_stopped(previous):
@@ -149,6 +151,7 @@ def authorize(home, vault, root, grant, *, starting=False):
             kb,
             db,
             historical=True,
+            capture=capture,
         )
         old_run = kb.get_run(db, receipt["run"])
         coder = kb.get_run(db, receipt["coder_run"])

@@ -440,8 +440,11 @@ class NativeTelegram:
             is None
         ):
             raise ValueError("Owner-private admission required.")
-        mutations.expire_proposals(home, vault)
-        mutations.note_owner_activity(home, vault, owner, bot, uid)
+        from emuru.projects.results import is_capture_status
+
+        if not is_capture_status(text):
+            mutations.expire_proposals(home, vault)
+            mutations.note_owner_activity(home, vault, owner, bot, uid)
         if command == "/reject":
             command = "/cancel"
             text = "/cancel" + text[len(text.split()[0]) :]
@@ -521,9 +524,32 @@ class NativeTelegram:
                 with self._turn_scope(uid, session_key, notice=True):
                     try:
                         self.queue.mark_tools_started(bot, uid)
-                        result = project_command(
-                            home, vault, self.root, text, owner, bot
-                        )
+                        if text.split()[1:2] in (
+                            ["capture"],
+                            ["capture-status"],
+                            ["capture-new"],
+                        ):
+                            from emuru.projects.results import (
+                                command as capture_command,
+                            )
+
+                            result = capture_command(
+                                home, vault, self.root, text, owner, bot
+                            )
+                            if (
+                                text.split()[1] in {"capture", "capture-new"}
+                                and result.get("outcome") == "proposed"
+                            ):
+                                await self._present_previews([result])
+                                result = (
+                                    "Code verified; awaiting separate note approval."
+                                )
+                            else:
+                                result = json.dumps(result)
+                        else:
+                            result = project_command(
+                                home, vault, self.root, text, owner, bot
+                            )
                     except ValueError as error:
                         result = str(error)
                     except OSError:
@@ -867,11 +893,19 @@ class NativeTelegram:
                     "Telegram queue persistence failed; intake stopped"
                 ) from None
             if self.mutation_target is not None:
+                from emuru.projects.results import is_capture_status
                 from emuru.vault import mutations
 
                 home, vault = self.mutation_target
+                maintenance = not updates
                 for update in updates:
                     raw = json.loads(update.to_json())
+                    message = raw.get("message")
+                    if isinstance(message, dict) and is_capture_status(
+                        message.get("text")
+                    ):
+                        continue
+                    maintenance = True
                     if (
                         queue_module.admit_update(
                             raw,
@@ -895,7 +929,8 @@ class NativeTelegram:
                                 )
                             except Exception:  # noqa: BLE001 -- acknowledgement failure cannot replay an action
                                 logger.warning("Telegram button acknowledgement failed")
-                mutations.expire_proposals(home, vault)
+                if maintenance:
+                    mutations.expire_proposals(home, vault)
             return updates
 
         async def guarded_update(app, update):

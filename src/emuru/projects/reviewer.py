@@ -211,7 +211,7 @@ def _coder_usage(folder, grant, report):
     return coder_stage, coder_usage
 
 
-def packet(home, vault, root, task_id, grant, folder, run):
+def packet(home, vault, root, task_id, grant, folder, run, *, capture=False):
     """Reopen current authority and all source/check bytes; never truncate context."""
     from emuru.projects import board, coder_board
     from emuru.projects.coder_runtime import (
@@ -222,7 +222,15 @@ def packet(home, vault, root, task_id, grant, folder, run):
     from emuru.vault import mutations
 
     coder_board.authorize(
-        home, vault, root, task_id, grant, run_id=run["run"], review=True, readonly=True
+        home,
+        vault,
+        root,
+        task_id,
+        grant,
+        run_id=run["run"],
+        review=True,
+        readonly=True,
+        capture=capture,
     )
     raw = _read_private(folder / "evidence.json", grant["limits"]["artifact_bytes"])
     report = verify_evidence(folder, hashlib.sha256(raw).hexdigest(), task_run=run)
@@ -491,7 +499,19 @@ def execute(home, vault, root, task_id, grant, folder, *, supervision=None):
     return finalize(home, vault, root, task_id, grant, folder)
 
 
-def _prepared(home, vault, root, task_id, grant, folder, kb, db, *, historical=False):
+def _prepared(
+    home,
+    vault,
+    root,
+    task_id,
+    grant,
+    folder,
+    kb,
+    db,
+    *,
+    historical=False,
+    capture=False,
+):
     """Shared current-authority, immutable context and native ownership predicate."""
     from emuru.deployment import source_identity
     from emuru.projects import coder_board
@@ -500,7 +520,7 @@ def _prepared(home, vault, root, task_id, grant, folder, kb, db, *, historical=F
     intent, reviewer_run = _read(review / "intent.json"), _read(review / "run.json")
     original = coder_board._read_json(folder / "run.json")
     value, report, evidence = packet(
-        home, vault, root, task_id, grant, folder, original
+        home, vault, root, task_id, grant, folder, original, capture=capture
     )
     if (
         encoded(intent)
@@ -590,7 +610,7 @@ def _prepared(home, vault, root, task_id, grant, folder, kb, db, *, historical=F
     if grant["schema"] == 3:
         from emuru.projects import rework
 
-        rework.authorize(home, vault, root, grant)
+        rework.authorize(home, vault, root, grant, capture=capture)
         if {original["run"], reviewer_run["run"]} & {
             grant["rework"]["coder_run"],
             grant["rework"]["reviewer_run"],
@@ -599,12 +619,33 @@ def _prepared(home, vault, root, task_id, grant, folder, kb, db, *, historical=F
     return intent, value, report, evidence, loop, coder_run, current
 
 
-def verify(home, vault, root, task_id, grant, folder, kb, db, *, historical=False):
+def verify(
+    home,
+    vault,
+    root,
+    task_id,
+    grant,
+    folder,
+    kb,
+    db,
+    *,
+    historical=False,
+    capture=False,
+):
     """Shared completion/status/reconciliation predicate; all facts reopen."""
     from emuru.projects import coder_board
 
     intent, value, report, evidence, loop, coder_run, current = _prepared(
-        home, vault, root, task_id, grant, folder, kb, db, historical=historical
+        home,
+        vault,
+        root,
+        task_id,
+        grant,
+        folder,
+        kb,
+        db,
+        historical=historical,
+        capture=capture,
     )
     review = folder / "review"
     stage = _stage(review)

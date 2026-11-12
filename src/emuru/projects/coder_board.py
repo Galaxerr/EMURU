@@ -157,9 +157,20 @@ def _find_attempt(home, task_id):
 
 
 def authorize(
-    home, vault, root, task_id, grant, *, run_id=None, review=False, readonly=False
+    home,
+    vault,
+    root,
+    task_id,
+    grant,
+    *,
+    run_id=None,
+    review=False,
+    readonly=False,
+    capture=False,
 ):
     """Reopen current approval and native task before any worker or claim starts."""
+    if capture and not (readonly and review and run_id is not None):
+        raise ValueError("Capture verification cannot authorize execution.")
     grant = validate_grant(grant)
     if grant["schema"] in {2, 3} and attempt_path(home, grant).exists():
         from emuru.projects.reviewer import check_loop
@@ -170,7 +181,12 @@ def authorize(
         from emuru.projects import rework
 
         rework.authorize(
-            home, vault, root, grant, starting=not review and run_id is None
+            home,
+            vault,
+            root,
+            grant,
+            starting=not review and run_id is None,
+            capture=capture,
         )
     if task_id != grant["task"]:
         raise ValueError("Coder task does not match its grant.")
@@ -191,7 +207,7 @@ def authorize(
         ]
     )
     if (
-        not preview["current"]
+        (not capture and not preview["current"])
         or grant["vault"] != digest(os.path.abspath(vault))
         or grant["project"] != project
         or grant["revision"] != preview["after_revision"]

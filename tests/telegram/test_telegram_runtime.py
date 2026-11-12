@@ -1762,3 +1762,292 @@ def test_project_command_uses_owner_turn_fences(
         data.get("text") == "Tracking only; execution not authorized."
         for _, data in b.network
     )
+
+
+@pytest.mark.parametrize(
+    "tamper,lifecycle",
+    [
+        (False, "normal"),
+        (True, "normal"),
+        (False, "rejected"),
+        (False, "expired"),
+        (False, "stale"),
+        (False, "index_pending"),
+        (False, "crash_after"),
+        (False, "crash_before"),
+        (False, "uncertain"),
+    ],
+)
+def test_result_capture_owner_preview_apply_and_evidence_fence(
+    boundary, tmp_path, monkeypatch, tamper, lifecycle
+):
+    from vault_helpers import create_vault
+
+    from emuru.projects import results
+    from emuru.vault import mutations as m
+
+    b = boundary
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    vault = create_vault(tmp_path)
+    for name, value in {
+        "mutation-policy.json": {
+            "enabled": True,
+            "roots": ["10_Projects"],
+            "vault_path": str(vault),
+        },
+        "vault-target.json": {"mode": "real", "vault_path": str(vault)},
+    }.items():
+        path = home / name
+        path.write_text(json.dumps(value))
+        path.chmod(0o600)
+    b.execution.mutation_target = (home, vault)
+    target = vault / "10_Projects/capture.md"
+    original = "# Project\n- [x] Existing ^task-sample-first\n\nHuman text.\n"
+    target.write_text(original)
+    changed = False
+    binding = {
+        "schema": 1,
+        "owner": "42",
+        "bot": "7",
+        "vault": str(vault),
+        "spec": "a" * 32,
+        "task": "t_123abc",
+        "review_run": 2,
+        "evidence_sha256": "b" * 64,
+    }
+
+    def verified(*args, **kwargs):
+        if changed:
+            raise ValueError("Evidence changed")
+        return (
+            binding,
+            "10_Projects/capture.md",
+            "^task-sample-first",
+            "Verified artifact-only result.",
+        )
+
+    # Synthetic verifier output tests transport/journal mechanics, not native qualification.
+    monkeypatch.setattr(results, "verify_completion", verified)
+
+    def operator_verified(*args):
+        return verified()[0]
+
+    monkeypatch.setattr(results, "operator_verification", operator_verified)
+
+    async def operator(operation, identity, writers_paused=False, approval_digest=None):
+        request = m.authenticated_request(home, vault)
+        if operation == "cancel":
+            return m.cancel_proposal(home, identity, approval_digest=approval_digest)
+        return m.apply_proposal(
+            home,
+            vault,
+            identity,
+            approval_digest,
+            writers_paused=writers_paused,
+            owner=42,
+            bot=7,
+            application_request=request,
+        )
+
+    monkeypatch.setattr(b.execution, "_operator", operator)
+
+    async def scenario():
+        nonlocal changed
+        command = "/project capture " + "a" * 32 + " t_123abc 2"
+        b.queue.stage(7, [raw(50, command.replace("capture ", "capture-new "))])
+        await b.bridge.once()
+        with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+            assert (
+                db.execute("SELECT count(*) FROM project_result_captures").fetchone()[0]
+                == 0
+            )
+        b.queue.stage(7, [raw(1, command)])
+        await b.bridge.once()
+        assert target.read_text() == original
+        with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+            rows = db.execute(
+                "SELECT proposal_id FROM project_result_captures"
+            ).fetchall()
+        assert len(rows) == 1
+        identity = rows[0][0]
+        assert any(
+            "EMURU approval:" in data.get("text", "")
+            for endpoint, data in b.network
+            if endpoint == "sendMessage"
+        )
+        if lifecycle == "expired":
+            assert m.expire_proposals(home, vault, now=10**12) == [identity]
+        b.queue.stage(7, [raw(2, command)])
+        await b.bridge.once()
+        with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+            assert (
+                db.execute("SELECT proposal_id FROM project_result_captures").fetchall()
+                == rows
+            )
+        if lifecycle in {"rejected", "expired", "stale"}:
+            old_identity = identity
+            if lifecycle == "rejected":
+                b.queue.stage(7, [raw(20, "/reject " + identity)])
+                await b.bridge.once()
+            elif lifecycle == "stale":
+                target.write_text(original + "Fresh human edit.\n")
+                b.queue.stage(7, [raw(20, "/apply " + identity + " writers-paused")])
+                await b.bridge.once()
+                assert target.read_text().endswith("Fresh human edit.\n")
+            b.queue.stage(7, [raw(21, command)])
+            await b.bridge.once()
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM project_result_captures"
+                    ).fetchone()[0]
+                    == 1
+                )
+            b.queue.stage(7, [raw(22, command.replace("capture ", "capture-new "))])
+            await b.bridge.once()
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                generations = db.execute(
+                    "SELECT proposal_id,generation,state FROM project_result_captures ORDER BY generation"
+                ).fetchall()
+            assert len(generations) == 2, b.network[-3:]
+            assert generations[0] == (old_identity, 1, "closed")
+            identity = generations[1][0]
+            assert generations[1][1:] == (2, "active")
+            for update_id in (22, 24):
+                b.queue.stage(
+                    7, [raw(update_id, command.replace("capture ", "capture-new "))]
+                )
+                await b.bridge.once()
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM project_result_captures"
+                    ).fetchone()[0]
+                    == 2
+                )
+            # Old approval cannot authorize the replacement generation.
+            b.queue.stage(7, [raw(23, "/apply " + old_identity + " writers-paused")])
+            await b.bridge.once()
+            assert "Verified artifact-only" not in target.read_text()
+        b.queue.stage(7, [raw(3, "/apply " + identity)])
+        await b.bridge.once()
+        assert target.read_text() == original + (
+            "Fresh human edit.\n" if lifecycle == "stale" else ""
+        )
+        changed = tamper
+        published = []
+        real_publish = m.publish_note
+
+        def publish(*args, **kwargs):
+            if lifecycle == "crash_before":
+                raise RuntimeError("Injected process stop before replacement")
+            if lifecycle == "uncertain":
+                target.write_text("Conflicting external bytes.\n")
+                raise RuntimeError("Injected process stop with conflicting bytes")
+            real_publish(*args, **kwargs)
+            published.append(identity)
+            if lifecycle == "crash_after":
+                raise RuntimeError("Injected process stop after replacement")
+
+        monkeypatch.setattr(m, "publish_note", publish)
+        if lifecycle == "index_pending":
+            from emuru.vault import indexer
+
+            def fail_index(*args, **kwargs):
+                raise OSError("Injected index failure")
+
+            monkeypatch.setattr(indexer, "index_vault", fail_index)
+        b.queue.stage(7, [raw(4, "/apply " + identity + " writers-paused")])
+        await b.bridge.once()
+        if lifecycle in {"index_pending", "crash_after", "crash_before", "uncertain"}:
+            import subprocess
+
+            expected_outcome = (
+                "index_pending" if lifecycle == "index_pending" else "prepared"
+            )
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert m._receipt(db, identity)["outcome"] == expected_outcome
+            before_recovery = target.read_bytes(), target.stat().st_mtime_ns
+            # A fresh process reopens persisted receipts; no synthetic verifier is installed there.
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    sys.executable,
+                    "-c",
+                    "import json,sys; from pathlib import Path; from emuru.vault.mutations import recover_proposals; print(json.dumps(recover_proposals(Path(sys.argv[1]),Path(sys.argv[2]))))",
+                    str(home),
+                    str(vault),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            recovered = json.loads(completed.stdout)
+            assert (target.read_bytes(), target.stat().st_mtime_ns) == before_recovery
+            assert recovered[0]["outcome"] == {
+                "crash_before": "not_applied",
+                "uncertain": "quarantined",
+            }.get(lifecycle, "applied")
+            assert published == (
+                [identity] if lifecycle in {"index_pending", "crash_after"} else []
+            )
+            # Re-running maintenance never republishes the note.
+            m.recover_proposals(home, vault)
+            assert (target.read_bytes(), target.stat().st_mtime_ns) == before_recovery
+            if lifecycle != "index_pending":
+                assert (
+                    target.read_text()
+                    == {
+                        "crash_before": original,
+                        "uncertain": "Conflicting external bytes.\n",
+                        "crash_after": "# Project\n- [x] Existing ^task-sample-first\n  - Verified artifact-only result.\n\nHuman text.\n",
+                    }[lifecycle]
+                )
+                return
+        if tamper:
+            assert target.read_text() == original
+        else:
+            expected = "# Project\n- [x] Existing ^task-sample-first\n  - Verified artifact-only result.\n\nHuman text.\n"
+            if lifecycle == "stale":
+                expected += "Fresh human edit.\n"
+            assert target.read_text() == expected
+            timestamp = target.stat().st_mtime_ns
+            changed = True
+            b.queue.stage(7, [raw(5, "/apply " + identity + " writers-paused")])
+            await b.bridge.once()
+            assert target.stat().st_mtime_ns == timestamp
+            assert target.read_text() == expected
+            assert published == [identity]
+            # Historical receipt survives edits and changed/unavailable evidence.
+            target.write_text(expected + "Later human edit.\n")
+            historical = target.read_bytes(), target.stat().st_mtime_ns
+
+            def no_status_maintenance(*args, **kwargs):
+                pytest.fail(
+                    "Capture status cannot expire drafts or record owner activity"
+                )
+
+            for update_id, text in [
+                (40, command),
+                (41, command.replace("capture ", "capture-new ")),
+                (42, command.replace("capture ", "capture-status ")),
+            ]:
+                if update_id == 42:
+                    monkeypatch.setattr(m, "expire_proposals", no_status_maintenance)
+                    monkeypatch.setattr(m, "note_owner_activity", no_status_maintenance)
+                    b.bot.batch = [b.Update(raw(update_id, text))]
+                    await b.bot.get_updates()
+                else:
+                    b.queue.stage(7, [raw(update_id, text)])
+                await b.bridge.once()
+                assert (target.read_bytes(), target.stat().st_mtime_ns) == historical
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert db.execute(
+                    "SELECT count(*) FROM project_result_captures"
+                ).fetchone()[0] == (
+                    2 if lifecycle in {"rejected", "expired", "stale"} else 1
+                )
+
+    asyncio.run(scenario())

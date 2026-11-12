@@ -164,7 +164,23 @@ def check_state(home, *, allow_proposal_upgrade=False, target_root=None):
                         if row[1] not in {"proposal_lifecycle", "revision_requests"}
                     ],
                 )
-                if not allow_proposal_upgrade or actual != legacy:
+                capture_names = {
+                    "project_result_captures",
+                    "project_result_capture_active",
+                }
+                previous_capture = (
+                    expected[0],
+                    [row for row in expected[1] if row[1] not in capture_names],
+                )
+                previous_legacy = (
+                    legacy[0],
+                    [row for row in legacy[1] if row[1] not in capture_names],
+                )
+                if not allow_proposal_upgrade or actual not in (
+                    legacy,
+                    previous_capture,
+                    previous_legacy,
+                ):
                     raise ValueError(
                         "Mutation state migration requires explicit approval"
                     )
@@ -259,7 +275,7 @@ def upgrade_proposals(home):
             os.fsync(parent)
         finally:
             os.close(parent)
-        with open_journal(home):
+        with open_journal(home, capture_upgrade=True):
             pass
         check_state(home)
         return {"state_changed": True, "backup": backup}

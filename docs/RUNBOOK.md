@@ -538,6 +538,10 @@ There is no supported systemd runtime or rollback path.
 
 ## Run tests
 
+For isolated deterministic checks without provider access, see
+[offline development verification](DEVELOPMENT.md). DEV PASS does not replace
+live qualification or release acceptance.
+
 Use [README's checks](../README.md#development) for routine development. For synthetic
 MCP and offline profile/transport contracts:
 

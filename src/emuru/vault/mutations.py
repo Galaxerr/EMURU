@@ -190,8 +190,30 @@ def load_policy(home: Path) -> dict:
     return policy
 
 
+def check_capture_metadata(db):
+    """Refuse newer capture formats without rewriting their retained state."""
+    if not db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='project_result_captures'"
+    ).fetchone():
+        return
+    for version, generation, raw in db.execute(
+        "SELECT formatter_version,generation,binding FROM project_result_captures"
+    ):
+        try:
+            binding = json.loads(raw)
+            valid = (
+                isinstance(binding, dict)
+                and type(binding.get("schema")) is int
+                and binding["schema"] == 1
+            )
+        except (ValueError, TypeError):
+            valid = False
+        if version != 1 or generation < 1 or not valid:
+            raise ValueError("Unsupported capture metadata; preserve newest state.")
+
+
 @contextmanager
-def journal(home: Path):
+def journal(home: Path, *, capture_upgrade=False):
     """Private durable proposals and receipts, independent of Telegram pruning."""
     with directory(home) as profile:
         private_directory(profile)
@@ -230,6 +252,24 @@ def journal(home: Path):
             try:
                 connection.execute("PRAGMA synchronous=FULL")
                 connection.execute("PRAGMA foreign_keys=ON")
+                check_capture_metadata(connection)
+                fresh = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='proposals'"
+                    ).fetchone()
+                    is None
+                )
+                if fresh or capture_upgrade:
+                    connection.execute("""CREATE TABLE IF NOT EXISTS project_result_captures (
+                        completion_key TEXT NOT NULL, generation INTEGER NOT NULL,
+                        proposal_id TEXT NOT NULL UNIQUE REFERENCES proposals(id),
+                        request_id TEXT NOT NULL REFERENCES owner_requests(id),
+                        binding TEXT NOT NULL, note_revision TEXT NOT NULL,
+                        anchor TEXT NOT NULL, formatter_version INTEGER NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN ('active','closed')),
+                        PRIMARY KEY(completion_key,generation))""")
+                    connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS project_result_capture_active
+                        ON project_result_captures(completion_key) WHERE state='active'""")
                 connection.execute("""CREATE TABLE IF NOT EXISTS proposals (
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL, digest TEXT NOT NULL,
                     vault TEXT NOT NULL, target TEXT NOT NULL,
@@ -800,6 +840,17 @@ def begin_revision(home, vault_root, request_id, preview, owner, bot):
         db.execute("BEGIN IMMEDIATE")
         identity = preview["proposal_id"]
         _check_owner(db, identity, vault_root, owner, bot)
+        if (
+            db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='project_result_captures'"
+            ).fetchone()
+            and db.execute(
+                "SELECT 1 FROM project_result_captures WHERE proposal_id=?", (identity,)
+            ).fetchone()
+        ):
+            raise ValueError(
+                "Verified capture cannot use generic revision; request fresh capture."
+            )
         current = _preview(db, identity)
         if (
             current["outcome"] != "proposed"
@@ -1400,7 +1451,9 @@ def apply_proposal(
     expire_proposals(home, vault_root)
     if writers_paused is not True:
         raise ValueError("Confirm other writers are paused before application.")
-    with writer_lock(vault_root), journal(home) as db:
+    from emuru.projects.results import application_guard
+
+    with application_guard(home, vault_root, identity), journal(home) as db:
         db.execute("BEGIN IMMEDIATE")
         policy = load_policy(home)
         proposal = _proposal(db, identity)
@@ -1506,3 +1559,131 @@ def recover_proposals(home: Path, vault_root: Path) -> list[dict]:
                 receipt = _refresh_receipt(db, proposal, vault_root)
             results.append(receipt)
     return results
+
+
+def prepare_result_capture(
+    home, vault, request, key, binding, path, revision, anchor, after, *, renew=False
+):
+    """One transaction joins a validated anchored proposal to verified provenance."""
+    policy = require_authority(home, vault)
+    if (
+        not policy["enabled"]
+        or authenticated_request(home, vault, read_only=True) != request
+    ):
+        raise ValueError("Authenticated capture policy required.")
+    with (
+        writer_lock(vault),
+        mutation_parent(vault, path, roots=policy["roots"]) as (parent, name),
+        journal(home) as db,
+    ):
+        db.execute("BEGIN IMMEDIATE")
+        previous = db.execute(
+            "SELECT proposal_id,binding,generation,request_id FROM project_result_captures WHERE completion_key=? ORDER BY generation",
+            (key,),
+        ).fetchall()
+        generation = 1
+        before = read_note(parent, name)
+        if previous:
+            if any(row[1] != binding for row in previous):
+                raise ValueError("Capture binding changed.")
+            replay = next((row for row in previous if row[3] == request), None)
+            latest = replay or previous[-1]
+            preview = _preview(db, latest[0])
+            if (
+                replay
+                or not renew
+                or preview["outcome"] in {"applied", "index_pending"}
+            ):
+                return preview
+            stale = (
+                preview["outcome"] == "proposed"
+                and _hash(before) != preview["before_revision"]
+            )
+            if (
+                preview["outcome"] not in {"cancelled", "expired", "not_applied"}
+                and not stale
+            ):
+                raise ValueError(
+                    "Capture generation is live or uncertain; renewal refused."
+                )
+            if stale:
+                db.execute(
+                    "UPDATE proposals SET outcome='cancelled' WHERE id=?", (latest[0],)
+                )
+                db.execute(
+                    "INSERT INTO receipts VALUES(?, 'cancelled', ?, ?)",
+                    (latest[0], preview["before_revision"], preview["after_revision"]),
+                )
+            db.execute(
+                "UPDATE project_result_captures SET state='closed' WHERE completion_key=?",
+                (key,),
+            )
+            generation = latest[2] + 1
+        if before is None or _hash(before) != revision:
+            raise ValueError("Stale full-file revision; request fresh capture.")
+        text = before.decode()
+        _no_merge_markers(text)
+        _no_merge_markers(after)
+        start = text.find(anchor)
+        if not anchor or start < 0 or text.find(anchor, start + 1) >= 0:
+            raise ValueError("Exact anchor must match once.")
+        end = len(after) - (len(text) - start - len(anchor))
+        replacement = after[start:end]
+        if (
+            after != text[:start] + replacement + text[start + len(anchor) :]
+            or after == text
+        ):
+            raise ValueError("Capture must preserve bytes outside its task anchor.")
+        cost = (
+            len(binding.encode())
+            + len(anchor.encode())
+            + len(key)
+            + len(revision)
+            + len(request)
+            + 128
+        )
+        total = db.execute(
+            "SELECT COALESCE(SUM(length(CAST(binding AS BLOB))+length(CAST(anchor AS BLOB))+length(completion_key)+length(note_revision)+length(request_id)+128),0) FROM project_result_captures"
+        ).fetchone()[0]
+        if (
+            len(binding.encode()) > 4096
+            or len(anchor.encode()) > 4096
+            or total + cost > 1048576
+        ):
+            raise ValueError("Capture metadata capacity exceeded.")
+        identity = uuid.uuid4().hex
+        after_hash = _hash(after.encode())
+        db.execute(
+            "INSERT INTO proposals VALUES(?,?,?,?,?,?,?,'proposed')",
+            (
+                identity,
+                after,
+                after_hash,
+                os.path.abspath(vault),
+                path,
+                revision,
+                after_hash,
+            ),
+        )
+        db.execute(
+            "INSERT INTO proposal_lifecycle(proposal_id,created_at) VALUES(?,?)",
+            (identity, time.time()),
+        )
+        db.execute(
+            "INSERT INTO proposal_edits VALUES(?,?,?)", (identity, anchor, replacement)
+        )
+        db.execute(
+            "INSERT INTO proposal_bindings VALUES(?,?,?)",
+            (identity, request, _policy_digest(policy)),
+        )
+        db.execute(
+            "INSERT INTO validated_proposals VALUES(?,?)",
+            (identity, _bound_approval(db, _proposal(db, identity))),
+        )
+        db.execute(
+            "INSERT INTO project_result_captures VALUES(?,?,?,?,?,?,?,1,'active')",
+            (key, generation, identity, request, binding, revision, anchor),
+        )
+        result = _preview(db, identity)
+        db.commit()
+        return result
