@@ -75,6 +75,45 @@ Never invent test results.
 - Do not output lengthy internal reasoning or raw logs.
 - Stop after the requested outcome is achieved and verified.
 
+## Root-cause-first failure handling
+
+When any implementation, test, CI, runtime, provider, or qualification step fails, the responsible agent MUST investigate and attempt to resolve the failure before escalating it to the owner.
+
+### Required procedure
+
+1. **Reproduce and inspect:** Identify the failing operation, exit status, relevant logs, configuration, environment, and execution path. Prefer existing evidence and targeted reproduction over broad reruns.
+2. **Establish root cause:** Trace the failure to the most specific supported cause. Distinguish confirmed findings from hypotheses. Do not assume an application defect when the failure may originate from infrastructure, credentials, provider availability, configuration, or environment.
+3. **Repair autonomously:** If the cause is within the authorized task scope, apply the smallest correct fix, preserving existing contracts, security boundaries, and unrelated changes.
+4. **Verify:** Run focused regression tests and the smallest meaningful end-to-end check. Record exact commands, results, and evidence.
+5. **Escalate only when necessary:** Request owner intervention only for decisions or actions outside delegated authority, unavailable credentials, financial commitments, security-sensitive changes, unresolved contracts, or genuinely irrecoverable external dependencies.
+
+### Execution and efficiency rules
+
+- Do not stop at the first failure or merely recommend that the owner investigate it.
+- Prefer offline diagnosis, existing logs, and deterministic tests before live provider calls.
+- Do not repeatedly retry identical failures without a new, evidence-supported hypothesis.
+- Use a bounded diagnostic and repair loop: at most two distinct justified repair attempts per root cause, followed by targeted verification.
+- Avoid unnecessary subagents, full-suite reruns, speculative refactoring, and excessive token consumption.
+- Do not bypass failing tests, weaken acceptance criteria, fabricate evidence, or silently substitute unqualified models/providers.
+- Do not change approved contracts, spend money, expose secrets, or broaden permissions without explicit owner authorization.
+- If the repair changes source or runtime identity, regenerate and reverify any qualification evidence that depends on those identities.
+- Preserve original failure evidence and record the distinction between historical observations and newly confirmed causes.
+
+### Reporting
+
+For recoverable failures, report the root cause, fix, and verification together rather than interrupting the owner with intermediate diagnostic questions.
+
+For unresolved failures, report:
+- The most specific confirmed cause.
+- Evidence supporting that conclusion.
+- Diagnostic and repair actions already attempted.
+- Why autonomous recovery is blocked.
+- The smallest concrete owner action required.
+
+A NO-GO assessment must reflect the outcome of this investigation, not merely the first observed error.
+
+These instructions do not override explicit task restrictions. When a task is authorized for investigation only, do not modify code; report the proposed fix instead.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
