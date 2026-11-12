@@ -190,25 +190,94 @@ def load_policy(home: Path) -> dict:
     return policy
 
 
+def validate_capture_binding(raw, key):
+    """Require the complete versioned identity before admitting or reading linkage."""
+    from emuru.projects.scout import digest
+
+    patterns = {
+        "owner": r"[1-9][0-9]{0,18}",
+        "bot": r"[1-9][0-9]{0,18}",
+        "spec": r"[0-9a-f]{32}",
+        "task": r"t_[0-9a-f]+",
+        **{
+            name: r"[0-9a-f]{64}"
+            for name in (
+                "project",
+                "revision",
+                "grant_sha256",
+                "evidence_sha256",
+                "diff_sha256",
+                "packet_sha256",
+                "outcome_sha256",
+            )
+        },
+    }
+    try:
+        binding = json.loads(raw)
+        valid = (
+            isinstance(raw, str)
+            and len(raw.encode()) <= 4096
+            and isinstance(binding, dict)
+            and set(binding)
+            == set(patterns) | {"schema", "vault", "coder_run", "review_run"}
+            and type(binding["schema"]) is int
+            and binding["schema"] == 1
+            and all(
+                isinstance(binding[k], str) and re.fullmatch(p, binding[k])
+                for k, p in patterns.items()
+            )
+            and isinstance(binding["vault"], str)
+            and "\0" not in binding["vault"]
+            and os.path.isabs(binding["vault"])
+            and os.path.abspath(binding["vault"]) == binding["vault"]
+            and all(
+                type(binding[k]) is int and 1 <= binding[k] <= 10**19 - 1
+                for k in ("coder_run", "review_run")
+            )
+            and binding["coder_run"] != binding["review_run"]
+            and digest(binding) == key
+        )
+    except (ValueError, TypeError):
+        valid = False
+    if not valid:
+        raise ValueError("Unsupported capture metadata; preserve newest state.")
+    return binding
+
+
 def check_capture_metadata(db):
     """Refuse newer capture formats without rewriting their retained state."""
     if not db.execute(
         "SELECT 1 FROM sqlite_master WHERE name='project_result_captures'"
     ).fetchone():
         return
-    for version, generation, raw in db.execute(
-        "SELECT formatter_version,generation,binding FROM project_result_captures"
+    for row in db.execute(
+        """SELECT c.formatter_version,c.generation,c.binding,c.completion_key,
+                  c.request_id,c.note_revision,c.anchor,
+                  r.owner,r.bot,r.vault,p.vault,p.before_hash,b.request_id,e.anchor,x.outcome
+           FROM project_result_captures c
+           LEFT JOIN owner_requests r ON r.id=c.request_id
+           LEFT JOIN proposals p ON p.id=c.proposal_id
+           LEFT JOIN proposal_bindings b ON b.proposal_id=c.proposal_id
+           LEFT JOIN proposal_edits e ON e.proposal_id=c.proposal_id
+           LEFT JOIN receipts x ON x.proposal_id=c.proposal_id"""
     ):
-        try:
-            binding = json.loads(raw)
-            valid = (
-                isinstance(binding, dict)
-                and type(binding.get("schema")) is int
-                and binding["schema"] == 1
-            )
-        except (ValueError, TypeError):
-            valid = False
-        if version != 1 or generation < 1 or not valid:
+        version, generation, raw, key, request, revision, anchor, *linked, outcome = row
+        binding = validate_capture_binding(raw, key)
+        if (
+            version != 1
+            or type(generation) is not int
+            or generation < 1
+            or linked
+            != [
+                binding["owner"],
+                binding["bot"],
+                binding["vault"],
+                binding["vault"],
+                revision,
+                request,
+                None if outcome == "expired" else anchor,
+            ]
+        ):
             raise ValueError("Unsupported capture metadata; preserve newest state.")
 
 
@@ -1565,6 +1634,7 @@ def prepare_result_capture(
     home, vault, request, key, binding, path, revision, anchor, after, *, renew=False
 ):
     """One transaction joins a validated anchored proposal to verified provenance."""
+    identity_binding = validate_capture_binding(binding, key)
     policy = require_authority(home, vault)
     if (
         not policy["enabled"]
@@ -1577,6 +1647,17 @@ def prepare_result_capture(
         journal(home) as db,
     ):
         db.execute("BEGIN IMMEDIATE")
+        identity = db.execute(
+            "SELECT owner,bot,vault FROM owner_requests WHERE id=?", (request,)
+        ).fetchone()
+        if identity != (
+            identity_binding["owner"],
+            identity_binding["bot"],
+            identity_binding["vault"],
+        ) or identity_binding["vault"] != os.path.abspath(vault):
+            raise ValueError(
+                "Inconsistent capture metadata; authenticated request mismatch."
+            )
         previous = db.execute(
             "SELECT proposal_id,binding,generation,request_id FROM project_result_captures WHERE completion_key=? ORDER BY generation",
             (key,),

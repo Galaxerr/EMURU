@@ -40,13 +40,71 @@ def capture_scope(tmp_path):
     yield from scope.__wrapped__(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("incomplete", None),
+        ("coder_run", True),
+        ("review_run", 1),
+        ("evidence_sha256", "unverified"),
+        ("vault", "relative/vault"),
+        ("schema", 2),
+        ("extra", "unsupported"),
+        ("completion_key", "a" * 64),
+        ("owner", "43"),
+        ("bot", "8"),
+        ("vault", "/other-vault"),
+    ],
+)
+def test_capture_refuses_incomplete_binding_without_persisting(
+    capture_scope, field, value
+):
+    import hashlib
+
+    from vault_helpers import capture_binding
+
+    from emuru.projects.scout import digest, encoded
+    from emuru.vault import mutations as m
+
+    home, vault, _, request = capture_scope
+    path = "10_Projects/incomplete.md"
+    before = "- [ ] Task ^task-sample-first\n"
+    (vault / path).write_text(before)
+    database = home / "emuru-mutations/mutations.sqlite"
+    retained = database.read_bytes()
+    binding = capture_binding(vault)
+    if field == "incomplete":
+        binding = {"schema": 1}
+    elif field != "completion_key":
+        binding[field] = value
+    key = value if field == "completion_key" else digest(binding)
+    with pytest.raises(ValueError, match="capture metadata"):
+        m.prepare_result_capture(
+            home,
+            vault,
+            request,
+            key,
+            encoded(binding).decode(),
+            path,
+            hashlib.sha256(before.encode()).hexdigest(),
+            before.strip(),
+            results.format_capture(before, before.strip(), "Verified result."),
+        )
+    assert database.read_bytes() == retained
+    assert (vault / path).read_text() == before
+
+
 def test_atomic_capture_rollback_and_concurrent_reuse(capture_scope, monkeypatch):
     import hashlib
     from concurrent.futures import ThreadPoolExecutor
 
+    from vault_helpers import capture_binding
+
+    from emuru.projects.scout import digest, encoded
     from emuru.vault import mutations as m
 
     home, vault, _, request = capture_scope
+    binding = capture_binding(vault)
     path = "10_Projects/atomic.md"
     before = "- [ ] Task ^task-sample-first\n"
     (vault / path).write_text(before)
@@ -57,8 +115,8 @@ def test_atomic_capture_rollback_and_concurrent_reuse(capture_scope, monkeypatch
         home,
         vault,
         request,
-        "a" * 64,
-        '{"schema":1}',
+        digest(binding),
+        encoded(binding).decode(),
         path,
         hashlib.sha256(before.encode()).hexdigest(),
         before.strip(),
@@ -168,34 +226,45 @@ def test_operator_subprocess_refuses_missing_evidence(tmp_path, monkeypatch):
     assert not (tmp_path / "missing-vault").exists()
 
 
-def test_capture_status_is_observational_and_owner_bound(capture_scope, monkeypatch):
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        None,
+        "incomplete",
+        "completion_key",
+        "generation",
+        "formatter_version",
+        "owner",
+        "bot",
+        "vault",
+        "note_revision",
+        "anchor",
+        "request_id",
+    ],
+)
+def test_capture_status_is_observational_and_owner_bound(
+    capture_scope, monkeypatch, corruption
+):
     import hashlib
-    import json
     from pathlib import Path
 
     from telegram_helpers import update
+    from vault_helpers import capture_binding
 
+    from emuru.projects.scout import digest, encoded
     from emuru.vault import mutations as m
 
     home, vault, queue, request = capture_scope
     before = "- [ ] Task ^task-sample-first\n"
     path = "10_Projects/status.md"
     (vault / path).write_text(before)
-    binding = {
-        "schema": 1,
-        "owner": "42",
-        "bot": "7",
-        "vault": str(vault),
-        "spec": "a" * 32,
-        "task": "t_123abc",
-        "review_run": 2,
-    }
+    binding = capture_binding(vault)
     preview = m.prepare_result_capture(
         home,
         vault,
         request,
-        "a" * 64,
-        json.dumps(binding),
+        digest(binding),
+        encoded(binding).decode(),
         path,
         hashlib.sha256(before.encode()).hexdigest(),
         before.strip(),
@@ -210,6 +279,25 @@ def test_capture_status_is_observational_and_owner_bound(capture_scope, monkeypa
     status_request, _ = m.begin_request(home, vault, 42, 7, 2, text, fresh=True)
     m.activate_request(home, status_request, queue.path, 7, 2)
     database = home / "emuru-mutations/mutations.sqlite"
+    if corruption:
+        import sqlite3
+
+        with sqlite3.connect(database) as db:
+            if corruption == "incomplete":
+                db.execute("UPDATE project_result_captures SET binding='{}'")
+            elif corruption in {"owner", "bot", "vault"}:
+                binding[corruption] = "/other-vault" if corruption == "vault" else "8"
+                db.execute(
+                    "UPDATE project_result_captures SET binding=?,completion_key=?",
+                    (encoded(binding).decode(), digest(binding)),
+                )
+            elif corruption in {"note_revision", "anchor", "request_id"}:
+                db.execute(f"UPDATE project_result_captures SET {corruption}='wrong'")
+            else:
+                db.execute(
+                    f"UPDATE project_result_captures SET {corruption}=?",
+                    ("0" * 64 if corruption == "completion_key" else 0,),
+                )
     retained = database.read_bytes()
 
     def forbidden(*args, **kwargs):
@@ -219,6 +307,17 @@ def test_capture_status_is_observational_and_owner_bound(capture_scope, monkeypa
     monkeypatch.setattr(m, "expire_proposals", forbidden)
     monkeypatch.setattr(m, "recover_proposals", forbidden)
     root = Path(__file__).resolve().parents[1]
+    if corruption:
+        with pytest.raises(ValueError, match="Unsupported capture metadata"):
+            results.command(home, vault, root, text, 42, 7)
+        with (
+            pytest.raises(ValueError, match="Unsupported capture metadata"),
+            m.journal(home),
+        ):
+            pass
+        assert database.read_bytes() == retained
+        assert (vault / path).read_text() == before
+        return
     assert results.command(home, vault, root, text, 42, 7) == {
         "proposal_id": preview["proposal_id"],
         "path": path,

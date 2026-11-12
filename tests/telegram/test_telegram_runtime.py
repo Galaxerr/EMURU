@@ -1781,7 +1781,7 @@ def test_project_command_uses_owner_turn_fences(
 def test_result_capture_owner_preview_apply_and_evidence_fence(
     boundary, tmp_path, monkeypatch, tamper, lifecycle
 ):
-    from vault_helpers import create_vault
+    from vault_helpers import capture_binding, create_vault
 
     from emuru.projects import results
     from emuru.vault import mutations as m
@@ -1806,16 +1806,7 @@ def test_result_capture_owner_preview_apply_and_evidence_fence(
     original = "# Project\n- [x] Existing ^task-sample-first\n\nHuman text.\n"
     target.write_text(original)
     changed = False
-    binding = {
-        "schema": 1,
-        "owner": "42",
-        "bot": "7",
-        "vault": str(vault),
-        "spec": "a" * 32,
-        "task": "t_123abc",
-        "review_run": 2,
-        "evidence_sha256": "b" * 64,
-    }
+    binding = capture_binding(vault)
 
     def verified(*args, **kwargs):
         if changed:
