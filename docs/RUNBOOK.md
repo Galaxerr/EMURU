@@ -35,7 +35,9 @@ histories, vault bindings and deployment metadata. If state already exists, use
    Groq is the picker's development candidate default. Use
    `--provider groq --primary openai/gpt-oss-120b`; use `--provider ollama`
    explicitly for the previous cloud route. See the bounded qualification and
-   remaining limits in [Groq investigation](groq-investigation.md). Keep the
+   remaining limits in
+   [offline development verification](DEVELOPMENT.md#offline-development-verification).
+   Keep the
    key exclusively in the owner-owned mode-0600 workspace `.env`. Groq launch
    uses a temporary mode-0600 secret on verified `/dev/shm` tmpfs, mounted only
    into LiteLLM and removed afterward; it never copies the key into deployment

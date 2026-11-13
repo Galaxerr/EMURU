@@ -2,18 +2,17 @@
 
 Deterministic tests can run without a working inference provider. They establish
 **DEV PASS**, never provider qualification or release acceptance. For v0.5.7:
-**QUALIFICATION PENDING** and **RELEASE NO-GO** remain until genuine matching
-coder/reviewer evidence and authenticated capture/apply pass. An owner-authorized
-exception permits provisional Ticket 3 lifecycle development; its acceptance
-remains blocked by Ticket 2.
+Tickets 2, 3 and 4 are accepted. Ticket 5 release qualification has not started;
+release acceptance remains NO-GO.
 
-Groq candidate integration and the bounded initial provider investigation are
-recorded in [Groq investigation](groq-investigation.md). The initial ten-request
-budget and separately approved follow-up budgets total 30 requests. Exact
-arguments, multi-turn use and bounded native coder/reviewer qualification passed
-after the Groq JSON fake-stream repair. Scope, identities and remaining native
-completion limitations are in that record. Keep deterministic adapter checks
-separate from live evidence; release and capture acceptance remain blocked.
+Ticket 3's bounded Groq coder/reviewer run used six provider requests and
+13,580 tokens. Exact arguments, multi-turn use and bounded native coder/reviewer
+qualification passed after the Groq JSON fake-stream repair. Native model-driven
+check generation and native/Monty equivalence remain unverified. This bounded
+evidence does not complete full native qualification, qualify release use or
+activate an existing deployment. Keep deterministic adapter checks separate from
+live evidence; Ticket 4 review and Ticket 5 release qualification are separate
+gates.
 
 ## Repeat on this Linux laptop
 
@@ -98,13 +97,13 @@ H1/H2/H4 and release gates are unchanged. Genuine evidence must be reopened from
 its original task/run, artifacts, checks and independent review under matching
 source/image/catalogue identities. A repository baseline SHA is never a generated
 result commit. Historical failures and mismatched-source results remain invalid;
-o fixture, copied receipt or manually edited verdict can close Ticket 2.
+no fixture, copied receipt or manually edited verdict can close Ticket 2.
 
 ## Final qualification on a more capable machine
 
-1. Transfer the exact working source (including uncommitted Ticket 2 files), locked
-   dependencies and approved contracts. Record HEAD, dirty-source hashes and
-   runtime lock. Do not rely on HEAD alone or reuse old-source receipts.
+1. Transfer the exact working source, locked dependencies and approved contracts.
+   Record HEAD, dirty-source hashes and runtime lock. Do not rely on HEAD alone or
+   reuse old-source receipts.
 2. Provision the existing pinned Hermes/LiteLLM/Ollama architecture and isolated
    disposable vault/profile. Preserve production routing. Establish model digest,
    template/runtime identity, context/reserve, hardware and local-only routing.
@@ -127,8 +126,9 @@ o fixture, copied receipt or manually edited verdict can close Ticket 2.
    owner capture preview and separately approved exact application. Use only the
    approved test authorization seam; otherwise stop for real owner interaction.
    Audit no preview mutation, expected note bytes/provenance/capture identity,
-   no unrelated mutation and Ticket 2 duplicate behavior. Record each acceptance
+   no unrelated mutation and duplicate/restart behavior. Record each acceptance
    criterion PASS/FAIL/BLOCKED with reproducible commands and evidence paths.
-6. Update the Ticket 2 evidence/tracker. Its acceptance does not authorize Ticket
-   3 or release: remaining ticket dependencies and release qualification still
-   apply. No push, merge, tag or publication is part of this workflow.
+6. Update the Ticket 5 evidence/tracker only after Ticket 4 acceptance and
+   explicit authorization to start Ticket 5. Tickets 2 and 3 acceptance alone do
+   not authorize release qualification. No push, merge, tag or publication is
+   part of this workflow.
