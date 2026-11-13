@@ -74,7 +74,7 @@ Cloud/local, Gemini and OpenAI remain explicitly selectable.
 
 Groq is implemented as an explicit candidate through the same gateway, but is
 **not promoted** pending native qualification. See the
-[Groq investigation](docs/groq-investigation.md) before selecting it.
+[qualification status](docs/DEVELOPMENT.md) before selecting it.
 
 For a **new installation**, follow [container deployment](docs/RUNBOOK.md#container-deployment)
 to select the route, initialize private state and install guidance. Existing

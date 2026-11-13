@@ -492,7 +492,7 @@ def verify(config_only=False):
         fixture_secrets(config)
         for service in config["services"].values():
             for volume in service.get("volumes", []):
-                if volume["type"] == "bind":
+                if volume["type"] == "bind" and volume["source"] != "/dev/null":
                     volume["source"] = daemon_path(volume["source"])
         write_private(private / "compose.json", json.dumps(config))
         command[-1] = str(private / "compose.json")

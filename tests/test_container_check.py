@@ -361,3 +361,67 @@ def test_fixture_secrets_keep_read_only_daemon_binds(target):
             }
         ]
     }
+
+
+def test_act_translation_preserves_null_secret_bind(tmp_path, monkeypatch):
+    (tmp_path / "infra/docker").mkdir(parents=True)
+    (tmp_path / "infra/docker/compose.yaml").write_text(
+        "services:\n  litellm:\n    image: synthetic-image\n"
+    )
+    module = runpy.run_path(str(ROOT / "scripts/hermes/container-check.py"))
+    scope = module["verify"].__globals__
+    monkeypatch.setitem(
+        scope, "__file__", str(tmp_path / "scripts/hermes/container-check.py")
+    )
+    monkeypatch.setitem(
+        scope, "docker_workspace", lambda root: Path("/daemon/checkout")
+    )
+    load = runpy.run_path
+
+    def deployment(path):
+        result = load(path)
+        result["prepare_deployment"].__globals__["ROOT"] = tmp_path
+        return result
+
+    monkeypatch.setattr(runpy, "run_path", deployment)
+    config = {
+        "secrets": {"unused": {"file": "/dev/null"}},
+        "services": {
+            "app": {
+                "secrets": ["unused"],
+                "volumes": [
+                    {"type": "bind", "source": str(tmp_path / "src"), "target": "/app"}
+                ],
+            }
+        },
+    }
+
+    class Checked(Exception):
+        pass
+
+    def run(command, **kwargs):
+        if command[:2] == ["docker", "run"]:
+            saved = json.loads(
+                next((tmp_path / ".runtime").glob("*/compose.json")).read_text()
+            )
+            volumes = saved["services"]["app"]["volumes"]
+            assert volumes[0]["source"] == "/daemon/checkout/src"
+            assert volumes[1] == {
+                "type": "bind",
+                "source": "/dev/null",
+                "target": "/run/secrets/unused",
+                "read_only": True,
+                "bind": {"create_host_path": False},
+            }
+            raise Checked
+        return SimpleNamespace(
+            stdout=json.dumps(config) if "--format" in command else ""
+        )
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    previous = os.umask(0o077)
+    try:
+        with pytest.raises(Checked):
+            module["verify"]()
+    finally:
+        os.umask(previous)

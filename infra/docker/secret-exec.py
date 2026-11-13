@@ -5,8 +5,9 @@ import stat
 import sys
 from pathlib import Path
 
+sys.path.insert(0, "/opt/emuru/src")
+
 if os.environ.get("EMURU_SOURCE_ID"):
-    sys.path.insert(0, "/opt/emuru/src")
     from emuru.deployment import source_identity
 
     if source_identity(Path("/opt/emuru")) != os.environ["EMURU_SOURCE_ID"]:

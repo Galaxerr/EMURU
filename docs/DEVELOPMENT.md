@@ -2,7 +2,9 @@
 
 Deterministic tests can run without a working inference provider. They establish
 **DEV PASS**, never provider qualification or release acceptance. For v0.5.7:
-Tickets 2, 3 and 4 are accepted. Ticket 5 release qualification has not started;
+Tickets 2, 3 and 4 are accepted. Ticket 5 local qualification and all ten act CI jobs passed;
+[final qualification](releases/v0.5.7-ticket-05-qualification.md) remains blocked on
+hosted exact-commit CI, fresh genuine final-source evidence and owner acceptance;
 release acceptance remains NO-GO.
 
 Ticket 3's bounded Groq coder/reviewer run used six provider requests and
