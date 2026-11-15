@@ -107,7 +107,7 @@ def verify_completion(home, vault, root, spec, task, run, owner, bot):
     detail = (
         f"Verified artifact-only result; task {task}, coder run {receipt['coder_run']}, "
         f"review run {run}; evidence SHA-256 {receipt['evidence_sha256']}; "
-        f"diff SHA-256 {receipt['diff_sha256']}. Fixed Monty checks passed; "
+        f"diff SHA-256 {receipt['diff_sha256']}. Fixed Monty check python_unittest passed; "
         "native unittest completion and native/Monty equivalence unverified. "
         "Next action: approve this capture separately; confirm indexed readback after application."
     )
