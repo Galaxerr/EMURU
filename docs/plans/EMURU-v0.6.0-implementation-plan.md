@@ -1,6 +1,6 @@
 # EMURU v0.6.0 — Native project execution and verified result capture
 
-**Status:** Updated 2026-11-09: M1–M6 delivered; v0.5.6 technical qualification and owner acceptance PASS. M7–M9 remain future work.
+**Status:** Updated 2026-11-15: M1–M7 delivered; v0.5.7 qualification and owner acceptance GO. M8–M9 remain future work; release activation is separate.
 **Prepared:** 2026-10-21.  
 **Repository:** `Galaxerr/EMURU`.  
 **Inspected baseline:** `main` at `129b8754e9e6ffa301cc25d44cd963f90316dda5` (2026-10-20).  
@@ -9,19 +9,20 @@
 
 > **Planning accuracy:** The sections below preserve the original design and milestone
 > criteria. Current implementation and accepted deviations are described in the
-> [v0.5.6 implementation record](../releases/v0.5.6-implementation.md); proposed
+> [v0.5.7 implementation record](../releases/v0.5.7-implementation.md); proposed
 > paths/APIs below are not proof that later milestones exist. Upstream behavior
 > must be verified against the pinned Hermes source and disposable runtime.
 
-**Progress update, 2026-11-09:** M6 completes opt-in supervision, owner controls,
-shared bounded accounting and lifecycle fences. M4 uses mediated coding tools,
-a separate offline sandbox and selected-file source without a task Git checkout
-or task HEAD. M5 adds distinct tool-free review and one fresh-grant rework on the
-same card. Execution remains disabled by default; qualification preserves the
-fixed Monty acceptance boundary and does not establish native unittest completion.
-The consolidated M6 record retains exact candidate/source/image/CI identities,
-review closures and limitations. Result capture, multi-task continuation and final
-M9 integration remain future milestones.
+**Progress update, 2026-11-15:** M7 completes explicit private-owner capture of
+independently verified results into the original note through complete preview
+and separate exact approval. Duplicate/stale/rejected/expired/index-pending and
+restart paths are qualified. Current workers still use selected-file artifacts,
+fixed Monty checks and a tool-free independent reviewer; M6 supervision remains
+opt-in and execution disabled by default. The consolidated record retains exact
+candidate/source/image/CI, genuine owner/model evidence, review closures and
+limits. Task Git execution and controlled remote operations are separately scoped
+future capabilities; this update assigns no new milestone or remote authority.
+M8 multi-task continuation and M9 integrated acceptance remain future work.
 
 ## 1. Objective and definition of success
 
@@ -41,7 +42,7 @@ Turn EMURU from a knowledge-and-project-note assistant into an **owner-supervise
 
 ## 2. Verified baseline and invariants
 
-- `README.md`, `docs/ARCHITECTURE.md` and `docs/releases/v0.5.0-report.md` establish v0.5.0 as **Docker-only/cloud-primary-only**, with an authenticated LiteLLM gateway, one cloud attempt and **no automatic local fallback**. Gemini/OpenAI remain explicit upstream alternatives; local Ollama qualification is deferred.
+- `README.md` and `docs/ARCHITECTURE.md` preserve the v0.5.0 foundation as **Docker-only/cloud-primary-only**, with an authenticated LiteLLM gateway, one cloud attempt and **no automatic local fallback**. Gemini/OpenAI remain explicit upstream alternatives; local Ollama qualification is deferred.
 - The locked Hermes checkout is `NousResearch/hermes-agent` commit **`7157422022ff06f3e632d1dd394ee1253b17ad37`** (`infra/hermes/runtime-lock.json`). The pinned tree contains Kanban, delegation, worker-lane, and Codex app-server modules. Presence in source **does not establish tested suitability for EMURU**.
 - `infra/hermes/runtime-settings.json` and `src/emuru/hermes/profile.py` explicitly disable `terminal`, `file`, `kanban`, `delegation`, `skills` and other toolsets; Telegram and CLI currently permit only `mcp-vault`. `expected_settings`, `verify_profile` and runtime contract checks **enforce** this limitation. Enabling Kanban requires deliberate, test-backed changes to configuration, profile auditing and the native Telegram tool policy—not just a prompt edit.
 - `src/emuru/telegram/queue.py` and `worker.py` own durable owner-private inbound admission, deduplication, FIFO execution and no-replay interrupted-turn semantics. `src/emuru/telegram/native.py` owns the pinned bridge, native sessions, delivery controls, timeouts, approval handling and tool-dispatch guards.
@@ -243,6 +244,8 @@ Each milestone must be **useful in its own right**, testable on disposable data,
 **Release note:** v0.5.6 adds reliable project control and restart-safe supervision.
 
 ## 12. M7 — v0.5.7: Verified result capture through guarded vault proposals
+
+**Delivered and accepted, 2026-11-15.** The [implementation record](../releases/v0.5.7-implementation.md) is authoritative for exact commands, task-line-only anchoring, artifact provenance, current-source evidence guards, additive journal upgrade and all fourteen passing M7 criteria. The design below preserves the original milestone intent, not additional implemented APIs.
 
 **User story:** After a reviewed task, EMURU says what changed and prepares a concise update to the **original project note**, including verified tests, code reference and next action. The owner approves; no new duplicate decision/project note is created.
 

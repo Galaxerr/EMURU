@@ -1,8 +1,8 @@
 # Permanent-host deployment backlog
 
-Updated for v0.5.6 / M6, 2026-11-09. Technical qualification and owner acceptance
-are recorded in the [implementation record](releases/v0.5.6-implementation.md).
-Permanent-host certification remains separate from completed M6 acceptance.
+Updated for v0.5.7 / M7, 2026-11-15. Technical qualification and owner acceptance
+are recorded in the [implementation record](releases/v0.5.7-implementation.md).
+Permanent-host certification remains separate from completed M7 acceptance.
 The temporary laptop does not require production certification. These
 items are out of scope for development acceptance, not failed tests or waived
 security mechanisms. No infrastructure or additional rollback image is requested
@@ -46,6 +46,9 @@ as part of release closure.
   cloud-only checks; never relabel old images or edit locks to force compatibility.
   Preserve v0.5.6 supervisor generations/head, enrollment marker, controls, original
   deadlines/reservations and exact stop evidence with board/grant/artifact state.
+  Preserve M7 capture linkage/generations, exact previews, effect receipts and
+  independently verified result artifacts together. Index-only recovery must not
+  republish an applied note; old images must refuse unsupported capture state.
   Sleep refusal must leave its admission fence intact; incompatible old executors
   cannot accept newest supervised state. README changes require fresh image provenance.
   A comment-only alternate proves mechanical compatibility, not recovery from shared
@@ -60,7 +63,7 @@ as part of release closure.
 
 The temporary laptop had no verified mounted encrypted backup destination during
 read-only discovery; no stopped backup, restore or production cutover occurred.
-This environmental prerequisite is not an M6 code-test failure.
+This environmental prerequisite is not an M7 code-test failure.
 
 The laptop's old production snapshot was rejected by the unchanged rollback guard:
 its deployment lock uses a different registry-qualified Python reference and its

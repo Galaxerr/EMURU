@@ -1,20 +1,20 @@
 # Offline development verification
 
 Deterministic tests can run without a working inference provider. They establish
-**DEV PASS**, never provider qualification or release acceptance. For v0.5.7:
-Tickets 2, 3 and 4 are accepted. Ticket 5 local qualification and all ten act CI jobs passed;
-[final qualification](releases/v0.5.7-ticket-05-qualification.md) remains blocked on
-hosted exact-commit CI, fresh genuine final-source evidence and owner acceptance;
-release acceptance remains NO-GO.
+**DEV PASS**, never fresh provider qualification or release acceptance.
 
-Ticket 3's bounded Groq coder/reviewer run used six provider requests and
-13,580 tokens. Exact arguments, multi-turn use and bounded native coder/reviewer
-qualification passed after the Groq JSON fake-stream repair. Native model-driven
-check generation and native/Monty equivalence remain unverified. This bounded
-evidence does not complete full native qualification, qualify release use or
-activate an existing deployment. Keep deterministic adapter checks separate from
-live evidence; Ticket 4 review and Ticket 5 release qualification are separate
-gates.
+**v0.5.7 / M7 is complete and accepted: GO.** The
+[consolidated implementation record](releases/v0.5.7-implementation.md) retains
+exact-commit hosted CI, genuine final-source coder/check/reviewer evidence, the
+full authenticated owner lifecycle, independent closing review and accepted
+limits. The real final Groq run used six requests and 13,766 tokens. Native
+model-driven check generation and native/Monty equivalence remain unverified.
+
+That acceptance belongs to the recorded candidate. Later README/documentation
+changes are not a newly qualified image; README participates in the build
+fingerprint. New source/image qualification and deployment require matching
+identities and appropriate authorization. These offline instructions neither
+promote a route nor activate an existing deployment.
 
 ## Repeat on this Linux laptop
 
@@ -48,7 +48,7 @@ python scripts/hermes/baseline.py
 python scripts/hermes/telegram.py --offline
 python scripts/hermes/vault-profile.py --offline
 python scripts/hermes/qualify.py --fixture
-printf '%s\n' 'DEV PASS' 'QUALIFICATION PENDING' 'RELEASE NO-GO'
+printf '%s\n' 'DEV PASS' 'NO LIVE QUALIFICATION PERFORMED'
 OFFLINE
 ```
 
@@ -61,7 +61,7 @@ a repository `.env`; local loopback fixtures and Unix IPC still work. This is a
 workflow for trusted repository tests, not a sandbox for hostile code: do not add
 Docker execution, host socket proxies, namespace escapes or live flags to it.
 
-For a focused Ticket 2 iteration, replace only the pytest line with:
+For a focused result-capture iteration, replace only the pytest line with:
 
 ```bash
 python -m pytest -q tests/test_result_capture.py tests/telegram/test_telegram_runtime.py -k capture
@@ -76,8 +76,8 @@ Do not use `uv run` inside the isolated block to download missing dependencies.
 | --- | --- | --- |
 | Deterministic Python and static checks | Commands above; `.github/workflows/ci.yml` quality/lint/baseline/offline/qualification jobs | Application mechanics, refusal cases, formatter bytes, fixture preview/apply, contract consistency; no inference claim |
 | Optional native/container mechanics | CI container-foundation and lifecycle-acceptance; `docs/RUNBOOK.md` Run tests | Pinned runtime, confinement, recovery with controlled verdicts; requires Docker and preloaded images; separate from this offline block |
-| Real inference | Opt-in Ollama/project conversation tests; `qualify.py --live`; coder/reviewer/rework `--live` | Actual model tools, exact arguments, complete checks and independent review; unavailable here |
-| Ticket 2 positive capture | Approved Ticket 2 specification and retained qualification procedure | Matching genuine reviewed result reopened by bounded verifier, private-owner preview, separate approval, exact apply and mutation/idempotency audit |
+| Real inference | Opt-in Ollama/project conversation tests; `qualify.py --live`; coder/reviewer/rework `--live` | Actual model tools, exact arguments, complete checks and independent review; not executed by the offline block |
+| Genuine owner-approved capture | Consolidated implementation record and retained authenticated procedure | Matching genuine reviewed result reopened by bounded verifier, private-owner preview, separate approval, exact apply and mutation/idempotency audit |
 
 Default pytest skips opt-in live/container tests. Skips are explicit untested
 coverage, not passing qualification. Some tests mock functions named `live`;
@@ -98,19 +98,20 @@ shape alone is not proof of genuine provenance.
 H1/H2/H4 and release gates are unchanged. Genuine evidence must be reopened from
 its original task/run, artifacts, checks and independent review under matching
 source/image/catalogue identities. A repository baseline SHA is never a generated
-result commit. Historical failures and mismatched-source results remain invalid;
-no fixture, copied receipt or manually edited verdict can close Ticket 2.
+result commit. Historical failures and mismatched-source results cannot substitute for new matching proof;
+no fixture, copied receipt or manually edited verdict can establish genuine acceptance.
 
-## Final qualification on a more capable machine
+## Future source/image or model qualification
 
 1. Transfer the exact working source, locked dependencies and approved contracts.
    Record HEAD, dirty-source hashes and runtime lock. Do not rely on HEAD alone or
    reuse old-source receipts.
-2. Provision the existing pinned Hermes/LiteLLM/Ollama architecture and isolated
-   disposable vault/profile. Preserve production routing. Establish model digest,
-   template/runtime identity, context/reserve, hardware and local-only routing.
-   A bigger machine does not automatically qualify the model.
-3. Pass the unchanged model gates: exact tool arguments, multi-turn and streaming
+2. Provision the existing pinned Docker/Hermes/LiteLLM architecture and an isolated
+   disposable vault/profile. Preserve production routing. Review the exact
+   provider payload, destination, credentials and budget. Local-model qualification
+   additionally needs model digest, template/runtime identity, context/reserve,
+   hardware and local-only routing; a bigger machine alone proves nothing.
+3. For full local-model promotion, pass the unchanged model gates: exact tool arguments, multi-turn and streaming
    behavior, workload/security/replay gates, required repetitions, three context
    trials, twenty warm samples, cold <=180s, warm p95 <=60s, memory/OOM gates.
    Use `src/emuru/models/gateway.py` and `scripts/hermes/qualify.py` as authority.
@@ -130,7 +131,8 @@ no fixture, copied receipt or manually edited verdict can close Ticket 2.
    Audit no preview mutation, expected note bytes/provenance/capture identity,
    no unrelated mutation and duplicate/restart behavior. Record each acceptance
    criterion PASS/FAIL/BLOCKED with reproducible commands and evidence paths.
-6. Update the Ticket 5 evidence/tracker only after Ticket 4 acceptance and
-   explicit authorization to start Ticket 5. Tickets 2 and 3 acceptance alone do
-   not authorize release qualification. No push, merge, tag or publication is
-   part of this workflow.
+6. Record each new candidate's exact identities, commands, actual outcomes,
+   original failures, independent review and owner authority in the implementation
+   record, retaining historical evidence separately. Repeat the required lifecycle
+   and applicable exact-commit CI without relabeling fixtures or skips. No staging,
+   commit, push, merge, tag, publication or activation is part of this workflow.

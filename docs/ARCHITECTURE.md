@@ -4,10 +4,11 @@ EMURU runs a pinned Hermes agent in Docker, exposes constrained vault tools over
 stdio MCP, and accepts owner-private Telegram text. Markdown is durable knowledge;
 native sessions are conversation history. Neither trains model weights.
 
-Current milestone: **v0.5.6 / M6**, technically qualified and owner-accepted.
-The [consolidated implementation record](releases/v0.5.6-implementation.md) binds
-historical local/hosted CI and runtime evidence to the exact qualified candidate.
-Package metadata remains `0.5.3`; M7–M9 are future work.
+Current milestone: **v0.5.7 / M7**, qualified and owner-accepted. The
+[consolidated implementation record](releases/v0.5.7-implementation.md) binds the
+accepted candidate to exact source/image, hosted CI and genuine qualification
+records. The later documentation revision changes README/image provenance; it is
+not a new qualified image. Package metadata remains `0.5.3`; M8–M9 are future work.
 
 ```text
 Telegram owner → native adapter → durable queue/worker → Hermes
@@ -51,7 +52,7 @@ when their Docker client dies. No model capability is qualified by this mileston
 The inherited M4 coding path is qualified on disposable data. Native Hermes
 inference exposes exactly `coder_read`, `coder_write` and `coder_check`. A separate
 trusted host dispatcher controls disposable offline check containers. Approval does not establish runtime security or compatibility. The
-[v0.5.6 implementation record](releases/v0.5.6-implementation.md) records actual evidence.
+[implementation record](releases/v0.5.7-implementation.md) records actual evidence.
 
 The controller exports approved committed UTF-8 files under their original paths.
 The task workspace has no Git metadata, branch, commit or task HEAD. Mediated
@@ -115,7 +116,7 @@ One stable project shares at most one Scout and two coder/two reviewer stages,
 1,920 reserved active seconds and 1 MiB supervisor metadata. Coder/reviewer loops
 retain their original 1,800-second and artifact/check ceilings. Full allowances
 are reserved before claim without refunds. Exact cap and boundary evidence is in
-the [implementation record](releases/v0.5.6-implementation.md#resource-qualification-and-limits).
+the [implementation record](releases/v0.5.7-implementation.md#resource-qualification-and-limits).
 
 Sleep/down and stage admission serialize on the same profile fence. Active,
 uncertain or uninspectable work blocks shutdown before services stop. Wake clears
@@ -123,6 +124,48 @@ only the sleep fence after actual-release compatibility and proven idle state.
 Cleanup pins exact resource/process identities; stop observation and metadata-only
 reconciliation never replay work. Unsupported old executors cannot roll back or
 synchronize newest supervised state. Never-enrolled profiles retain legacy behavior.
+
+## Verified result capture (v0.5.7)
+
+M7 joins a stopped, independently reviewed coding result to the existing canonical
+project note through the existing owner preview/apply workflow. Explicit private
+`/project capture <spec-proposal-id> <task-id> <review-run-id>` identifies the exact
+completion; `capture-new` requests a fresh generation after a closed draft and
+`capture-status` is observational. The model receives no new capture/apply tool.
+A verified native result grants no note-writing or further execution authority.
+
+`projects.results` separates capture-only historical evidence from the current
+note revision. It checks immutable spec/grant/run/reviewer evidence and current
+source/image/catalogue/repository bindings, then reads the current owner-bound
+note under its existing mutation policy. A unique literal task anchor receives
+one deterministic result detail; checkbox, block ID and unrelated bytes remain
+unchanged. Current workers emit artifact/diff references, never a fabricated Git
+result commit or model-authored result prose.
+
+The existing mutation journal owns one additive `project_result_captures` table.
+A canonical completion key binds owner/bot/vault/project/spec/task, coder/reviewer
+runs and evidence digests; monotonic generations bind original request, proposal,
+exact revision/anchor and formatter version. Atomic proposal/link insertion under
+the vault writer lock plus a unique active-generation index prevents orphans and
+concurrent duplicates. There is no new scheduler or duplicate apply-state store.
+Bindings, anchors and result detail each have a 4 KiB limit; cumulative logical
+capture metadata is capped at 1 MiB without deleting retained history.
+
+Complete preview delivery and a separate exact authenticated owner approval with
+writers paused precede publication. Before the first write, the existing apply
+path invokes `scripts/hermes/result-verifier.py` in pinned Hermes Python through
+bounded, credential-free read-only IPC (30 seconds). Missing/tampered/rejected or
+uncertain evidence refuses. Applied/prepared/index-pending recovery uses durable
+receipts first and never needs worker replay to re-establish an applied fact.
+
+Rejection/expiry keep generations closed until explicit authenticated renewal;
+stale-note or evidence changes cannot reuse an old approval. Applied history
+survives later human edits; indexing recovery never rewrites the note. Read-only
+status changes no domain journal, note or index state. New profiles include the
+capture schema; existing profiles need an explicit stopped-profile upgrade with
+backup. Corrupt/newer linkage refuses without deletion, and old executors cannot
+roll back unsupported capture state. H1/H2/H4 contracts and the full criterion
+matrix are retained in the [implementation record](releases/v0.5.7-implementation.md).
 
 ## Repository map
 
@@ -140,6 +183,7 @@ Paths below are relative to the repository root.
 | `src/emuru/projects/{scout,scout_board}.py`, `scripts/hermes/scout.py` | Fixed inspection, native run/evidence fences and owner-operated isolated dispatch |
 | `src/emuru/projects/coder*.py`, `scripts/hermes/coder*.py`, `infra/docker/coder.compose.yaml` | Grant-bound operator coding, selected-file confinement, evidence/status, conservative recovery and disposable qualification |
 | `src/emuru/projects/{reviewer,rework}.py`, `scripts/hermes/{reviewer,rework}-check.py` | Distinct tool-free review, single fresh-grant rework, lineage and disposable qualification |
+| `src/emuru/projects/results.py`, `scripts/hermes/result-verifier.py` | Deterministic capture, historical evidence predicate, owner preview/status/renewal and first-write pinned verifier |
 | `src/emuru/projects/supervisor*.py`, `scripts/hermes/supervisor.py` | Opt-in enrollment, immutable facts, exact-token controls, stage accounting, stop proof and lifecycle fences |
 | `src/emuru/models/` | Provider configuration, route/qualification contract and bounded gateway behavior |
 | `src/emuru/deployment.py`, `environment.py` | Source identity, stopped-state compatibility and private environment handling |
@@ -165,6 +209,7 @@ image; launchers do not install EMURU dependencies into Hermes.
 | `profiles/emuru/emuru-projects/` | Native board/sidecars, binder/scout locks and private `scout-artifacts/`; schema-1 card bodies retain receipt/revision/task/grant bindings |
 | `profiles/emuru/emuru-projects/supervisor-enabled.json`, `supervisor/` | Private opt-in marker, immutable generations/head, controls, counters and lifecycle fence |
 | `profiles/emuru/emuru-projects/coder-attempts/` | Private attempt/review/rework receipts, lineage, checks, artifacts and reservation evidence |
+| `profiles/emuru/emuru-mutations/mutations.sqlite` | Existing owner requests, proposal/effect receipts and additive versioned capture linkage; preserve SQLite sidecars |
 | Separate vault Git repository | Authoritative Markdown and derived `_index/` / `99_System/INDEX.md` |
 | `tests/fixtures/hermes-vault/`, ignored `.runtime/` | Synthetic fixtures and disposable validation state |
 
@@ -192,7 +237,7 @@ keys; the MCP child receives no provider/gateway credentials.
   numeric owner in private text chat, serialize turns and suppress duplicates.
   Queued work can continue after restart; started/uncertain effects never replay.
   Delivery uncertainty does not erase an applied mutation receipt.
-- Agent inference uses only the authenticated `emuru` gateway alias. v0.5.0 permits
+- Agent inference uses only the authenticated `emuru` gateway alias. The current contract permits
   one cloud-primary attempt and no automatic local dispatch, even with valid local
   qualification evidence. Preserve validation, deadlines and late-result suppression.
 - Run one poller. Status must remain read-only. Wake checks compatibility and fresh
@@ -200,6 +245,9 @@ keys; the MCP child receives no provider/gateway credentials.
 - Rollback requires verified source/image identity, exact pins/schemas and matching
   managed profile/guidance. Keep newest state; never restore an older backup to
   force compatibility. No systemd agent/start/rollback path is supported.
+- Capture changes no execution grants or source/evidence guards. Reverify before
+  first publication, preserve closed/applied generations and newest metadata;
+  repair indexing only, never repeat a note write.
 
 ## Verification and changes
 
@@ -212,6 +260,6 @@ README-only edits change image provenance even when runtime code is unchanged.
 Re-verify the image/source pair for a future build or deployment; do not relabel an
 old image. Keep private runtime state, histories, credentials and real notes out of Git.
 
-The [v0.5.6 record](releases/v0.5.6-implementation.md) records current milestone acceptance and inherited limits.
+The [v0.5.7 record](releases/v0.5.7-implementation.md) records current milestone acceptance and inherited limits.
 Permanent-host setup, encrypted backup/restore, migration, operational recovery,
 cutover and reboot evidence belong to the [deployment backlog](deployment-backlog.md).

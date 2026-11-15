@@ -5,10 +5,12 @@ runtime; host scripts are operator tools. For capabilities and credentials, star
 with [README](../README.md). Permanent-host certification is tracked separately in
 [the deployment backlog](deployment-backlog.md).
 
-Current milestone: **v0.5.6 / M6**, technically qualified and owner-accepted;
-execution remains opt-in and disabled by default. See the
-[implementation and acceptance record](releases/v0.5.6-implementation.md) for
-qualified identities, CI evidence and limits. Package metadata remains `0.5.3`.
+Current milestone: **v0.5.7 / M7**, qualified and owner-accepted; execution
+remains opt-in and disabled by default. See the
+[implementation and acceptance record](releases/v0.5.7-implementation.md) for
+qualified identities, exact CI, genuine capture evidence and limits. Package
+metadata remains `0.5.3`. The later documentation revision changes README/image
+provenance: verify a new source/image pair before deploying that checkout.
 
 ## Container deployment
 
@@ -95,7 +97,7 @@ scripts/service/sleep.sh
 Services use `restart: "no"`. After reboot, inspect status and wake manually.
 Never start a second poller or use plain `hermes gateway` to bypass the guards.
 
-For profiles explicitly enrolled in v0.5.6 supervision, sleep/down first commits
+For profiles explicitly enrolled in project supervision, sleep/down first commits
 a profile-wide sleep fence. New Scout, coder and reviewer admissions then refuse;
 an already admitted stage retains its original bounded allowance. Active,
 uncertain or uninspectable project work refuses sleep before any service stops,
@@ -197,6 +199,85 @@ The normal stopped-profile update adds the empty allowlist to older stock
 profiles and refuses an existing nonempty allowlist. No live profile is modified
 by implementation tests.
 
+### Verified result capture (v0.5.7)
+
+Use only after a separately authorized task has a genuine verified coder/check
+result and an independent approving review. The applied spec, original task and
+review-run IDs must match the current source/image/catalogue/repository evidence;
+`done` alone, a baseline SHA or model prose is insufficient. Obtain the exact IDs
+from the original native task/review evidence and owner-private status; never
+infer the latest review or reuse demonstration IDs.
+
+In your configured owner's private bot chat, send:
+
+```text
+/project capture <applied-spec-proposal-id> <native-task-id> <review-run-id>
+```
+
+Include all three IDs, including the numeric review-run ID. This requests a
+preview only. It launches no worker and applies no note. Capture resolves the
+original bound note and reads its current content. If the task line cannot be
+selected uniquely, resend with a second literal line:
+
+```text
+/project capture <applied-spec-proposal-id> <native-task-id> <review-run-id>
+anchor: <one exact existing task line including checkbox and block ID>
+```
+
+Use one existing complete `- [ ] ...` / `- [x] ...` task line, not a path or new
+heading. There must be exactly one matching line. The result detail is added
+beneath it without changing task state or unrelated content. Current output names
+artifact/diff/check evidence and explicitly retains fixed Monty qualification
+limits; no task result Git commit is produced.
+
+Review the **complete** delivered preview. Pause Obsidian, synchronization and
+other vault writers, then send a separate exact approval using the values from
+that preview:
+
+```text
+/apply <capture-proposal-id> writers-paused <approval-digest-prefix>
+```
+
+Use the displayed 16-character digest prefix or the transport's exact Accept
+instruction. Earlier setup/execution/capture authorization is not this approval.
+Incomplete delivery, wrong bindings, stale revision, changed evidence or a missing
+writer-pause assertion cannot publish. Generic `/revise` cannot rewrite a verified
+capture into model-authored result prose.
+
+To reject the draft, use its rejection control or
+`/reject <capture-proposal-id> <approval-digest-prefix>`. Repeating ordinary
+capture returns the existing pending proposal or terminal outcome; it does not
+reopen rejection/expiry. For a genuinely fresh preview after a closed rejected,
+expired, stale or `not_applied` generation, send a **new** authenticated message:
+
+```text
+/project capture-new <applied-spec-proposal-id> <native-task-id> <review-run-id>
+/project capture-status <applied-spec-proposal-id> <native-task-id> <review-run-id>
+```
+
+These are separate commands: `capture-new` requests renewal; `capture-status`
+only inspects existing linkage/outcome. Renewed content needs a fresh exact
+approval. An applied result returns its historical receipt even after a later
+human edit; it does not restore old note bytes or create another result.
+
+After approval, distinguish `applied` from `index_pending`. Saved-note publication
+is not repeated to repair indexing: use the existing indexed-read/recovery path
+and confirm indexed readback separately. For `prepared`, `not_applied`,
+`quarantined` or uncertainty, preserve receipts, current note and original
+artifacts and investigate before any new request. Never edit journal rows or
+replay workers to clear a capture refusal.
+
+New profiles include capture linkage. If an existing profile reports
+`Explicit proposal schema upgrade required before capture.`, stop intake and all
+project stages, take a complete stopped backup and approve the narrow schema
+upgrade. The existing operator API is `emuru.deployment.upgrade_proposals` (module
+command `python -m emuru.deployment proposal-upgrade`, with `HERMES_HOME` set to
+the selected profile **inside the verified maintenance container**). It preserves
+a private journal backup and accepts only known old schemas. This is not a
+`container.py` subcommand or an instruction to run the application on the host.
+Do not reinitialize a profile, delete linkage or force an old image to accept new
+state. Permanent-host migration/activation still requires its separate plan.
+
 ### Read-only repository scout (v0.5.3)
 
 Scout execution is an explicit local owner action. Telegram tracking and note
@@ -263,7 +344,7 @@ The same archived grant is never re-executed. No automatic expiry/reclaim, retri
 dispatcher is enabled. A handled failure blocks its exact run. A killed runner
 can leave an uncertain native run even after the bounded worker has exited.
 Do not edit SQLite, reuse stale run IDs or mark code complete to clear the block.
-Full hold/continue/recovery controls belong to M6.
+For opt-in hold/continue/cancel, see [project supervision](#project-supervision-v056); uncertain effects still require proven cleanup.
 
 Disposable acceptance (no real profile/vault or provider needed):
 
@@ -273,7 +354,7 @@ uv run --frozen python scripts/hermes/scout-check.py
 
 ### Bounded operator-run coding
 
-The inherited M4 path remains available in v0.5.6.
+The inherited M4 path remains available in v0.5.7.
 Use only under separate task execution authorization, as an unprivileged
 Docker-capable operator. The default Telegram profile cannot start coding.
 An approved note alone never grants repository access or execution authority.
@@ -337,7 +418,7 @@ zero exit never proves unittest completion or native/Monty equivalence.
 `tests_failed` records a verified failing check; `blocked` records a refused or
 failed attempt. Unproven identities, artifacts or process stop remain `uncertain`.
 The owner must inspect the diff, broader correctness and independent review;
-publication and later vault note capture require separate authority.
+publication and verified-result capture require separate authority and exact note approval.
 
 Repeat launch only inspects the existing attempt; it never retries work. After a
 crash, preserve the complete stopped profile and artifacts. An expired lease,
@@ -352,7 +433,7 @@ General retry/retention controls remain outside this increment.
 
 ### Disposable integrated coding qualification
 
-The inherited M5 review/rework path remains available in v0.5.6.
+The inherited M5 review/rework path remains available in v0.5.7.
 Review is explicitly enabled per private grant:
 schema `2` adds `review` equal to `emuru.projects.reviewer.authority()` (schema,
 enabled=true, current checklist digest). All original grant fields and limits
@@ -505,7 +586,7 @@ The bounded project allowance is one Scout, two coders/two reviewers and 1,920
 reserved seconds, with the original 1,800-second coder/reviewer loop inside it.
 Metadata is capped at 1 MiB with emergency restriction capacity. Status reports
 reservations, not measured consumption or a guaranteed provider spend ceiling.
-See the [complete resource limits](releases/v0.5.6-implementation.md#resource-qualification-and-limits).
+See the [complete resource limits](releases/v0.5.7-implementation.md#resource-qualification-and-limits).
 
 ## Troubleshooting and recovery
 
@@ -515,6 +596,7 @@ See the [complete resource limits](releases/v0.5.6-implementation.md#resource-qu
 | Cloud failure | Restore the selected provider/key/connectivity. There is no automatic local fallback or request replay. |
 | Empty vault results | Check the saved target and allowed roots. Do not copy fixtures into the real vault or broaden access. |
 | `saved; indexing pending` / `index_pending` | Keep the saved note. The next indexed read attempts repair; do not repeat the write. |
+| Capture refused | Verify all three exact IDs, current evidence/source/image and policy. Missing or changed proof cannot be repaired by editing receipts. |
 | Stale proposal | Read the current note and obtain a fresh preview and approval. |
 | `not_applied`, `quarantined` or uncertain delivery | Inspect current note bytes and durable receipts before any new request. Do not reset the queue or edit the journal. |
 | Unauthorized Telegram access | Verify the numeric owner ID and private chat. Groups and media are unsupported. |
@@ -573,6 +655,6 @@ uv run --frozen python scripts/hermes/container-check.py
 It requires Docker, pinned infrastructure images and a built acceptance image
 (`emuru:latest` or `EMURU_TEST_IMAGE`); see [CI](../.github/workflows/ci.yml) for preparation.
 It owns the native suite and wake/update/rollback drill; do not also run `wake-check.py`
-in the same pass. Live provider checks are opt-in. Local qualification is deferred.
+in the same pass. Live provider checks are opt-in. Current accepted qualification and its exact identities are recorded in the [implementation report](releases/v0.5.7-implementation.md); routine tests do not renew it.
 MCP integration tests need local socket IPC; sandbox `EPERM` requires a permitted
 rerun, not increased timeouts or skipped tests.

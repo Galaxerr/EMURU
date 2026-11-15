@@ -4,16 +4,17 @@ EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately
 with your Telegram bot to find notes, follow links, save Inbox notes, and review
 proposed project or task changes. Conversation history persists across restarts.
 
-**v0.5.6: M6 implementation and acceptance complete.** Technical qualification,
-owner acceptance and recorded local/hosted CI passed for the qualified candidate.
-See the [consolidated implementation and acceptance record](docs/releases/v0.5.6-implementation.md)
-for exact identities, evidence and limits. Package metadata remains `0.5.3`.
+**v0.5.7: M7 implementation and acceptance complete.** Verified code results can
+now become an exact, owner-approved update to the original project note. Capture
+requires an explicit private command, independently verified evidence, a complete
+preview and a separate approval. Duplicate requests reuse proposals or receipts;
+stale notes, changed evidence and uncertain outcomes refuse unsafe writes.
 
-v0.5.6 adds opt-in project supervision: read-only status, owner hold/continue/cancel,
-shared Scout/coder/reviewer limits, durable stop evidence and service lifecycle
-fences. Enrollment and controls launch nothing. Execution stays disabled by default;
-operators still supply explicit grants and invoke bounded work. Independent review
-and one freshly authorized rework remain on the original task card.
+See the [consolidated implementation and acceptance record](docs/releases/v0.5.7-implementation.md)
+for the qualified commit, source/image identities, CI, genuine owner/model evidence
+and limits. These identities precede the later documentation consolidation; README
+is a build input, so the edited checkout needs its own image verification before
+future deployment. Package metadata remains `0.5.3`.
 
 The runtime remains Docker-only and cloud-primary-only. Inference uses an
 authenticated LiteLLM gateway with one cloud attempt and no automatic local
@@ -35,7 +36,7 @@ fallback. Permanent-host production certification is a separate milestone.
 - Qualify one separately authorized coding task with a private immutable grant,
   selected-file workspace and authenticated status. See the
   [coder runbook](docs/RUNBOOK.md#bounded-operator-run-coding).
-  Vault result capture remains future work.
+  Capture verified, independently reviewed output through the separate flow below.
 - With explicit review authority, require independent review before verified local
   completion. Findings can request changes or block unsafe work. Authorize at most
   one rework on the same card; a second rejection is terminal. Repeated launches
@@ -45,6 +46,10 @@ fallback. Permanent-host production certification is a separate milestone.
   hold, continue or cancel. Hold permits an admitted stage to drain; continue
   launches nothing; cancel preserves uncertainty until stop is proven. See
   [project supervision](docs/RUNBOOK.md#project-supervision-v056).
+- Capture a verified result beside its existing task using `/project capture`;
+  approve exact note bytes separately. Rejection, stale edits, expiry, restart and
+  indexing failure preserve the note/evidence without duplicate publication. See
+  [verified result capture](docs/RUNBOOK.md#verified-result-capture-v057).
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
@@ -70,11 +75,13 @@ ${EDITOR:-nano} .env
 Set `TELEGRAM_BOT_TOKEN`, `EMURU_TELEGRAM_OWNER_ID`, `EMURU_VAULT_PATH` (absolute
 vault path), and the selected provider key in `.env`. Keep it owner-owned and out
 of Git. Groq `openai/gpt-oss-120b` is the development candidate default; Ollama
-Cloud/local, Gemini and OpenAI remain explicitly selectable.
+Cloud, Gemini and OpenAI remain explicitly selectable. A configured local
+candidate does not enable automatic local inference.
 
-Groq is implemented as an explicit candidate through the same gateway, but is
-**not promoted** pending native qualification. See the
-[qualification status](docs/DEVELOPMENT.md) before selecting it.
+The accepted v0.5.7 disposable qualification used Groq with genuine coding,
+fixed checks and independent review. Full native check generation and native/Monty
+equivalence remain unverified; this does not promote a route or activate an
+existing deployment. See [qualification scope](docs/releases/v0.5.7-implementation.md#remaining-limits-and-future-decisions).
 
 For a **new installation**, follow [container deployment](docs/RUNBOOK.md#container-deployment)
 to select the route, initialize private state and install guidance. Existing
@@ -97,7 +104,9 @@ automatically after reboot; inspect status and wake explicitly.
 
 Review the complete proposal, then pause Obsidian, synchronization and other vault
 writers before choosing Accept. Reject or reply with edits to change the proposal.
-Commands are available when replying or using buttons is inconvenient:
+For verified-result capture, use the exact preview approval instruction; a fresh
+`capture-new` flow replaces generic revision. Commands for ordinary proposals are
+available when replying or using buttons is inconvenient:
 
 ```text
 /apply <proposal-id> writers-paused
@@ -128,7 +137,8 @@ runtime, gateway, lifecycle and rollback without a live Telegram poller.
 
 - [RUNBOOK](docs/RUNBOOK.md): setup, daily operation and troubleshooting.
 - [ARCHITECTURE](docs/ARCHITECTURE.md): repository map, state and safety boundaries.
-- [v0.5.6 implementation](docs/releases/v0.5.6-implementation.md): supervision,
-  independent review, final acceptance, exact CI evidence and retained limitations.
-- [Milestone roadmap](docs/plans/EMURU-v0.6.0-implementation-plan.md): completed M1–M6 and future M7–M9.
+- [v0.5.7 implementation](docs/releases/v0.5.7-implementation.md): verified-result
+  capture, inherited supervision, final acceptance, exact evidence and limits.
+- [Development verification](docs/DEVELOPMENT.md): offline checks and qualification boundaries.
+- [Milestone roadmap](docs/plans/EMURU-v0.6.0-implementation-plan.md): completed M1–M7 and future M8–M9.
 - [Deployment backlog](docs/deployment-backlog.md): future permanent-host setup and recovery tooling.
