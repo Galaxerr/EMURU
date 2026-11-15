@@ -228,6 +228,9 @@ def test_native_transport_requires_protocol_daemon_and_cleanup_evidence(
         )
         assert result["success"] is (mode == "normal")
         assert result["native_lifecycle"]["removed"] is True
+        if mode == "cancelled":
+            assert result["error"] == "coder_cancelled"
+            assert "model_calls" not in result
     else:
         with pytest.raises((ValueError, RuntimeError, TimeoutError)):
             coder_inference.run_inference(

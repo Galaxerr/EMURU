@@ -329,7 +329,8 @@ def run_inference(
             "native_lifecycle": lifecycle,
         }
         outcome["output_bytes"] = received
-        outcome["model_calls"] = final.get("model_calls")
+        if "model_calls" in final:
+            outcome["model_calls"] = final["model_calls"]
         if review and final["success"]:
             outcome["verdict"] = final["verdict"]
             outcome["model_calls"] = final["model_calls"]

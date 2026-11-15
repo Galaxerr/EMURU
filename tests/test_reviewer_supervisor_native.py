@@ -191,7 +191,12 @@ def test_review_crash_cancel_never_replays_and_recovers_only_complete_proof(
         if window in {"kill-review", "cancel-review"}:
             limit = time.monotonic() + 90
             while time.monotonic() < limit:
-                assert process.is_alive()
+                assert process.is_alive(), json.loads(
+                    (
+                        coder_board.attempt_path(fixture["home"], fixture["grant"])
+                        / "evidence.json"
+                    ).read_text()
+                )["native"]
                 with supervisor._locked(fixture["home"]) as (directory, size, marker):
                     records, _ = supervisor._records(directory, size, marker)
                 if any(
