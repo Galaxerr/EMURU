@@ -281,6 +281,143 @@ def upgrade_proposals(home):
         return {"state_changed": True, "backup": backup}
 
 
+def upgrade_continuation(home, root=None):
+    """Explicit stopped upgrade; retain byte-exact legacy backup and recovery marker."""
+    from emuru.projects import supervisor
+    from emuru.projects.coder_board import _write_new
+    from emuru.projects.dispatcher import dispatcher_lock
+    from emuru.projects.scout import encoded
+    from emuru.projects.supervisor_lifecycle import inspect_idle
+    from emuru.vault import mutations
+
+    home = Path(home)
+    root = root or Path(__file__).resolve().parents[2]
+    folder = home / "emuru-projects"
+    with stopped_profile(home):
+        if not folder.exists():
+            folder.mkdir(mode=0o700)
+        with dispatcher_lock(home):
+            if not supervisor.enabled(home):
+                if set(os.listdir(folder)) - {"scout.lock", "binder.lock"}:
+                    inspect_idle(home, root, [])
+                supervisor._initialize(home)
+            with supervisor._locked(home, write=True) as (parent, size, old):
+                previous = old
+                records, size = supervisor._records(parent, size, old)
+                # An empty never-launched profile has no native database to inspect.
+                empty = not records and set(os.listdir(folder)) <= {
+                    "scout.lock",
+                    "binder.lock",
+                    "supervisor",
+                    "supervisor-enabled.json",
+                    "continuation-backup.json",
+                    "continuation-upgrade.json",
+                }
+                if not empty:
+                    inspect_idle(home, root, records)
+                backup_path = folder / "continuation-backup.json"
+                recovery_path = folder / "continuation-upgrade.json"
+                if recovery_path.exists():
+                    recovery = json.loads(_private_file(recovery_path))
+                    backup_data = _private_file(backup_path)
+                    if (
+                        set(recovery) != {"schema", "backup_sha256", "old", "new"}
+                        or recovery["schema"] != 1
+                        or hashlib.sha256(backup_data).hexdigest()
+                        != recovery["backup_sha256"]
+                    ):
+                        raise ValueError("Unknown continuation upgrade recovery state.")
+                    if old["schema"] == supervisor.CONTINUATION_SCHEMA:
+                        if any(
+                            old[k] != recovery["new"][k]
+                            for k in ("schema", "legacy_generation", "legacy_head")
+                        ):
+                            raise ValueError("Continuation upgrade prefix mismatch.")
+                    elif old != recovery["old"]:
+                        raise ValueError("Continuation upgrade old state mismatch.")
+                    new = recovery["new"]
+                    previous = recovery["old"]
+                    if new != {
+                        **previous,
+                        "schema": supervisor.CONTINUATION_SCHEMA,
+                        "legacy_generation": previous["generation"],
+                        "legacy_head": previous["head"],
+                    }:
+                        raise ValueError(
+                            "Unknown continuation upgrade marker transition."
+                        )
+                else:
+                    if old["schema"] != supervisor.STATE_SCHEMA:
+                        raise ValueError(
+                            "Continuation upgrade recovery marker missing."
+                        )
+                    historical = {
+                        name: _private_file(folder / "supervisor" / name).decode()
+                        for name in sorted(os.listdir(parent))
+                    }
+                    backup_data = encoded(
+                        {"schema": 1, "marker": old, "files": historical}
+                    )
+                    if backup_path.exists():
+                        if _private_file(backup_path) != backup_data:
+                            raise ValueError("Continuation upgrade backup mismatch.")
+                    else:
+                        _write_new(folder, backup_path.name, backup_data)
+                    new = {
+                        **old,
+                        "schema": supervisor.CONTINUATION_SCHEMA,
+                        "legacy_generation": old["generation"],
+                        "legacy_head": old["head"],
+                    }
+                    supervisor._records(
+                        parent,
+                        size - sum(len(v.encode()) for v in historical.values()),
+                        new,
+                    )
+                    _write_new(
+                        folder,
+                        recovery_path.name,
+                        encoded(
+                            {
+                                "schema": 1,
+                                "old": old,
+                                "new": new,
+                                "backup_sha256": hashlib.sha256(
+                                    backup_data
+                                ).hexdigest(),
+                            }
+                        ),
+                    )
+                backup = json.loads(_private_file(backup_path))
+                if (
+                    set(backup) != {"schema", "marker", "files"}
+                    or backup["schema"] != 1
+                    or backup["marker"] != previous
+                    or set(backup["files"])
+                    != {
+                        "control.lock",
+                        *(
+                            f"{i:08d}.json"
+                            for i in range(1, previous["generation"] + 1)
+                        ),
+                    }
+                ):
+                    raise ValueError("Continuation backup marker mismatch.")
+                for name, data in backup["files"].items():
+                    if _private_file(folder / "supervisor" / name).decode() != data:
+                        raise ValueError("Continuation historical bytes changed.")
+                if old["schema"] == supervisor.CONTINUATION_SCHEMA:
+                    return {"state_changed": False, "backup": str(backup_path)}
+                write_private(folder / "supervisor-enabled.json", encoded(new).decode())
+                with mutations.directory(folder) as directory:
+                    os.fsync(directory)
+                return {
+                    "state_changed": True,
+                    "backup": str(backup_path),
+                    "legacy_head": new["legacy_head"],
+                }
+
+
 def _sync_profile(root, home, *, apply=False):
     """Only reviewed stock guidance and compatible managed registration may change."""
     import yaml
@@ -355,6 +492,7 @@ def main():
             "profile-check",
             "profile-sync",
             "proposal-upgrade",
+            "continuation-upgrade",
             "rollback-check",
         ),
     )
@@ -377,6 +515,8 @@ def main():
         if result["profile_changed"] or result["guidance_changed"]:
             raise SystemExit("Rollback requires matching managed profile and guidance")
         print(json.dumps(result))
+    elif args.command == "continuation-upgrade":
+        print(json.dumps(upgrade_continuation(profile.profile_home(), root)))
     elif args.command == "proposal-upgrade":
         print(json.dumps(upgrade_proposals(profile.profile_home())))
     else:

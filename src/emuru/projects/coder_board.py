@@ -226,6 +226,16 @@ def authorize(
         card = kb.get_task(db, task_id)
         binding = json.loads(card.body) if card else {}
         task = binding.get("task")
+        if run_id is None and not capture and not review:
+            from emuru.projects.continuation import _records
+
+            if any(
+                r["kind"] == "task-binding" and r["task"] == task_id
+                for r in _records(home)
+            ):
+                raise ValueError(
+                    "Continuation execution requires the later batch-authority implementation."
+                )
         approved_tasks = board.spec_tasks(preview["content"])
         if (
             card is None

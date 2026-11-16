@@ -442,7 +442,8 @@ class NativeTelegram:
             raise ValueError("Owner-private admission required.")
         from emuru.projects.results import is_capture_status
 
-        if not is_capture_status(text):
+        inspecting = command == "/project" and text.split()[1:2] == ["inspect"]
+        if not is_capture_status(text) and not inspecting:
             mutations.expire_proposals(home, vault)
             mutations.note_owner_activity(home, vault, owner, bot, uid)
         if command == "/reject":
@@ -554,10 +555,16 @@ class NativeTelegram:
                         result = str(error)
                     except OSError:
                         result = "Project request refused. Check the applied spec receipt, current note, bound vault, and pinned board contract. Use /project track <applied-spec-proposal-id> or /project status <applied-spec-proposal-id>."
-                    for offset in range(0, len(result), 3500):
-                        await self._app.bot.send_message(
-                            chat_id=owner, text=result[offset : offset + 3500]
-                        )
+                    parts = (
+                        mutations.message_parts(result, label="Project")
+                        if text.split()[1:2] in (["inspect"], ["bind"])
+                        else [
+                            result[offset : offset + 3500]
+                            for offset in range(0, len(result), 3500)
+                        ]
+                    )
+                    for part in parts:
+                        await self._app.bot.send_message(chat_id=owner, text=part)
                 mutations.finish_request(home, identity)
                 return TurnResult(True)
             if command in {"/apply", "/cancel"}:

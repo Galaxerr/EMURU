@@ -658,3 +658,25 @@ It owns the native suite and wake/update/rollback drill; do not also run `wake-c
 in the same pass. Live provider checks are opt-in. Current accepted qualification and its exact identities are recorded in the [implementation report](releases/v0.5.7-implementation.md); routine tests do not renew it.
 MCP integration tests need local socket IPC; sandbox `EPERM` requires a permitted
 rerun, not increased timeouts or skipped tests.
+
+### Continuation inspection and binding (v0.5.8 Ticket 01)
+
+Use `/project inspect <applied-spec-proposal-id>` or append an explicit comma-separated
+selection of approved task labels. Inspection reads snapshots, displays exact task
+contracts, anchors, historical mappings and dependencies, and returns the complete
+`/project bind <proposal> <labels> <selection-token>` command. Bind confirms those
+exact bytes; changed note scope requires a new approved specification. Unique legacy
+anchors require this explicit confirmation and are never rewritten with invented IDs.
+
+Before binding, stop the profile and its workers using the existing sleep/stop
+workflow, then run `uv run --frozen python -m emuru.deployment continuation-upgrade`
+in the selected profile environment. The command checks idle ownership, retains
+`emuru-projects/continuation-backup.json` and its exact upgrade recovery marker,
+and preserves historical ledger records. Startup never migrates state. Keep the
+backup and recovery marker; older executors must refuse this profile.
+
+Repeat the original authenticated bind after an interrupted write; only missing
+cards, edges and receipts are filled. Inspection and restart never repair state.
+Cards stay blocked. Binding allocates no allowance and launches no worker. Continued
+execution remains refused until the later batch-authority tickets are implemented.
+Native done/archived and a checked note line never establish verified completion.

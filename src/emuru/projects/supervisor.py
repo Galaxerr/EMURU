@@ -12,6 +12,7 @@ from emuru.projects.scout import digest, encoded
 from emuru.vault import mutations
 
 STATE_SCHEMA = 1
+CONTINUATION_SCHEMA = 2
 METADATA_BYTES = 1024 * 1024
 RECEIPT_BYTES = 4096
 EMERGENCY_BYTES = 4096
@@ -80,9 +81,14 @@ def _locked(home, *, write=False):
                 marker, _ = _read(profile, "supervisor-enabled.json")
             if (
                 not isinstance(marker, dict)
-                or set(marker) != {"schema", "generation", "head"}
+                or set(marker)
+                != (
+                    {"schema", "generation", "head", "legacy_generation", "legacy_head"}
+                    if marker.get("schema") == CONTINUATION_SCHEMA
+                    else {"schema", "generation", "head"}
+                )
                 or type(marker["schema"]) is not int
-                or marker["schema"] != STATE_SCHEMA
+                or marker["schema"] not in {STATE_SCHEMA, CONTINUATION_SCHEMA}
                 or type(marker["generation"]) is not int
                 or marker["generation"] < 0
             ):
@@ -95,6 +101,9 @@ def _locked(home, *, write=False):
 def _records(parent, size, marker):
     names = sorted(os.listdir(parent))
     records = []
+    legacy = marker.get("legacy_generation", marker["generation"])
+    if type(legacy) is not int or not 0 <= legacy <= marker["generation"]:
+        raise ValueError("Invalid supervisor legacy prefix.")
     for name in names:
         if name == "control.lock":
             continue
@@ -106,14 +115,26 @@ def _records(parent, size, marker):
             size > METADATA_BYTES
             or type(value) is not dict
             or type(value.get("schema")) is not int
-            or value.get("schema") != STATE_SCHEMA
+            or value.get("schema")
+            != (STATE_SCHEMA if len(records) < legacy else CONTINUATION_SCHEMA)
             or type(value.get("generation")) is not int
             or value.get("generation") != len(records) + 1
             or value.get("previous") != (digest(records[-1]) if records else None)
             or name != f"{len(records) + 1:08d}.json"
         ):
             raise ValueError("Supervisor metadata schema, history or capacity invalid.")
-        if value.get("kind") == "project":
+        if value.get("kind") in {
+            "binding-intent",
+            "task-binding",
+            "dependency-binding",
+            "binding-complete",
+        }:
+            if value["schema"] != CONTINUATION_SCHEMA:
+                raise ValueError("Continuation record requires stopped upgrade.")
+            from emuru.projects.continuation import validate_record
+
+            validate_record(value, records)
+        elif value.get("kind") == "project":
             if (
                 set(value)
                 != {"schema", "kind", "generation", "previous", "project", "reserved"}
@@ -222,6 +243,10 @@ def _records(parent, size, marker):
             ):
                 raise ValueError("Invalid supervisor binding identity.")
         records.append(value)
+    if marker["schema"] == CONTINUATION_SCHEMA and marker["legacy_head"] != (
+        digest(records[legacy - 1]) if legacy else None
+    ):
+        raise ValueError("Supervisor legacy prefix changed; preserve newest state.")
     if marker["generation"] != len(records) or marker["head"] != (
         digest(records[-1]) if records else None
     ):
@@ -230,6 +255,10 @@ def _records(parent, size, marker):
         )
     from emuru.projects.supervisor_scout import metadata_pending
 
+    if marker["schema"] == CONTINUATION_SCHEMA:
+        from emuru.projects.continuation import manifest_bytes
+
+        size += manifest_bytes(Path(os.readlink(f"/proc/self/fd/{parent}")).parents[1])
     if size + metadata_pending(records) > METADATA_BYTES:
         raise ValueError(
             "Supervisor metadata and committed lifecycle reservations exceed capacity."
@@ -278,8 +307,10 @@ def _initialize(home):
 def _append(folder, records, size, value, *, emergency=False):
     from emuru.projects.coder_board import _write_new
 
+    with mutations.directory(folder.parent) as parent:
+        marker, _ = _read(parent, "supervisor-enabled.json")
     value = {
-        "schema": STATE_SCHEMA,
+        "schema": marker["schema"],
         "generation": len(records) + 1,
         "previous": digest(records[-1]) if records else None,
         **value,
@@ -289,6 +320,17 @@ def _append(folder, records, size, value, *, emergency=False):
 
         if value["kind"] in {"coder-stage", "reviewer-stage"}:
             from emuru.projects.supervisor_coder import validate_record
+        validate_record(value, records)
+    if value["kind"] in {
+        "binding-intent",
+        "task-binding",
+        "dependency-binding",
+        "binding-complete",
+    }:
+        if value["schema"] != CONTINUATION_SCHEMA:
+            raise ValueError("Continuation record requires stopped upgrade.")
+        from emuru.projects.continuation import validate_record
+
         validate_record(value, records)
     data = encoded(value)
     from emuru.projects.supervisor_scout import metadata_pending
@@ -314,7 +356,8 @@ def _append(folder, records, size, value, *, emergency=False):
         folder.parent / "supervisor-enabled.json",
         encoded(
             {
-                "schema": STATE_SCHEMA,
+                **marker,
+                "schema": marker["schema"],
                 "generation": value["generation"],
                 "head": digest(value),
             }

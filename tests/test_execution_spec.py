@@ -246,3 +246,124 @@ async def test_missing_policy_exposes_no_proposal_or_execution(tmp_path, spec):
             )
         ).is_error
     assert not list((vault / "10_Projects").iterdir())
+
+
+def test_continuation_binding_dependency_roundtrip_and_contracts(spec):
+    from emuru.projects.spec import task_contracts
+
+    spec["unresolved_decisions"] = []
+    spec["tasks"].append(
+        {
+            "id": "finish",
+            "description": "Finish integration",
+            "acceptance": [{"command": "check", "expected_result": "Pass"}],
+            "depends_on": ["sum"],
+        }
+    )
+    content = spec_markdown(spec)
+    assert "  - Depends on: sum\n" in content
+    assert spec_tasks(content) == spec["tasks"]
+    contracts = task_contracts(content)
+    assert contracts["finish"]["contract"]["dependencies"] == [
+        ["task-sum-prices-sum", contracts["sum"]["contract_digest"]]
+    ]
+    assert task_contracts(content + "\nUnrelated human prose.\n") == contracts
+    spec["tasks"][0]["acceptance"][0]["expected_result"] = "Changed requirement"
+    changed = task_contracts(spec_markdown(spec))
+    assert all(
+        changed[key]["contract_digest"] != contracts[key]["contract_digest"]
+        for key in contracts
+    )
+
+
+@pytest.mark.parametrize(
+    "dependencies", [["missing"], ["sum"], ["finish", "finish"], True, "finish"]
+)
+def test_continuation_binding_invalid_dependencies(spec, dependencies):
+    spec["tasks"].append(
+        {
+            "id": "finish",
+            "description": "Finish integration",
+            "acceptance": [{"command": "check", "expected_result": "Pass"}],
+        }
+    )
+    spec["tasks"][0]["depends_on"] = dependencies
+    with pytest.raises(ValueError):
+        spec_markdown(spec)
+
+
+def test_continuation_binding_cycle_and_dependency_grammar(spec):
+    spec["tasks"].append(
+        {
+            "id": "finish",
+            "description": "Finish integration",
+            "acceptance": [{"command": "check", "expected_result": "Pass"}],
+            "depends_on": ["sum"],
+        }
+    )
+    content = spec_markdown(spec)
+    for malformed in (
+        content.replace("  - Depends on: sum", "  - Depends on: sum, sum"),
+        content.replace("  - Depends on: sum", "  - Depends on: missing"),
+        content.replace(
+            "  - Depends on: sum", "  - Depends on: sum\n  - Depends on: sum"
+        ),
+        content.replace(
+            "  - Depends on: sum",
+            "  - Depends on: sum\n  - Planned check: late; expected: Pass",
+        ),
+    ):
+        with pytest.raises(ValueError):
+            spec_tasks(malformed)
+    spec["tasks"][0]["depends_on"] = ["finish"]
+    with pytest.raises(ValueError):
+        validate_spec(spec)
+
+
+def test_continuation_binding_contract_scope_and_ambiguity(spec):
+    from emuru.projects.spec import task_contracts
+
+    spec["unresolved_decisions"] = []
+    content = spec_markdown(spec)
+    contract = task_contracts(content)["sum"]["contract"]
+    assert contract == {
+        "logical_key": "task-sum-prices-sum",
+        "description": spec["tasks"][0]["description"],
+        "acceptance": spec["tasks"][0]["acceptance"],
+        "goal": spec["goal"],
+        "repository": None,
+        "constraints": ["Python standard library only"],
+        "security_restrictions": ["No secrets or network access"],
+        "non_goals": ["No payments or deployment"],
+        "dependencies": [],
+    }
+    assert task_contracts(content.replace("\n", "\r\n")) == task_contracts(content)
+    for malformed in (
+        content.replace("## Goals\n", "## Goals\n## Goals\n"),
+        content.replace(
+            "- Target repository: unresolved",
+            "- Target repository: unresolved\n- Target repository: other",
+        ),
+        content.replace(
+            "## Results", "- Unresolved decision: Needs owner\n\n## Results"
+        ),
+    ):
+        with pytest.raises(ValueError):
+            task_contracts(malformed)
+
+
+def test_continuation_binding_dependency_render_order(spec):
+    spec["tasks"].extend(
+        [
+            {
+                "id": name,
+                "description": name,
+                "acceptance": [{"command": "check", "expected_result": "Pass"}],
+            }
+            for name in ("second", "third")
+        ]
+    )
+    spec["tasks"][2]["depends_on"] = ["sum", "second"]
+    content = spec_markdown(spec)
+    assert "  - Depends on: second, sum\n" in content
+    assert spec_tasks(content)[2]["depends_on"] == ["second", "sum"]

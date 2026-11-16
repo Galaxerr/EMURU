@@ -38,12 +38,27 @@ def spec_tasks(content):
         check = re.fullmatch(
             r"  - Planned check: (.{1,1000}); expected: (.{1,1000})", line
         )
+        dependencies = re.fullmatch(
+            r"  - Depends on: ([a-z][a-z0-9-]{0,63}(?:, [a-z][a-z0-9-]{0,63})*)", line
+        )
         if task:
             tasks.append({"id": task[2], "description": task[1], "acceptance": []})
-        elif check and tasks and line.count("; expected:") == 1:
+        elif (
+            check
+            and tasks
+            and line.count("; expected:") == 1
+            and "depends_on" not in tasks[-1]
+        ):
             tasks[-1]["acceptance"].append(
                 {"command": check[1], "expected_result": check[2]}
             )
+        elif (
+            dependencies
+            and tasks
+            and tasks[-1]["acceptance"]
+            and "depends_on" not in tasks[-1]
+        ):
+            tasks[-1]["depends_on"] = dependencies[1].split(", ")
         else:
             raise ValueError(
                 "Tasks must use the M1 unchecked task and planned-check format."
@@ -56,6 +71,9 @@ def spec_tasks(content):
         raise ValueError(
             "Spec needs 1..20 unique tasks, each with 1..20 planned checks."
         )
+    from emuru.projects.spec import validate_dependencies
+
+    validate_dependencies(tasks)
     return tasks
 
 
@@ -209,6 +227,10 @@ def project_board_readonly(home, root):
 def project_command(home, vault, root, text, owner, bot):
     """Called only by the admitted owner transport, behind its tools-started fence."""
     fields = text.split()
+    if len(fields) >= 2 and fields[1] in {"inspect", "bind"}:
+        from emuru.projects.continuation import command
+
+        return command(home, vault, root, text, owner, bot)
     if len(fields) >= 2 and fields[1] in {"hold", "continue", "cancel"}:
         from emuru.projects.supervisor_controls import owner_control
 
@@ -263,6 +285,10 @@ def project_command(home, vault, root, text, owner, bot):
             "Approved spec is stale. Approve the current note before tracking."
         )
     tasks = spec_tasks(preview["content"])
+    if creating and any(task.get("depends_on") for task in tasks):
+        raise ValueError(
+            "Dependency tasks require /project inspect and explicit /project bind."
+        )
     context = project_board if creating else project_board_readonly
     with context(home, root) as (kb, db):
         cards = kb.list_tasks(db, tenant=project, include_archived=True)

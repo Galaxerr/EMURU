@@ -460,3 +460,114 @@ def test_project_totals_accept_boundary_refuse_overflow_and_ignore_other_project
     )
     with pytest.raises(ValueError, match="approved ceiling"):
         reserved(records, "project")
+
+
+def test_continuation_binding_upgrade_preserves_legacy_bytes_and_suffix(
+    enrollment, monkeypatch
+):
+    from emuru import deployment
+    from emuru.projects import supervisor_lifecycle
+
+    home, policy, _grant, card = enrollment
+    supervisor.enroll(
+        home, home, ROOT, "coder", policy, card.id, image="sha256:" + "a" * 64
+    )
+    folder = home / "emuru-projects"
+    before = {p.name: p.read_bytes() for p in (folder / "supervisor").iterdir()}
+    old_marker = (folder / "supervisor-enabled.json").read_bytes()
+    monkeypatch.setattr(supervisor_lifecycle, "inspect_idle", lambda *_: None)
+    result = deployment.upgrade_continuation(home, ROOT)
+    assert result["state_changed"] is True
+    backup = json.loads(Path(result["backup"]).read_bytes())
+    assert backup["marker"] == json.loads(old_marker)
+    assert backup["files"] == {k: v.decode() for k, v in before.items()}
+    assert all((folder / "supervisor" / k).read_bytes() == v for k, v in before.items())
+    with supervisor._locked(home, write=True) as (parent, size, marker):
+        records, size = supervisor._records(parent, size, marker)
+        assert marker["schema"] == 2
+        event, _ = supervisor._append(
+            folder / "supervisor",
+            records,
+            size,
+            {"kind": "sleep-fence", "active": True},
+        )
+        assert event["schema"] == 2
+    assert supervisor_lifecycle.snapshot(home)[-1]["active"] is True
+    assert deployment.upgrade_continuation(home, ROOT)["state_changed"] is False
+
+
+@pytest.mark.parametrize("checkpoint", ["backup", "recovery", "published"])
+def test_continuation_binding_upgrade_interruption_resumes(
+    enrollment, monkeypatch, checkpoint
+):
+    from emuru import deployment
+    from emuru.projects import supervisor_lifecycle
+
+    home, policy, _grant, card = enrollment
+    supervisor.enroll(
+        home, home, ROOT, "coder", policy, card.id, image="sha256:" + "a" * 64
+    )
+    folder = home / "emuru-projects"
+    old_marker = (folder / "supervisor-enabled.json").read_bytes()
+    monkeypatch.setattr(supervisor_lifecycle, "inspect_idle", lambda *_: None)
+    deployment.upgrade_continuation(home, ROOT)
+    if checkpoint != "published":
+        (folder / "supervisor-enabled.json").write_bytes(old_marker)
+    if checkpoint == "backup":
+        (folder / "continuation-upgrade.json").unlink()
+    assert deployment.upgrade_continuation(home, ROOT)["state_changed"] is (
+        checkpoint != "published"
+    )
+    assert supervisor_lifecycle.snapshot(home)
+
+
+def test_continuation_binding_upgrade_refuses_active_and_old_executor(
+    enrollment, monkeypatch, tmp_path
+):
+    from emuru import deployment
+    from emuru.projects import supervisor_lifecycle
+
+    home, policy, _grant, card = enrollment
+    supervisor.enroll(
+        home, home, ROOT, "coder", policy, card.id, image="sha256:" + "a" * 64
+    )
+    monkeypatch.setattr(
+        supervisor_lifecycle,
+        "inspect_idle",
+        lambda *_: (_ for _ in ()).throw(ValueError("active worker")),
+    )
+    before = {
+        p: p.read_bytes() for p in (home / "emuru-projects").rglob("*") if p.is_file()
+    }
+    with pytest.raises(ValueError, match="active worker"):
+        deployment.upgrade_continuation(home, ROOT)
+    assert all(p.read_bytes() == data for p, data in before.items())
+    monkeypatch.setattr(supervisor_lifecycle, "inspect_idle", lambda *_: None)
+    deployment.upgrade_continuation(home, ROOT)
+    old = tmp_path / "old"
+    (old / "src/emuru/projects").mkdir(parents=True)
+    (old / "src/emuru/projects/supervisor_lifecycle.py").write_text(
+        "FENCE_SCHEMA = 1\n"
+    )
+    (old / "src/emuru/projects/supervisor.py").write_text("STATE_SCHEMA = 1\n")
+    with pytest.raises(ValueError, match="Continuation state incompatible"):
+        deployment.check_state(home, target_root=old)
+
+
+def test_continuation_binding_upgrade_empty_profile_without_native_database(
+    tmp_path, monkeypatch
+):
+    from emuru import deployment
+    from emuru.projects import supervisor_lifecycle
+
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        supervisor_lifecycle,
+        "inspect_idle",
+        lambda *_: pytest.fail("Empty profile has no board to read"),
+    )
+    result = deployment.upgrade_continuation(home, ROOT)
+    assert result["state_changed"] is True
+    assert not (home / "emuru-projects/kanban.db").exists()
+    assert supervisor_lifecycle.snapshot(home) == []

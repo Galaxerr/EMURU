@@ -2042,3 +2042,42 @@ def test_result_capture_owner_preview_apply_and_evidence_fence(
                 )
 
     asyncio.run(scenario())
+
+
+def test_continuation_binding_inspect_transport_readonly_unicode(
+    boundary, tmp_path, monkeypatch
+):
+    from emuru.projects import board
+    from emuru.vault import mutations
+
+    b = boundary
+    home, vault = tmp_path / "profile", tmp_path / "vault"
+    home.mkdir(mode=0o700)
+    vault.mkdir()
+    b.execution.mutation_target = (home, vault)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Inspection cannot maintain proposal state or invoke a model")
+
+    def inspect(*args):
+        mutations.authenticated_request(home, vault, read_only=True)
+        calls.append(args[3])
+        return "😀" * 4000
+
+    monkeypatch.setattr(mutations, "expire_proposals", forbidden)
+    monkeypatch.setattr(mutations, "note_owner_activity", forbidden)
+    monkeypatch.setattr(board, "project_command", inspect)
+    command = "/project@emuru inspect " + "a" * 32
+    b.queue.stage(7, [raw(1, command)], "emuru")
+    asyncio.run(b.bridge.once())
+    assert calls == [command]
+    assert b.effects == []
+    parts = [
+        data["text"]
+        for endpoint, data in b.network
+        if endpoint == "sendMessage" and "😀" in data.get("text", "")
+    ]
+    assert len(parts) > 1
+    assert sum(part.count("😀") for part in parts) == 4000
+    assert all(len(part.encode("utf-16-le")) // 2 <= 4096 for part in parts)

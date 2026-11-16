@@ -54,6 +54,16 @@ def check_compatible(home, root):
     if not supervisor.enabled(home):
         return
     snapshot(home)
+    with supervisor._locked(home) as (_, _, marker):
+        if marker["schema"] == supervisor.CONTINUATION_SCHEMA:
+            candidate = Path(root) / "src/emuru/projects/supervisor.py"
+            if (
+                not candidate.is_file()
+                or "CONTINUATION_SCHEMA = 2\n" not in candidate.read_text()
+            ):
+                raise ValueError(
+                    "Continuation state incompatible; preserve newest state and refuse rollback."
+                )
     source = Path(root) / "src/emuru/projects/supervisor_lifecycle.py"
     if not source.is_file() or "FENCE_SCHEMA = 1\n" not in source.read_text():
         raise ValueError(
