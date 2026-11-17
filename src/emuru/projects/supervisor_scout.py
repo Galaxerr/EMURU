@@ -88,7 +88,10 @@ def reserved(records, project):
         ):
             for key in total:
                 total[key] += record["reserved"][key]
-    if any(total[k] > PROJECT_LIMITS[k] for k in total):
+    from emuru.projects.continuation_batch import project_limits
+
+    ceilings = project_limits(records, project)
+    if any(total[k] > ceilings[k] for k in total):
         raise ValueError("Project reservation exceeds approved ceiling.")
     return total
 
@@ -411,6 +414,9 @@ def _eligible(records, home, vault, root, policy, task, image):
         raise ValueError(
             "Project Scout budget exhausted: one run already reserved; no refund."
         )
+    from emuru.projects.continuation_batch import require_scout
+
+    require_scout(home, records, enrollment["project"], task, policy)
     return enrollment
 
 
@@ -432,6 +438,14 @@ def reserve(home, vault, root, policy, task, image, worker_grant):
         allowance.update(
             scout_runs=1, active_seconds=120, artifact_bytes=MAX_REPORT_BYTES
         )
+        from emuru.projects.continuation_batch import project_limits
+
+        used = reserved(records, enrollment["project"])
+        if any(
+            used[k] + allowance[k] > project_limits(records, enrollment["project"])[k]
+            for k in used
+        ):
+            raise ValueError("Project Scout budget exhausted; no refund.")
         return supervisor._append(
             Path(home) / "emuru-projects/supervisor",
             records,

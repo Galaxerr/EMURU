@@ -680,3 +680,43 @@ cards, edges and receipts are filled. Inspection and restart never repair state.
 Cards stay blocked. Binding allocates no allowance and launches no worker. Continued
 execution remains refused until the later batch-authority tickets are implemented.
 Native done/archived and a checked note line never establish verified completion.
+
+### Bounded continuation batches (v0.5.8 Ticket 02)
+
+After the stopped-profile upgrade and explicit bind, prepare a private, mode-0600
+batch manifest using the approved specification's exact schema-1 fields. Select
+only already bound contracts/cards; list finite initial/rework attempt caps (1 or
+2), baseline, selected-file scopes, fixed check catalogue and per-stage limits.
+`ceilings` must equal the displayed cumulative consumed C, still-authorized
+unreserved U and new D. Use the current batch digest as `previous_allowance`, or
+null for the first batch. The manifest is bounded to 32 KiB; smaller selections may
+be required by remaining metadata capacity. No new provider or permission is implied.
+
+Use the existing operator CLI and private coder policy as the scope allowlist:
+
+```bash
+uv run --frozen python scripts/hermes/supervisor.py --home "$PROFILE" --vault "$VAULT" --policy "$GRANT" --batch-preview "$MANIFEST"
+uv run --frozen python scripts/hermes/supervisor.py --home "$PROFILE" --vault "$VAULT" --policy "$GRANT" --batch-enroll "$MANIFEST" --expect "$PREVIEW_DIGEST"
+```
+
+Preview reads only. Enrollment checks the exact complete preview, persists immutable
+allowance/task receipts, and launches nothing. Repeat the exact enrollment and digest
+after interrupted publication; status/restart never repairs or replays it. Duplicate
+enrollment returns the original allowance. A later update must compare against the
+current allowance and retain all consumed reservations, task caps and the original
+boot-bound deadline. A second Scout and a third unchanged task attempt are refused.
+
+`/project inspect <proposal>` shows batch digest, control token, spent/remaining
+counters and expiry. The owner can use `/project batch-hold|batch-continue|batch-cancel
+<batch-digest> <control-token>` through the existing private Telegram boundary.
+Hold drains the admitted stage and fences later admissions; cancel requests existing
+exact-identity cleanup and revokes unstarted authority. Continue clears only that
+batch hold after current authority/ownership checks. Per-task restrictions still win;
+continue launches nothing and never renews deadlines or budgets. Tokens change with
+allowance/control changes, not routine worker progress.
+
+Existing initial coder and independent review paths can consume batch membership;
+launch still requires a separate exact single-task grant/enrollment and explicit
+operator command. Schema-4 successor execution remains refused until Ticket 03.
+Pending note approval remains separate from verified execution. No automatic batch
+dispatch, note write or model call follows from preview, enrollment, controls or wake.

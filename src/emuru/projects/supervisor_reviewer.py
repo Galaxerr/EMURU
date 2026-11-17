@@ -60,8 +60,17 @@ def reserve(
                 "Reviewer already attempted; no replacement or deadline reset."
             )
         held_since_admission = any(
-            r["kind"] == "control"
-            and r["enrollment"] == enrollment["generation"]
+            (
+                r["kind"] == "control"
+                and r["enrollment"] == enrollment["generation"]
+                or r["kind"] == "batch-control"
+                and any(
+                    t["kind"] == "batch-task"
+                    and t["allowance"] == r["allowance"]
+                    and t["task"] == grant["task"]
+                    for t in records
+                )
+            )
             and r["action"] == "hold"
             and r["generation"] > coder["generation"]
             for r in records
@@ -91,9 +100,13 @@ def reserve(
             raise ValueError("Prior stage ownership uncertain; no reviewer admission.")
         charge = allowance()
         used = reserved(records, grant["project"])
-        from emuru.projects.supervisor_scout import PROJECT_LIMITS
+        from emuru.projects.continuation_batch import project_limits, require_task
 
-        if any(used[k] + charge[k] > PROJECT_LIMITS[k] for k in charge):
+        require_task(home, records, grant, review=True)
+        if any(
+            used[k] + charge[k] > project_limits(records, grant["project"])[k]
+            for k in charge
+        ):
             raise ValueError("Project review budget exhausted; no refund.")
         started = supervisor.time.monotonic_ns()
         return supervisor._append(

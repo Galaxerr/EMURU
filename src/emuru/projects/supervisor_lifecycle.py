@@ -53,7 +53,15 @@ def check_compatible(home, root):
     """Check newest facts before an executor may synchronize or mutate its profile."""
     if not supervisor.enabled(home):
         return
-    snapshot(home)
+    records = snapshot(home)
+    if any(
+        r["kind"] in {"batch-allowance", "batch-task", "batch-control"} for r in records
+    ):
+        candidate = Path(root) / "src/emuru/projects/continuation_batch.py"
+        if not candidate.is_file() or "def require_task(" not in candidate.read_text():
+            raise ValueError(
+                "Batch state incompatible; preserve newest state and refuse rollback."
+            )
     with supervisor._locked(home) as (_, _, marker):
         if marker["schema"] == supervisor.CONTINUATION_SCHEMA:
             candidate = Path(root) / "src/emuru/projects/supervisor.py"

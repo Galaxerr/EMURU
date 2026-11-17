@@ -233,9 +233,19 @@ def authorize(
                 r["kind"] == "task-binding" and r["task"] == task_id
                 for r in _records(home)
             ):
-                raise ValueError(
-                    "Continuation execution requires the later batch-authority implementation."
+                from emuru.projects.continuation_batch import require_task
+
+                records = _records(home)
+                admitted = any(
+                    r["kind"] == "coder-stage"
+                    and r.get("phase") == "admitted"
+                    and r["grant_sha256"] == digest(grant)
+                    for r in records
                 )
+                if require_task(home, records, grant, admitted=admitted) is None:
+                    raise ValueError(
+                        "Continuation execution requires the later batch-authority implementation."
+                    )
         approved_tasks = board.spec_tasks(preview["content"])
         if (
             card is None

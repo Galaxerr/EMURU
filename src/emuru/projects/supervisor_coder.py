@@ -422,9 +422,12 @@ def reserve(home, vault, root, grant, image):
             for r in records
         ):
             raise ValueError("Coder stage already attempted; no replay.")
+        from emuru.projects.continuation_batch import project_limits, require_task
+
+        batch = require_task(home, records, grant)
         charge = allowance(grant)
         used = reserved(records, grant["project"])
-        if used["coder_runs"] and grant["schema"] != 3:
+        if used["coder_runs"] and grant["schema"] != 3 and batch is None:
             raise ValueError(
                 "Project initial coder already attempted; only separately authorized rework may follow."
             )
@@ -432,7 +435,10 @@ def reserve(home, vault, root, grant, image):
             from emuru.projects.supervisor_reviewer import rework_predecessor
 
             rework_predecessor(records, grant)
-        if any(used[k] + charge[k] > PROJECT_LIMITS[k] for k in charge):
+        if any(
+            used[k] + charge[k] > project_limits(records, grant["project"])[k]
+            for k in charge
+        ):
             raise ValueError("Project coder budget exhausted; no refund.")
         started = supervisor.time.monotonic_ns()
         return supervisor._append(

@@ -61,7 +61,15 @@ def project_control(text):
     return (
         len(fields) >= 2
         and fields[0].split("@")[0] == "/project"
-        and fields[1] in {"hold", "continue", "cancel"}
+        and fields[1]
+        in {
+            "hold",
+            "continue",
+            "cancel",
+            "batch-hold",
+            "batch-continue",
+            "batch-cancel",
+        }
     )
 
 

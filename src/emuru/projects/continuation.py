@@ -823,7 +823,8 @@ def _bind(home, vault, root, preview, owner, bot, selection, token, request, tex
 
 def _facts(home, root, preview, plan):
     """Observational status stays outside task identity and selection tokens."""
-    from emuru.projects.supervisor_scout import PROJECT_LIMITS, reserved
+    from emuru.projects.continuation_batch import project_limits, projection
+    from emuru.projects.supervisor_scout import reserved
 
     records = _records(home)
     consumed = reserved(records, plan["project"])
@@ -831,9 +832,16 @@ def _facts(home, root, preview, plan):
         "Cumulative reserved: " + json.dumps(consumed, sort_keys=True),
         "Remaining project ceiling: "
         + json.dumps(
-            {k: PROJECT_LIMITS[k] - consumed[k] for k in consumed}, sort_keys=True
+            {
+                k: project_limits(records, plan["project"])[k] - consumed[k]
+                for k in consumed
+            },
+            sort_keys=True,
         ),
     ]
+    batch = projection(home, records, plan["project"])
+    if batch is not None:
+        lines.append("Batch: " + json.dumps(batch, sort_keys=True))
     for intent in (
         r
         for r in records

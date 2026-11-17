@@ -134,6 +134,10 @@ def _records(parent, size, marker):
             from emuru.projects.continuation import validate_record
 
             validate_record(value, records)
+        elif value.get("kind") in {"batch-allowance", "batch-task", "batch-control"}:
+            from emuru.projects.continuation_batch import validate_record
+
+            validate_record(value, records)
         elif value.get("kind") == "project":
             if (
                 set(value)
@@ -330,6 +334,10 @@ def _append(folder, records, size, value, *, emergency=False):
         if value["schema"] != CONTINUATION_SCHEMA:
             raise ValueError("Continuation record requires stopped upgrade.")
         from emuru.projects.continuation import validate_record
+
+        validate_record(value, records)
+    if value["kind"] in {"batch-allowance", "batch-task", "batch-control"}:
+        from emuru.projects.continuation_batch import validate_record
 
         validate_record(value, records)
     data = encoded(value)
@@ -545,7 +553,18 @@ def enroll(
                         "reserved": dict.fromkeys(COUNTERS, 0),
                     },
                 )
+            from emuru.projects.continuation_batch import require_task
+
+            if stage == "coder":
+                batch = require_task(home, records, grant)
+            else:
+                from emuru.projects.continuation_batch import require_scout
+
+                batch = require_scout(home, records, project, task, grant)
             started = time.monotonic_ns()
+            deadline = started + seconds * 10**9
+            if batch is not None:
+                deadline = min(deadline, batch["deadline_ns"])
             return _append(
                 folder,
                 records,
@@ -559,7 +578,7 @@ def enroll(
                     "stage": stage,
                     "boot_id": boot_id(),
                     "started_ns": started,
-                    "deadline_ns": started + seconds * 10**9,
+                    "deadline_ns": deadline,
                     "identity": current_identity,
                     "authority": {
                         "owner": grant["owner"] if stage == "coder" else owner,
@@ -638,6 +657,11 @@ def status(home, root, project, card):
             "adapter": "unavailable",
             "stage": value["stage"],
         }
+    from emuru.projects.continuation_batch import projection as batch_projection
+
+    batch = batch_projection(home, records, project)
+    if batch is not None:
+        result["batch"] = batch
     from emuru.projects.supervisor_scout import projection as scout_projection
 
     result.update(scout_projection(home, root, records, value))

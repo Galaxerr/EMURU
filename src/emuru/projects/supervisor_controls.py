@@ -42,6 +42,29 @@ def emergency_size(records):
                 "grant_sha256": value["grant_sha256"],
             }
             size += len(encoded(receipt))
+    for allowance in (r for r in records if r["kind"] == "batch-allowance"):
+        from emuru.projects.continuation_batch import state
+
+        if state(records, allowance) == "revoked":
+            continue
+        for action in ("hold", "cancel"):
+            size += len(
+                encoded(
+                    {
+                        "schema": 2,
+                        "generation": 99999999,
+                        "previous": "f" * 64,
+                        "kind": "batch-control",
+                        "project": allowance["project"],
+                        "allowance": allowance["generation"],
+                        "action": action,
+                        "request": "f" * 32,
+                        "text_hash": "f" * 64,
+                        "token": "f" * 64,
+                        "response": CONTROL_REPLIES[action],
+                    }
+                )
+            )
     return size
 
 
@@ -116,7 +139,16 @@ def control_state(records, enrollment):
             state = {"hold": "held", "continue": "unrestricted", "cancel": "revoked"}[
                 record["action"]
             ]
-    return state
+    from emuru.projects.continuation_batch import control_state as batch_state
+
+    batch = batch_state(records, enrollment["task"])
+    return (
+        "revoked"
+        if "revoked" in (state, batch)
+        else "held"
+        if "held" in (state, batch)
+        else "unrestricted"
+    )
 
 
 def authenticate(home, vault, text, owner, bot, request, uid):
@@ -163,6 +195,10 @@ def owner_control(home, vault, root, text, owner, bot, request, uid):
     if cached is not None:
         return cached
     try:
+        if len(text.split()) >= 2 and text.split()[1].startswith("batch-"):
+            from emuru.projects.continuation_batch import owner_control as batch_control
+
+            return batch_control(home, vault, root, text, owner, bot, request, uid)
         proof = _coder_continue_proof(home, root, text)
         return _owner_control(
             home, vault, root, text, owner, bot, request, uid, coder_proof=proof
@@ -190,7 +226,8 @@ def _retain_outcome(home, request, text_hash, response, *, locked=None):
         (
             r
             for r in records
-            if r["kind"] in {"control", "control-receipt"} and r["request"] == request
+            if r["kind"] in {"control", "control-receipt", "batch-control"}
+            and r["request"] == request
         ),
         None,
     )
@@ -289,7 +326,7 @@ def _owner_control(
             (
                 r
                 for r in records
-                if r["kind"] in {"control", "control-receipt"}
+                if r["kind"] in {"control", "control-receipt", "batch-control"}
                 and r["request"] == request
             ),
             None,
@@ -385,6 +422,12 @@ def _owner_control(
                 response=response,
             )
         if action == "continue":
+            from emuru.projects.continuation_batch import control_state as batch_state
+
+            if batch_state(records, task) != "unrestricted":
+                raise ValueError(
+                    "Batch restriction remains; task continue cannot clear it."
+                )
             from emuru.projects.supervisor_lifecycle import require_admission
 
             require_admission(records)
@@ -503,7 +546,7 @@ def outcome(home, vault, owner, bot, uid):
             (
                 r["response"]
                 for r in records
-                if r["kind"] in {"control", "control-receipt"}
+                if r["kind"] in {"control", "control-receipt", "batch-control"}
                 and r["request"] == row[0]
                 and r["text_hash"] == row[1]
             ),

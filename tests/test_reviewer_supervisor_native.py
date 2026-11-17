@@ -21,7 +21,7 @@ from test_coder_supervisor_native import (
     wait_active,
 )
 
-from emuru.projects import coder_board, supervisor
+from emuru.projects import board, coder_board, supervisor
 
 pytestmark = pytest.mark.skipif(
     "EMURU_CODER_TEST_IMAGE" not in os.environ,
@@ -566,5 +566,116 @@ def test_hard_security_block_never_authorizes_rework(native_fixture):
             )
         assert files(fixture["home"]) == before and facts(fixture)[2] == 2
         retain(fixture, "review-hard-security-block")
+    finally:
+        stop(process, parent, child)
+
+
+@pytest.mark.parametrize("native_fixture", [2], indirect=True)
+def test_continuation_batch_native_initial_and_independent_review(
+    native_fixture, monkeypatch, capsys
+):
+    import re
+
+    from emuru.deployment import upgrade_continuation
+    from emuru.projects import continuation_batch as batch
+
+    fixture = native_fixture
+    home, vault, grant = fixture["home"], fixture["vault"], fixture["grant"]
+    upgrade_continuation(home, ROOT)
+    inspected = fixture["project_command"]("/project inspect " + grant["proposal"])
+    command = re.search(r"^Confirm: (.+)$", inspected, re.MULTILINE)[1]
+    assert "Binding complete" in fixture["project_command"](command)
+    with supervisor._locked(home) as (parent, size, marker):
+        records, _ = supervisor._records(parent, size, marker)
+    complete = next(r for r in reversed(records) if r["kind"] == "binding-complete")
+    binding = next(r for r in reversed(records) if r["kind"] == "task-binding")
+    task = {
+        **{k: grant[k] for k in batch.SCOPE},
+        "logical_key": binding["logical_key"],
+        "contract_digest": binding["contract_digest"],
+        "native_task": grant["task"],
+        "attempts": 2,
+    }
+    manifest = {
+        "schema": 1,
+        "project": grant["project"],
+        "proposal": grant["proposal"],
+        "binding_digest": complete["binding_digest"],
+        "tasks": [task],
+        "scout": 0,
+        "previous_allowance": None,
+        "ceilings": batch.additional([task]),
+    }
+    import sys
+
+    manifest_path = fixture["root"] / "batch-manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.chmod(0o600)
+    operator = runpy.run_path(str(ROOT / "scripts/hermes/supervisor.py"))["main"]
+    arguments = [
+        "supervisor.py",
+        "--home",
+        str(home),
+        "--vault",
+        str(vault),
+        "--policy",
+        str(fixture["policy"]),
+    ]
+    before = files(home), files(vault)
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "argv", [*arguments, "--batch-preview", str(manifest_path)])
+        assert operator() == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert (files(home), files(vault)) == before
+    enrolled_manifest = json.loads(json.dumps(manifest))
+    enrolled_preview = json.loads(json.dumps(preview))
+    assert preview["unspent"]["active_seconds"] == 900
+    assert preview["new"]["active_seconds"] == 900
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            sys,
+            "argv",
+            [
+                *arguments,
+                "--batch-enroll",
+                str(manifest_path),
+                "--expect",
+                preview["digest"],
+            ],
+        )
+        assert operator() == 0
+    allowance = json.loads(capsys.readouterr().out)
+    assert (
+        batch.enroll(home, vault, ROOT, manifest, grant, IMAGE, preview["digest"])
+        == allowance
+    )
+    before_repo, before_vault = files(fixture["repo"]), files(vault)
+    process, parent, child = invoke(fixture)
+    try:
+        result = join(fixture, process)
+        assert result["status"] == "verified"
+        detail, card, count = facts(fixture)
+        assert count == 2 and card.status == "done"
+        assert detail["reserved"]["active_seconds"] == 900
+        assert detail["batch"]["digest"] == allowance["manifest"]
+        assert files(fixture["repo"]) == before_repo and files(vault) == before_vault
+        manifest["previous_allowance"] = allowance["manifest"]
+        manifest["ceilings"] = detail["reserved"]
+        completed = batch.preview(home, vault, ROOT, manifest, grant, IMAGE)
+        assert completed["new"]["coder_runs"] == completed["unspent"]["coder_runs"] == 0
+        with board.project_board(home, ROOT) as (kb, db):
+            assert kb.archive_task(db, grant["task"])
+        archived = batch.preview(home, vault, ROOT, manifest, grant, IMAGE)
+        assert archived["new"]["coder_runs"] == archived["unspent"]["coder_runs"] == 0
+        retain(
+            fixture,
+            "continuation-batch-reviewed",
+            allowance=allowance,
+            manifest=enrolled_manifest,
+            preview=enrolled_preview,
+            completed_preview=completed,
+            archived_preview=archived,
+            receipt=result,
+        )
     finally:
         stop(process, parent, child)
