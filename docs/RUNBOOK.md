@@ -765,28 +765,45 @@ anchor is unavailable, supply a second line, `anchor: <exact existing task line>
 The line must match uniquely. No checkbox, block ID or unrelated human bytes are
 rewritten.
 
-Capture prepares a complete note preview. Apply it through the existing separate
-exact approval workflow after pausing other writers. Before the first write, the
-pinned-runtime verifier reopens the grant, composed input, predecessor evidence,
-independent native reviews and terminal result. Missing or altered evidence
-refuses application. A changed note requires a fresh preview and approval; never
-edit receipts to bypass a refusal.
+Review the complete delivered preview, pause Obsidian and other vault writers,
+then send a separate approval with the displayed 16-character digest prefix.
+
+```text
+/apply <capture-proposal-id> writers-paused <approval-digest-prefix>
+```
+
+Before the first write, the pinned-runtime verifier reopens the grant, composed
+input, predecessor evidence, independent native reviews and terminal result.
+Missing or altered evidence refuses application. A changed note requires a fresh
+preview and approval. Preserve the receipts and artifacts when investigating a
+refusal.
 
 Use `/project capture-status <spec-proposal-id> <task-id> <review-run-id>` to read
 retained capture state. Repeat capture after a lost acknowledgement to recover the
-same proposal. After rejection or expiry, explicitly request `capture-new` with
-the same three IDs for a fresh generation and renewed anchor/approval. Applied
-receipts remain historical facts even after later note edits or loss of old
-execution artifacts. `index_pending` means the note was saved: recover indexing,
-not execution or another paragraph. Index recovery does not rewrite the note.
+same proposal. After rejection, expiry, a stale preview or `not_applied`, use
+`/project capture-new <spec-proposal-id> <task-id> <review-run-id>` in a new
+authenticated message. Confirm a unique anchor and approve the new preview.
+Applied receipts remain available after later note edits or loss of old execution
+artifacts. `index_pending` means the note was saved. Recover the receipt and
+index with the operator command below, then confirm indexed readback with
+`vault_search`. Index recovery preserves note bytes and mtime.
 
-Inspect continues to report native status, verification, restrictions, reservations,
+```bash
+uv run --frozen python scripts/hermes/vault.py mutation-recover \
+  --profile-home "$HERMES_HOME" --vault "$VAULT"
+```
+
+Use `/project inspect <applied-spec-proposal-id>` after restart. It reports
+native status, verification, restrictions, reservations,
 binding recovery and capture proposals separately. Pending capture is not note
 publication or project completion. Restart repairs neither partial binding nor
 batch enrollment; retry the original exact authenticated operation only where
 status requests it. Execution still requires an explicit operator command.
-Capture journal capacity and supervisor metadata limits remain independent.
+Capture refuses new entries when its 1 MiB metadata budget is exhausted or
+when the binding or anchor exceeds 4 KiB. The supervisor has a separate 1 MiB
+metadata budget with a restriction reserve.
 Preserve the complete stopped profile, journal, board, continuation manifests,
 allowances and artifacts for upgrade or rollback; never prune history to make a
-request fit. Synthetic native/container checks establish deterministic boundary
-behavior, not live provider usefulness or manual owner acceptance.
+request fit. Qualification covers disposable native/container execution with
+synthetic owner requests and provider responses. Live Telegram delivery, provider usefulness,
+manual owner acceptance and production deployment remain outside this scope.
