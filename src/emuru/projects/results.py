@@ -52,6 +52,8 @@ def verify_completion(home, vault, root, spec, task, run, owner, bot):
     if folder is None:
         raise ValueError("No verified coding attempt.")
     grant = load_grant(folder / "grant.json")
+    if grant["schema"] == 4:
+        raise ValueError("Continuation capture unavailable until Ticket 04.")
     if (grant["proposal"], str(grant["owner"]), str(grant["bot"])) != (
         spec,
         str(owner),

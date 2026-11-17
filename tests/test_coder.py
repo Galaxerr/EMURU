@@ -384,3 +384,75 @@ def test_export_rejects_nonregular_nontext_or_missing_committed_source(
     with pytest.raises(ValueError):
         coder.Workspace(tmp_path / "workspace", grant)
     assert not (tmp_path / "workspace").exists()
+
+
+def test_continuation_execution_grant_binds_exact_input_and_predecessors(grant):
+    from emuru.projects.reviewer import authority
+
+    grant.update(schema=4, review=authority(), rework=None)
+    grant["continuation"] = {
+        "batch": "a" * 64,
+        "contract": "b" * 64,
+        "input_sha256": "c" * 64,
+        "predecessors": [],
+    }
+    assert coder.validate_grant(grant) == grant
+    grant["continuation"]["input_sha256"] = "unknown"
+    with pytest.raises(ValueError):
+        coder.validate_grant(grant)
+
+
+def test_continuation_execution_workspace_preserves_baseline_and_scope(grant, tmp_path):
+    from emuru.projects import continuation_execution as execution
+    from emuru.projects.reviewer import authority
+
+    grant.update(schema=4, review=authority(), rework=None)
+    grant["continuation"] = {
+        "batch": "a" * 64,
+        "contract": "b" * 64,
+        "input_sha256": scout.digest(execution.manifest(execution.baseline(grant))),
+        "predecessors": [],
+    }
+    workspace = coder.Workspace(tmp_path / "source", grant)
+    assert workspace.read("README.md")["content"] == "Synthetic fixture\n"
+    with pytest.raises(ValueError, match="outside grant"):
+        workspace.read("secret.txt")
+    grant["continuation"]["input_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="digest"):
+        coder.Workspace(tmp_path / "changed", grant)
+
+
+@pytest.mark.parametrize(
+    "kind", ["chain", "diamond", "conflict", "created", "delete", "mode", "size"]
+)
+def test_continuation_execution_changed_file_composition(grant, kind):
+    from emuru.projects import continuation_execution as execution
+
+    baseline = execution.baseline(grant)
+    changed = dict(baseline, **{"README.md": (b"first\n", 0o644)})
+    final = dict(changed, **{"README.md": (b"second\n", 0o644)})
+    outputs = [({"task": "t_a"}, baseline, changed, set())]
+    expected = final
+    if kind == "chain":
+        outputs.append(({"task": "t_b"}, changed, final, {"t_a"}))
+    elif kind == "diamond":
+        outputs.append(({"task": "t_b"}, baseline, changed, set()))
+        expected = changed
+    elif kind == "conflict":
+        outputs.append(({"task": "t_b"}, baseline, final, set()))
+    elif kind == "created":
+        grant["create_files"] = []
+        changed["tests/test_prices.py"] = (b"new\n", 0o644)
+        expected = changed
+    elif kind == "delete":
+        del changed["README.md"]
+    elif kind == "mode":
+        changed["README.md"] = (b"first\n", 0o777)
+    elif kind == "size":
+        changed["README.md"] = (b"x" * (grant["limits"]["file_bytes"] + 1), 0o644)
+    grant["continuation"] = {"input_sha256": scout.digest(execution.manifest(expected))}
+    if kind in {"conflict", "delete", "mode", "size"}:
+        with pytest.raises(ValueError):
+            execution.compose(grant, outputs)
+    else:
+        assert execution.compose(grant, outputs) == expected

@@ -341,7 +341,11 @@ def _shape(manifest, policy):
         # The supplied private policy is the operator allowlist, not an expansion token.
         if (
             any(
-                not set(entry[k]) <= set(policy[k])
+                not set(entry[k])
+                <= (
+                    set(policy[k])
+                    | (set(policy["create_files"]) if k == "write_files" else set())
+                )
                 for k in ("read_files", "write_files", "create_files", "check_ids")
             )
             or any(entry["limits"][k] > policy["limits"][k] for k in policy["limits"])
@@ -700,7 +704,7 @@ def _preview(home, vault, root, manifest, policy, image, records, kb, db):
             else []
             for label in labels
         },
-        "input_policy": "Selected baseline files only; verified successor composition unavailable until Ticket 03.",
+        "input_policy": "Selected baseline files plus exact independently reviewed predecessor changes; conflicts require clarification.",
         "started_ns": started,
         "deadline_ns": deadline,
     }
@@ -892,10 +896,8 @@ def enroll(home, vault, root, manifest, policy, image, expect, *, seconds=86400)
                 raise ValueError("Batch receipt exceeds capacity.")
             extra += len(encoded(candidate))
             planned.append(candidate)
-        if (
-            size + extra + metadata_pending(planned)
-            > supervisor.METADATA_BYTES - supervisor.EMERGENCY_BYTES
-            or emergency_size(planned) > supervisor.EMERGENCY_BYTES
+        if size + extra + metadata_pending(planned) > supervisor.METADATA_BYTES - max(
+            supervisor.EMERGENCY_BYTES, emergency_size(planned)
         ):
             raise ValueError(
                 "Batch metadata capacity exhausted; restriction reserve retained."
@@ -915,7 +917,9 @@ def enroll(home, vault, root, manifest, policy, image, expect, *, seconds=86400)
         return result
 
 
-def require_task(home, records, grant, *, review=False, admitted=False):
+def require_task(
+    home, records, grant, *, review=False, admitted=False, historical=False
+):
     """Admission only. No claim, grant renewal, or schema-4 interpretation."""
     tasks = memberships(records, grant["task"])
     if not tasks:
@@ -925,9 +929,17 @@ def require_task(home, records, grant, *, review=False, admitted=False):
         ):
             raise ValueError("Task absent from approved batch.")
         return None
+    if historical and grant["schema"] == 4:
+        tasks = [
+            t
+            for t in tasks
+            if records[t["allowance"] - 1]["manifest"] == grant["continuation"]["batch"]
+        ]
+        if not tasks:
+            raise ValueError("Historical continuation batch unavailable.")
     task = tasks[-1]
     allowance = records[task["allowance"] - 1]
-    if (
+    if not historical and (
         (
             control_state(records, grant["task"]) == "revoked"
             or not admitted
@@ -978,7 +990,7 @@ def require_task(home, records, grant, *, review=False, admitted=False):
         and r["grant_sha256"] != digest(grant)
         for r in records
     )
-    if count >= task["attempts"]:
+    if not historical and count >= task["attempts"]:
         raise ValueError("Batch task attempt cap exhausted; no third attempt.")
     from emuru.projects.spec import task_contracts
 
@@ -999,7 +1011,7 @@ def require_task(home, records, grant, *, review=False, admitted=False):
         kb,
         db,
     ):
-        if kb.parent_ids(db, grant["task"]):
+        if grant["schema"] != 4 and kb.parent_ids(db, grant["task"]):
             raise ValueError(
                 "Batch native dependencies changed; successor execution unavailable."
             )
@@ -1015,9 +1027,21 @@ def require_task(home, records, grant, *, review=False, admitted=False):
     if (
         contract is None
         or contract["contract_digest"] != entry["contract_digest"]
-        or contract["contract"]["dependencies"]
+        or (grant["schema"] != 4 and contract["contract"]["dependencies"])
     ):
         raise ValueError("Continuation successor requires schema-4 implementation.")
+    if grant["schema"] == 4:
+        from emuru.projects.continuation_execution import authorize
+
+        authorize(
+            home,
+            Path(__file__).resolve().parents[3],
+            grant,
+            contracts,
+            bindings,
+            allowance,
+            records,
+        )
     return allowance
 
 

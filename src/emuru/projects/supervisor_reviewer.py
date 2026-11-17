@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from emuru.projects import board, coder_board, reviewer, supervisor, supervisor_coder
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.scout import digest
 from emuru.projects.supervisor_controls import control_state
 from emuru.projects.supervisor_scout import launcher_identity, reserved, unresolved
@@ -426,7 +427,7 @@ def reconcile(stage, folder):
             latest is None
             or latest.profile != reviewer.REVIEWER
             or latest.id <= original["run"]
-            or len(runs) != (4 if stage.grant["schema"] == 3 else 2)
+            or len(runs) != (4 if is_rework(stage.grant) else 2)
             or claimed
             and claimed["run"] != latest.id
         ):

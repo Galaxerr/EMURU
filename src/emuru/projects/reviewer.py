@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.scout import digest, encoded
 
 INPUT_BYTES = 256 * 1024
@@ -109,7 +110,7 @@ def _save(folder, name, value):
     base = folder.parent if folder.name == "review" else folder
     grant = load_grant(base / "grant.json")
     data = encoded(value)
-    if grant["schema"] == 3:
+    if is_rework(grant):
         from emuru.projects.rework import check_artifacts
 
         check_artifacts(base, grant, len(data))
@@ -125,7 +126,7 @@ def _reservation(folder, grant):
 
     total = rework.reservation(grant)
     loop = grant["grant_id"]
-    if grant["schema"] == 3:
+    if is_rework(grant):
         previous, original = rework.parent(folder, grant)
         prior = check_loop(previous, original)
         total = {k: prior[k] + total[k] for k in total}
@@ -211,7 +212,9 @@ def _coder_usage(folder, grant, report):
     return coder_stage, coder_usage
 
 
-def packet(home, vault, root, task_id, grant, folder, run, *, capture=False):
+def packet(
+    home, vault, root, task_id, grant, folder, run, *, capture=False, historical=False
+):
     """Reopen current authority and all source/check bytes; never truncate context."""
     from emuru.projects import board, coder_board
     from emuru.projects.coder_runtime import (
@@ -231,6 +234,7 @@ def packet(home, vault, root, task_id, grant, folder, run, *, capture=False):
         review=True,
         readonly=True,
         capture=capture,
+        historical=historical,
     )
     raw = _read_private(folder / "evidence.json", grant["limits"]["artifact_bytes"])
     report = verify_evidence(folder, hashlib.sha256(raw).hexdigest(), task_run=run)
@@ -269,7 +273,7 @@ def packet(home, vault, root, task_id, grant, folder, run, *, capture=False):
         "checklist": authority()["checklist"],
         "limitations": "Fixed Monty cases only; native unittest completion and native/Monty equivalence unverified.",
     }
-    if grant["schema"] == 3:
+    if is_rework(grant):
         from emuru.projects import rework
 
         previous, _, parent_report, receipt = rework.lineage(folder, grant)
@@ -284,6 +288,8 @@ def packet(home, vault, root, task_id, grant, folder, run, *, capture=False):
         }
         value["parent"] = grant["rework"]
         value["prior_findings"] = receipt["verdict"]["blockers"]
+    if grant["schema"] == 4:
+        value["continuation"] = grant["continuation"]
     raw_packet = encoded(value).decode()
     if len(raw_packet.encode()) > INPUT_BYTES:
         raise ValueError("Complete review packet exceeds input bound.")
@@ -520,7 +526,15 @@ def _prepared(
     intent, reviewer_run = _read(review / "intent.json"), _read(review / "run.json")
     original = coder_board._read_json(folder / "run.json")
     value, report, evidence = packet(
-        home, vault, root, task_id, grant, folder, original, capture=capture
+        home,
+        vault,
+        root,
+        task_id,
+        grant,
+        folder,
+        original,
+        capture=capture,
+        historical=historical,
     )
     if (
         encoded(intent)
@@ -607,7 +621,7 @@ def _prepared(
     ):
         raise ValueError("Independent native reviewer provenance changed.")
     _coder_usage(folder, grant, report)
-    if grant["schema"] == 3:
+    if is_rework(grant):
         from emuru.projects import rework
 
         rework.authorize(home, vault, root, grant, capture=capture)
@@ -725,7 +739,7 @@ def verify(
         "status": {
             "approve": "verified",
             "changes_requested": "review_rejected"
-            if grant["schema"] == 3
+            if is_rework(grant)
             else "changes_requested",
             "blocked": "blocked",
         }[verdict["verdict"]],
@@ -883,7 +897,17 @@ def status(kb, db, card, home, root, grant, folder):
                             "actor": REVIEWER,
                             "detail": "independent reviewer active; no verdict yet",
                         }
-        receipt = verify(home, vault, root, card.id, grant, folder, kb, db)
+        receipt = verify(
+            home,
+            vault,
+            root,
+            card.id,
+            grant,
+            folder,
+            kb,
+            db,
+            historical=grant["schema"] == 4 and card.status in {"done", "archived"},
+        )
         saved = _read(folder / "review/receipt.json", OUTPUT_BYTES)
         if encoded(saved) != encoded(receipt):
             raise ValueError("Review receipt changed.")

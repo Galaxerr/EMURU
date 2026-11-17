@@ -717,6 +717,38 @@ allowance/control changes, not routine worker progress.
 
 Existing initial coder and independent review paths can consume batch membership;
 launch still requires a separate exact single-task grant/enrollment and explicit
-operator command. Schema-4 successor execution remains refused until Ticket 03.
+operator command. Schema-4 grants add exact batch, contract, input manifest and
+reviewed predecessor identities; each successor requires its own separate review.
 Pending note approval remains separate from verified execution. No automatic batch
 dispatch, note write or model call follows from preview, enrollment, controls or wake.
+
+
+### Verified successor execution (v0.5.8 Ticket 03)
+
+Use the existing `scripts/hermes/coder.py` operator launcher and supervised
+single-task enrollment for every selected task. Enrollment/binding never dispatches
+successors. Schema 4 retains all existing grant fields plus `review`, nullable
+`rework`, and `continuation`. The latter contains the approved manifest `batch`
+digest, task `contract` digest, composed `input_sha256`, and a topologically ordered
+`predecessors` closure. Each predecessor binds `task`, `contract`, `grant_id`,
+`grant_sha256`, `evidence_sha256`, `receipt_sha256`, `final_sha256`, `coder_run` and
+`reviewer_run`. Unknown future output digests cannot authorize a successor.
+
+The controller reopens immutable original/final snapshots and independent native
+reviews before admission and review. Only explicit read paths enter the fresh
+workspace. Changed files compose in dependency order; a descendant can replace an
+ancestor only through exact verified lineage. Independent unequal writes, missing
+proof, incompatible repository/baseline identities and unsupported deletions refuse.
+Identical independent writes are compatible. Existing file, packet, artifact and
+stage bounds apply; oversized packets refuse without truncation.
+
+A schema-4 rework grant retains the same continuation scope and binds the original
+eligible `changes_requested` receipt using the existing `rework` object. Only one
+fresh second attempt is permitted. Failed checks and hard blocks remain ineligible.
+Use existing cleanup/reconcile controls for interrupted work; neither recovery nor
+restart reruns code. Schemas 1–3 retain their historical semantics.
+
+Verified code and note publication are separate. Pending predecessor capture does
+not prevent otherwise authorized execution. New schema-4 capture explicitly refuses
+until Ticket 04; historical M7 receipts remain readable. No automatic note write or
+project-complete claim follows from a verified successor.

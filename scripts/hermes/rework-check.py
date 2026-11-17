@@ -81,7 +81,7 @@ def new_grant(fixture):
     report = json.loads((folder / "evidence.json").read_bytes())
     return {
         **initial,
-        "schema": 3,
+        "schema": 4 if initial["schema"] == 4 else 3,
         "grant_id": secrets.token_hex(16),
         "rework": {
             "schema": 1,

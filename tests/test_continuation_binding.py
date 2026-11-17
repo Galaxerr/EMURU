@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def continuation_binding(tmp_path, monkeypatch):
+def continuation_binding(tmp_path, monkeypatch, request):
     native = Path(
         os.environ.get(
             "EMURU_NATIVE_RUNTIME",
@@ -65,6 +65,15 @@ def continuation_binding(tmp_path, monkeypatch):
         path.chmod(0o600)
     spec = copy.deepcopy(SPEC)
     spec["tasks"][1]["depends_on"] = ["first"]
+    if getattr(request, "param", None) == "three":
+        spec["tasks"].append(
+            {
+                **copy.deepcopy(spec["tasks"][1]),
+                "id": "third",
+                "description": "Third continuation task",
+                "depends_on": ["second"],
+            }
+        )
     content = spec_markdown(spec)
     note = vault / "10_Projects/Sample.md"
     note.write_text(content)

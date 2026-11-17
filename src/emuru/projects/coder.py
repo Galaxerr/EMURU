@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from emuru.models.gateway import private_path
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.scout import git, selected_path
 from emuru.vault.mutations import directory, private_directory, regular
 
@@ -60,9 +61,15 @@ _FIELDS = {
 
 def validate_grant(grant):
     """Validate frozen scope/ceilings, without consulting real board or vault state."""
-    review = isinstance(grant, dict) and grant.get("schema") in {2, 3}
+    review = isinstance(grant, dict) and grant.get("schema") in {2, 3, 4}
     if not isinstance(grant, dict) or set(grant) != _FIELDS | (
-        ({"review", "rework"} if grant.get("schema") == 3 else {"review"})
+        (
+            {"review", "rework", "continuation"}
+            if grant.get("schema") == 4
+            else {"review", "rework"}
+            if is_rework(grant)
+            else {"review"}
+        )
         if review
         else set()
     ):
@@ -76,7 +83,11 @@ def validate_grant(grant):
             or grant["review"].get("enabled") is not True
         ):
             raise ValueError("Invalid or disabled review authority.")
-    if grant["schema"] == 3:
+    if grant["schema"] == 4:
+        from emuru.projects.continuation_execution import validate
+
+        validate(grant)
+    if is_rework(grant):
         from emuru.projects.rework import validate_authority
 
         validate_authority(grant)
@@ -95,7 +106,7 @@ def validate_grant(grant):
     }
     if (
         type(grant["schema"]) is not int
-        or grant["schema"] not in {1, 2, 3}
+        or grant["schema"] not in {1, 2, 3, 4}
         or any(
             type(grant[key]) is not int or grant[key] <= 0 for key in ("owner", "bot")
         )
@@ -197,7 +208,7 @@ class Workspace:
         if git(repo, "rev-parse", "--verify", "HEAD").decode().strip() != baseline:
             raise ValueError("Coder baseline differs from repository HEAD.")
         total = 0
-        for name in self.grant["read_files"]:
+        for name in [] if self.grant["schema"] == 4 else self.grant["read_files"]:
             row = git(repo, "ls-tree", "-z", "--full-tree", baseline, "--", name)
             if name in self.grant["create_files"]:
                 if row:
@@ -220,8 +231,13 @@ class Workspace:
                 raise ValueError("Coder source blob changed.")
             self._text(data)
             self._baseline[name] = (data, int(entry[0][-3:], 8))
+        if self.grant["schema"] == 4:
+            from emuru.projects.continuation_execution import inputs
+
+            self._baseline = inputs(self.folder.parent, self.grant)
+            total = sum(len(value[0]) for value in self._baseline.values())
         self._original = dict(self._baseline)
-        if self.grant["schema"] == 3:
+        if is_rework(self.grant):
             from emuru.projects.coder_runtime import _tree_matches
             from emuru.projects.rework import lineage
 

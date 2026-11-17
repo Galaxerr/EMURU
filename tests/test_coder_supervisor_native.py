@@ -411,7 +411,9 @@ def bootstrap(fixture, blocked, *, review=False):
             / fixture["grant"]["rework"]["loop"]
             / "final-source/sum_prices.py"
         )
-    initial = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    initial = fixture.get(
+        "input_source_sha256", hashlib.sha256(source_path.read_bytes()).hexdigest()
+    )
     source = fixture.get(
         "coder_source", "def sum_prices(prices):\n    return sum(prices)\n"
     )

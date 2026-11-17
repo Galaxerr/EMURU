@@ -23,6 +23,7 @@ from emuru.projects.coder_gateway import cloud_gateway
 from emuru.projects.coder_inference import run_inference
 from emuru.projects.coder_runtime import Qualification
 from emuru.projects.coder_sandbox import DockerSandbox
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.dispatcher import dispatcher_lock
 from emuru.projects.scout import digest, encoded
 
@@ -102,7 +103,7 @@ def launch(
 
         supervised = supervisor.enabled(home)
         if review:
-            if not supervised or grant["schema"] not in {2, 3}:
+            if not supervised or grant["schema"] not in {2, 3, 4}:
                 raise ValueError(
                     "Explicit first reviewer requires supervised review authority."
                 )
@@ -121,14 +122,14 @@ def launch(
         except (OSError, ValueError, TypeError, KeyError):
             return _prior_status(home, root, task_id)
         rework_start = (
-            grant["schema"] == 3
+            is_rework(grant)
             and prior is not None
             and prior.name == grant["rework"]["loop"]
         )
         if prior is not None and not rework_start:
-            if grant["schema"] == 3 and digest(
-                load_grant(prior / "grant.json")
-            ) != digest(grant):
+            if is_rework(grant) and digest(load_grant(prior / "grant.json")) != digest(
+                grant
+            ):
                 raise ValueError("Rework grant conflicts with existing attempt.")
             return _prior_status(home, root, task_id)
         folder = coder_board.attempt_path(home, grant)
@@ -165,7 +166,7 @@ def launch(
             request.update(
                 supervised=True, deadline_ns=supervision.stage["deadline_ns"]
             )
-        if grant["schema"] == 3:
+        if is_rework(grant):
             from emuru.projects.rework import lineage
 
             *_, receipt = lineage(folder, grant)
@@ -222,7 +223,7 @@ def launch(
                     sandbox,
                 )
                 finished = time.monotonic_ns()
-        if grant.get("schema") in {2, 3}:
+        if grant.get("schema") in {2, 3, 4}:
             from emuru.projects.reviewer import _save
 
             _save(
@@ -242,7 +243,10 @@ def launch(
                 if supervision is not None
                 else coder_board.finish(home, vault, root, task_id, grant, folder, run)
             )
-            if grant.get("schema") in {2, 3} and receipt["status"] == "awaiting_review":
+            if (
+                grant.get("schema") in {2, 3, 4}
+                and receipt["status"] == "awaiting_review"
+            ):
                 from emuru.projects.reviewer import execute
 
                 if supervision is None:
@@ -262,7 +266,7 @@ def launch(
             }:
                 return prior
             raise
-        if grant.get("schema") not in {2, 3} and result["success"] != (
+        if grant.get("schema") not in {2, 3, 4} and result["success"] != (
             receipt.get("status") == "tested local result / awaiting owner review"
         ):
             raise ValueError("Coder result and native receipt disagree.")

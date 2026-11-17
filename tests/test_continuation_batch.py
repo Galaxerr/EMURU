@@ -495,8 +495,9 @@ def test_continuation_batch_dependency_tampering_refuses_before_claim(batch_case
 @pytest.mark.parametrize(
     "ordering", ["restriction-first", "admission-first", "concurrent"]
 )
-def test_continuation_batch_restriction_admission_race(
-    batch_controls, tmp_path, action, ordering
+@pytest.mark.parametrize("grant_schema", [2, 4])
+def test_continuation_execution_and_batch_restriction_admission_race(
+    batch_controls, tmp_path, action, ordering, grant_schema
 ):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -504,6 +505,24 @@ def test_continuation_batch_restriction_admission_race(
     from emuru.projects import supervisor_coder
 
     c = batch_controls
+    if grant_schema == 4:
+        from emuru.projects import continuation_execution as execution
+
+        entry = next(
+            e for e in c.manifest["tasks"] if e["native_task"] == c.policy["task"]
+        )
+        c.policy.update(
+            schema=4,
+            rework=None,
+            continuation={
+                "batch": digest(c.manifest),
+                "contract": entry["contract_digest"],
+                "input_sha256": digest(
+                    execution.manifest(execution.baseline(c.policy))
+                ),
+                "predecessors": [],
+            },
+        )
     policy = tmp_path / "grant.json"
     policy.write_text(json.dumps(c.policy))
     policy.chmod(0o600)
@@ -542,3 +561,468 @@ def test_continuation_batch_restriction_admission_race(
     with board.project_board_readonly(c.home, ROOT) as (kb, db):
         assert kb.list_runs(db, c.policy["task"]) == []
     assert not list(c.home.rglob("run.json"))
+
+
+@pytest.mark.parametrize("continuation_binding", ["three"], indirect=True)
+def test_continuation_execution_native_three_task_chain(batch_case, monkeypatch):
+    import copy
+    import hashlib
+    import multiprocessing
+    import os
+    import uuid
+    from pathlib import Path
+
+    from test_coder_supervisor_native import launch_child
+
+    from emuru.projects import (
+        coder_board,
+        coder_runtime,
+    )
+    from emuru.projects import (
+        continuation_execution as execution,
+    )
+
+    image = os.environ.get("EMURU_CODER_TEST_IMAGE")
+    if image is None:
+        pytest.skip("Matching immutable native/container image required")
+    c = batch_case
+    # Restore real native stage clocks; the ordinary batch tests use fixed clocks.
+    monkeypatch.setattr(supervisor.time, "monotonic_ns", _REAL_MONOTONIC_NS)
+    monkeypatch.setattr(
+        supervisor,
+        "boot_id",
+        lambda: Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+    )
+    c.image = image
+    target = c.home / "vault-target.json"
+    target.write_text(json.dumps({"mode": "real", "vault_path": str(c.vault)}))
+    target.chmod(0o600)
+    c.batch_enroll()
+    entries = {e["native_task"]: e for e in c.manifest["tasks"]}
+    # Card IDs sort independently of dependency order.
+    cards = {json.loads(card.body)["task"]["id"]: card for card in c.cards}
+    predecessors = []
+    previous_data = b"def sum_prices(prices):\n    return 0\n"
+    proof = []
+    for index, label in enumerate(["first", "second", "third"]):
+        card = cards[label]
+        grant = copy.deepcopy(c.policy)
+        grant.update(
+            schema=4,
+            rework=None,
+            grant_id=uuid.uuid4().hex,
+            task=card.id,
+            task_digest=digest(json.loads(card.body)["task"]),
+        )
+        tree = execution.baseline(grant)
+        if index:
+            tree["sum_prices.py"] = (previous_data, 0o644)
+        grant["continuation"] = {
+            "batch": digest(c.manifest),
+            "contract": entries[card.id]["contract_digest"],
+            "input_sha256": digest(execution.manifest(tree)),
+            "predecessors": copy.deepcopy(predecessors),
+        }
+        policy = c.home.parent / f"grant-{index}.json"
+        policy.write_text(json.dumps(grant))
+        policy.chmod(0o600)
+        source = (
+            f"def sum_prices(prices):\n    return sum(prices) + {index} - {index}\n"
+        )
+        fixture = {
+            "root": c.home.parent,
+            "home": c.home,
+            "vault": c.vault,
+            "policy": policy,
+            "grant": grant,
+            "task_id": card.id,
+            "repo": Path(grant["path"]),
+            "coder_source": source,
+            "input_source_sha256": hashlib.sha256(previous_data).hexdigest(),
+        }
+        if index:
+            import runpy
+
+            launch = runpy.run_path(str(ROOT / "scripts/hermes/coder.py"))["launch"]
+            parent_folder = (
+                c.home / "emuru-projects/coder-attempts" / predecessors[-1]["grant_id"]
+            )
+            for artifact in [
+                "evidence.json",
+                "review/receipt.json",
+                "final-source/sum_prices.py",
+            ]:
+                path = parent_folder / artifact
+                original = path.read_bytes()
+                mode = path.stat().st_mode & 0o777
+                path.chmod(0o600)
+                path.write_bytes(original + b" altered")
+                try:
+                    with pytest.raises((ValueError, OSError)):
+                        launch(c.home, c.vault, policy, card.id, ROOT)
+                    with board.project_board_readonly(c.home, ROOT) as (kb, db):
+                        assert kb.list_runs(db, card.id) == []
+                finally:
+                    path.write_bytes(original)
+                    path.chmod(mode)
+            proof[-1]["zero_claim_tampering_cases"] = 3
+        supervisor.enroll(c.home, c.vault, ROOT, "coder", policy, card.id, image)
+        parent, child = multiprocessing.get_context("fork").Pipe()
+        process = multiprocessing.get_context("fork").Process(
+            target=launch_child, args=(fixture, "review", child)
+        )
+        process.start()
+        try:
+            process.join(90)
+            assert not process.is_alive(), "Continuation native launch stalled"
+            assert process.exitcode == 0, (
+                fixture["root"] / "child-result.json"
+            ).read_text()
+        finally:
+            if process.is_alive():
+                process.kill()
+                process.join(10)
+            parent.close()
+            child.close()
+        receipt = json.loads((fixture["root"] / "child-result.json").read_text())
+        assert receipt["status"] == "verified"
+        folder = coder_board.attempt_path(c.home, grant)
+        report = coder_runtime.verify_evidence(
+            folder,
+            receipt["evidence_sha256"],
+            task_run={"task": card.id, "run": receipt["coder_run"]},
+        )
+        assert (
+            digest(report["initial_manifest"]) == grant["continuation"]["input_sha256"]
+        )
+        assert (folder / "final-source/sum_prices.py").read_bytes() == source.encode()
+        with board.project_board_readonly(c.home, ROOT) as (kb, db):
+            runs = kb.list_runs(db, card.id)
+            assert len(runs) == 2 and all(r.ended_at is not None for r in runs)
+            assert runs[0].id != runs[1].id
+        predecessors.append(
+            {
+                "task": card.id,
+                "contract": entries[card.id]["contract_digest"],
+                "grant_id": grant["grant_id"],
+                "grant_sha256": digest(grant),
+                "evidence_sha256": receipt["evidence_sha256"],
+                "receipt_sha256": digest(receipt),
+                "final_sha256": digest(report["final_manifest"]),
+                "coder_run": receipt["coder_run"],
+                "reviewer_run": receipt["run"],
+            }
+        )
+        proof.append({"grant": grant, "receipt": receipt, "report": report})
+        previous_data = source.encode()
+    assert len({p["grant"]["grant_id"] for p in proof}) == 3
+    destination = os.environ.get("EMURU_CODER_QUALIFICATION")
+    if destination:
+        Path(destination).mkdir(mode=0o700, parents=True, exist_ok=True)
+        (Path(destination) / "continuation-three-task.json").write_text(
+            json.dumps(proof, indent=2)
+        )
+
+
+# Save before fixed-clock fixtures alter the shared time module.
+import time
+
+_REAL_MONOTONIC_NS = time.monotonic_ns
+
+
+@pytest.mark.parametrize(
+    "attack", ["none", "input", "contract", "batch", "missing-predecessor"]
+)
+def test_continuation_execution_admission_refuses_before_native_claim(
+    batch_case, attack
+):
+    import copy
+
+    from emuru.projects import continuation_execution as execution
+
+    c = batch_case
+    c.batch_enroll()
+    grant = copy.deepcopy(c.policy)
+    if attack == "missing-predecessor":
+        card = next(
+            card for card in c.cards if json.loads(card.body)["task"]["id"] == "second"
+        )
+        grant.update(task=card.id, task_digest=digest(json.loads(card.body)["task"]))
+    entry = next(e for e in c.manifest["tasks"] if e["native_task"] == grant["task"])
+    grant.update(schema=4, rework=None)
+    grant["continuation"] = {
+        "batch": digest(c.manifest),
+        "contract": entry["contract_digest"],
+        "input_sha256": digest(execution.manifest(execution.baseline(grant))),
+        "predecessors": [],
+    }
+    if attack in {"input", "contract", "batch"}:
+        grant["continuation"][{"input": "input_sha256"}.get(attack, attack)] = "0" * 64
+    with supervisor._locked(c.home) as (parent, size, marker):
+        records, _ = supervisor._records(parent, size, marker)
+    before = snapshot(c.home)
+    if attack == "none":
+        assert batch.require_task(c.home, records, grant)["manifest"] == digest(
+            c.manifest
+        )
+    else:
+        with pytest.raises(ValueError):
+            batch.require_task(c.home, records, grant)
+    assert snapshot(c.home) == before
+    with board.project_board_readonly(c.home, ROOT) as (kb, db):
+        assert all(kb.list_runs(db, card.id) == [] for card in c.cards)
+
+
+@pytest.mark.parametrize("verdict", ["changes_requested", "blocked"])
+def test_continuation_execution_native_rework_authority(
+    batch_case, monkeypatch, verdict
+):
+    import copy
+    import os
+    import runpy
+    from pathlib import Path
+
+    from test_reviewer_supervisor_native import invoke, join, stop
+
+    from emuru.projects import coder_board, reviewer
+    from emuru.projects import continuation_execution as execution
+
+    image = os.environ.get("EMURU_CODER_TEST_IMAGE")
+    if image is None:
+        pytest.skip("Matching immutable native/container image required")
+    c = batch_case
+    monkeypatch.setattr(supervisor.time, "monotonic_ns", _REAL_MONOTONIC_NS)
+    monkeypatch.setattr(
+        supervisor,
+        "boot_id",
+        lambda: Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+    )
+    c.image = image
+    target = c.home / "vault-target.json"
+    target.write_text(json.dumps({"mode": "real", "vault_path": str(c.vault)}))
+    target.chmod(0o600)
+    c.batch_enroll()
+    grant = copy.deepcopy(c.policy)
+    entry = next(e for e in c.manifest["tasks"] if e["native_task"] == grant["task"])
+    grant.update(schema=4, rework=None)
+    grant["continuation"] = {
+        "batch": digest(c.manifest),
+        "contract": entry["contract_digest"],
+        "input_sha256": digest(execution.manifest(execution.baseline(grant))),
+        "predecessors": [],
+    }
+    policy = c.home.parent / "grant.json"
+    policy.write_text(json.dumps(grant))
+    policy.chmod(0o600)
+    fixture = {
+        "root": c.home.parent,
+        "home": c.home,
+        "vault": c.vault,
+        "repo": Path(grant["path"]),
+        "grant": grant,
+        "policy": policy,
+        "task_id": grant["task"],
+        "review_verdict": {
+            "verdict": verdict,
+            "summary": "Synthetic review rejection",
+            "blockers": [
+                {
+                    "path": "sum_prices.py",
+                    "line": 1,
+                    "reason": "Requires revision",
+                    "requested_change": "Revise implementation",
+                }
+            ],
+            "suggestions": [],
+        },
+    }
+    supervisor.enroll(c.home, c.vault, ROOT, "coder", policy, grant["task"], image)
+    process, parent, child = invoke(fixture)
+    try:
+        result = join(fixture, process)
+        assert result["status"] == verdict
+    finally:
+        stop(process, parent, child)
+    second = runpy.run_path(str(ROOT / "scripts/hermes/rework-check.py"))["new_grant"](
+        fixture
+    )
+    assert second["schema"] == 4 and second["continuation"] == grant["continuation"]
+    policy.write_text(json.dumps(second))
+    if verdict == "blocked":
+        before = snapshot(c.home)
+        with pytest.raises(ValueError):
+            supervisor.enroll(
+                c.home, c.vault, ROOT, "coder", policy, second["task"], image
+            )
+        assert snapshot(c.home) == before
+        return
+    fixture.update(
+        grant=second,
+        coder_source="def sum_prices(prices):\n    return sum(prices) + 0\n",
+        input_source_sha256=__import__("hashlib")
+        .sha256(b"def sum_prices(prices):\n    return sum(prices)\n")
+        .hexdigest(),
+        review_verdict={
+            "verdict": "approve",
+            "summary": "Synthetic revision approved",
+            "blockers": [],
+            "suggestions": [],
+        },
+    )
+    supervisor.enroll(c.home, c.vault, ROOT, "coder", policy, second["task"], image)
+    process, parent, child = invoke(fixture)
+    try:
+        result = join(fixture, process)
+        assert result["status"] == "verified"
+    finally:
+        stop(process, parent, child)
+    folder = coder_board.attempt_path(c.home, second)
+    assert reviewer._read(folder / "loop.json")["coder_runs"] == 2
+    third = runpy.run_path(str(ROOT / "scripts/hermes/rework-check.py"))["new_grant"](
+        fixture
+    )
+    policy.write_text(json.dumps(third))
+    before = snapshot(c.home)
+    with pytest.raises(ValueError):
+        supervisor.enroll(c.home, c.vault, ROOT, "coder", policy, third["task"], image)
+    assert snapshot(c.home) == before
+    output = os.environ.get("EMURU_CODER_QUALIFICATION")
+    if output:
+        Path(output).mkdir(mode=0o700, parents=True, exist_ok=True)
+        (Path(output) / "continuation-rework.json").write_text(
+            json.dumps({"parent": grant, "child": second, "receipt": result}, indent=2)
+        )
+
+
+@pytest.mark.parametrize("boundary", ["reservation", "claim"])
+def test_continuation_execution_process_death_retains_charge_without_replay(
+    batch_case, tmp_path, boundary, monkeypatch
+):
+    import copy
+    import multiprocessing
+    import os
+
+    from emuru.projects import coder_board, supervisor_coder
+    from emuru.projects import continuation_execution as execution
+    from emuru.projects.dispatcher import dispatcher_lock
+
+    c = batch_case
+    from pathlib import Path
+
+    monkeypatch.setattr(supervisor.time, "monotonic_ns", _REAL_MONOTONIC_NS)
+    monkeypatch.setattr(
+        supervisor,
+        "boot_id",
+        lambda: Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+    )
+    c.batch_enroll()
+    grant = copy.deepcopy(c.policy)
+    entry = next(e for e in c.manifest["tasks"] if e["native_task"] == grant["task"])
+    grant.update(
+        schema=4,
+        rework=None,
+        continuation={
+            "batch": digest(c.manifest),
+            "contract": entry["contract_digest"],
+            "input_sha256": digest(execution.manifest(execution.baseline(grant))),
+            "predecessors": [],
+        },
+    )
+    policy = tmp_path / "grant.json"
+    policy.write_text(json.dumps(grant))
+    policy.chmod(0o600)
+    supervisor.enroll(c.home, c.vault, ROOT, "coder", policy, grant["task"], c.image)
+
+    def die():
+        with dispatcher_lock(c.home):
+            supervisor_coder.reserve(c.home, c.vault, ROOT, grant, c.image)
+            if boundary == "reservation":
+                os._exit(17)
+            stage = supervisor_coder.CoderStage(c.home, c.vault, ROOT, grant)
+            folder = coder_board.create_attempt(c.home, grant, supervision=stage)
+            coder_board.record_launcher(folder)
+            coder_board.claim(
+                c.home, c.vault, ROOT, grant["task"], grant, folder, supervision=stage
+            )
+            os._exit(17)
+
+    process = multiprocessing.get_context("fork").Process(target=die)
+    process.start()
+    process.join(20)
+    try:
+        assert not process.is_alive() and process.exitcode == 17
+        with supervisor._locked(c.home) as (parent, size, marker):
+            records, _ = supervisor._records(parent, size, marker)
+        assert (
+            sum(
+                r["kind"] == "coder-stage" and r.get("phase") == "admitted"
+                for r in records
+            )
+            == 1
+        )
+        assert (
+            batch.projection(c.home, records, grant["project"])["consumed"][
+                "coder_runs"
+            ]
+            == 1
+        )
+        with board.project_board_readonly(c.home, ROOT) as (kb, db):
+            assert len(kb.list_runs(db, grant["task"])) == (
+                1 if boundary == "claim" else 0
+            )
+        with pytest.raises(ValueError):
+            supervisor_coder.reserve(c.home, c.vault, ROOT, grant, c.image)
+        before = snapshot(c.home)
+        with pytest.raises(ValueError):
+            supervisor.enroll(
+                c.home, c.vault, ROOT, "coder", policy, grant["task"], c.image
+            )
+        assert snapshot(c.home) == before
+        with dispatcher_lock(c.home):
+            recovered = coder_board.reconcile(
+                c.home, c.vault, ROOT, grant["task"], grant
+            )
+        assert recovered["status"] == "uncertain" and recovered["stop"] == "proven"
+        with board.project_board_readonly(c.home, ROOT) as (kb, db):
+            assert len(kb.list_runs(db, grant["task"])) == (
+                1 if boundary == "claim" else 0
+            )
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(10)
+
+
+def test_continuation_execution_prepaid_cleanup_survives_full_control_reserve(
+    batch_controls, tmp_path, monkeypatch
+):
+    import sys
+
+    from emuru.projects import supervisor_coder
+    from emuru.projects.supervisor_scout import metadata_pending
+
+    c = batch_controls
+    policy = tmp_path / "grant.json"
+    policy.write_text(json.dumps(c.policy))
+    policy.chmod(0o600)
+    supervisor.enroll(c.home, c.vault, ROOT, "coder", policy, c.policy["task"], c.image)
+    supervisor_coder.reserve(c.home, c.vault, ROOT, c.policy, c.image)
+    stage = supervisor_coder.CoderStage(c.home, c.vault, ROOT, c.policy)
+    with supervisor._locked(c.home) as (parent, size, marker):
+        records, used = supervisor._records(parent, size, marker)
+    monkeypatch.setattr(
+        supervisor,
+        "METADATA_BYTES",
+        used + metadata_pending(records) + supervisor.EMERGENCY_BYTES,
+    )
+    first, _ = c.batch_facts()
+    c.deliver("cancel", first["token"], 1)
+    with pytest.raises(InterruptedError):
+        stage.check()
+    assert (
+        stage.command([sys.executable, "-c", "pass"], maintenance=True)["exit_code"]
+        == 0
+    )
+    with supervisor._locked(c.home) as (parent, size, marker):
+        records, _ = supervisor._records(parent, size, marker)
+    assert any(r.get("phase") == "client-stopped" for r in records)

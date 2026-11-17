@@ -11,6 +11,7 @@ from pathlib import Path
 from emuru.projects.coder import LIMITS, Workspace, source_diff, validate_grant
 from emuru.projects.coder_native import validate_call
 from emuru.projects.coder_sandbox import CASES
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.scout import digest, encoded, git
 from emuru.vault.mutations import directory, regular
 
@@ -216,6 +217,8 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         from emuru.projects.coder_board import check_intent
 
         check_intent(folder, grant)
+    if grant["schema"] == 4 and report.get("continuation") != grant["continuation"]:
+        raise ValueError("Continuation evidence identity changed.")
     trees = {}
     for key, subfolder in (
         ("initial_manifest", "initial-source"),
@@ -225,7 +228,7 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
     _tree_matches(folder / "source", report["final_manifest"], frozen=False)
     initial, final = report["initial_manifest"], report["final_manifest"]
     original = trees["initial_manifest"]
-    if grant["schema"] == 3:
+    if is_rework(grant):
         from emuru.projects.rework import lineage
 
         previous, _, parent_report, _ = lineage(folder, grant)
@@ -237,6 +240,12 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         original = _tree_matches(
             previous / "initial-source", parent_report["initial_manifest"], frozen=True
         )
+    elif grant["schema"] == 4:
+        from emuru.projects.continuation_execution import inputs, manifest
+
+        composed = inputs(folder, grant)
+        if initial != manifest(composed):
+            raise ValueError("Continuation initial manifest changed.")
     else:
         for name, data in original.items():
             row = git(
@@ -257,7 +266,8 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
     )
     if (
         (
-            grant["schema"] != 3
+            grant["schema"] != 4
+            and not is_rework(grant)
             and set(initial) != set(grant["read_files"]) - set(grant["create_files"])
         )
         or not set(initial) <= set(final) <= set(grant["read_files"])
@@ -287,7 +297,7 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         not report.get("failure")
         and all(_accepted(check["result"]) for check in checks)
         and bool(report["changed_files"])
-        and (grant["schema"] != 3 or final != initial)
+        and (not is_rework(grant) or final != initial)
         and report["native"].get("success") is True
         and bool(checks)
         and checks[-1]["snapshot_sha256"] == digest(report["final_manifest"])
@@ -298,7 +308,7 @@ def verify_evidence(folder, expected_digest, *, task_run=None):
         raise ValueError(
             "Qualification success is not supported by independent evidence."
         )
-    if grant["schema"] == 3:
+    if is_rework(grant):
         from emuru.projects.rework import check_artifacts
 
         check_artifacts(folder, grant)
@@ -372,7 +382,7 @@ class Qualification:
         self.failure = None
 
     def _reserve(self, additional):
-        if self.grant["schema"] == 3:
+        if is_rework(self.grant):
             from emuru.projects.rework import check_artifacts
 
             check_artifacts(self.folder, self.grant, additional)
@@ -476,7 +486,7 @@ class Qualification:
             not self.failure
             and native_result.get("success") is True
             and bool(changed)
-            and (self.grant["schema"] != 3 or final != self.workspace.initial_manifest)
+            and (not is_rework(self.grant) or final != self.workspace.initial_manifest)
             and bool(self.checks)
             and _accepted(self.checks[-1]["result"])
             and not sandbox.failed
@@ -504,7 +514,9 @@ class Qualification:
             "missing_checks": [] if valid else ["independent_local_acceptance"],
             "usage": None,
         }
-        if self.grant["schema"] == 3:
+        if self.grant["schema"] == 4:
+            report["continuation"] = self.grant["continuation"]
+        if is_rework(self.grant):
             report["parent"] = self.grant["rework"]
         data = encoded(report)
         self._save("evidence.json", data)

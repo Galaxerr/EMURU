@@ -2,6 +2,7 @@
 
 import re
 
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.scout import digest, encoded
 
 STATE_SCHEMA = 1
@@ -54,11 +55,12 @@ def parent(folder, grant):
     previous = folder.parent / grant["rework"]["loop"]
     original = load_grant(previous / "grant.json")
     if (
-        original["schema"] != 2
+        original["schema"] not in {2, 4}
+        or is_rework(original)
         or any(
             grant[k] != original[k]
             for k in original
-            if k not in {"schema", "grant_id", "limits"}
+            if k not in {"schema", "grant_id", "limits", "rework"}
         )
         or any(grant["limits"][k] > original["limits"][k] for k in original["limits"])
     ):
@@ -123,7 +125,7 @@ def check_artifacts(folder, grant, additional=0):
     from emuru.projects.coder_runtime import _artifact_size
 
     total = _artifact_size(folder) + additional
-    if grant["schema"] == 3:
+    if is_rework(grant):
         previous, _ = parent(folder, grant)
         total += _artifact_size(previous)
     if total > ARTIFACT_BYTES:
@@ -208,7 +210,7 @@ def selected(matches):
     if len(matches) != 2:
         raise ValueError("Multiple coder intents lack one-cycle lineage.")
     grants = [(p, load_grant(p / "grant.json")) for p in matches]
-    children = [(p, g) for p, g in grants if g["schema"] == 3]
+    children = [(p, g) for p, g in grants if is_rework(g)]
     if len(children) != 1:
         raise ValueError("Multiple coder intents lack one-cycle lineage.")
     folder, grant = children[0]

@@ -8,6 +8,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.scout import digest, encoded
 from emuru.vault import mutations
 
@@ -341,22 +342,20 @@ def _append(folder, records, size, value, *, emergency=False):
 
         validate_record(value, records)
     data = encoded(value)
+    from emuru.projects.supervisor_controls import emergency_size
     from emuru.projects.supervisor_scout import metadata_pending
 
     prepaid = (
         value["kind"] in {"stage", "coder-stage", "reviewer-stage"}
         and value["phase"] != "admitted"
     )
+    restriction_reserve = max(EMERGENCY_BYTES, emergency_size([*records, value]))
     if len(data) > RECEIPT_BYTES or size + len(data) + metadata_pending(
         [*records, value]
-    ) > METADATA_BYTES - (0 if emergency or prepaid else EMERGENCY_BYTES):
+    ) > METADATA_BYTES - (0 if emergency or prepaid else restriction_reserve):
         raise ValueError(
             "Supervisor metadata admission exhausted; 4 KiB emergency reserve retained."
         )
-    from emuru.projects.supervisor_controls import emergency_size
-
-    if emergency_size([*records, value]) > EMERGENCY_BYTES:
-        raise ValueError("Supervisor emergency stop/fence capacity exhausted.")
     _write_new(folder, f"{value['generation']:08d}.json", data)
     from emuru.models.gateway import write_private
 
@@ -482,9 +481,7 @@ def enroll(
             home,
             root,
             task,
-            rework_grant=grant
-            if grant.get("schema") == 3 and stage == "coder"
-            else None,
+            rework_grant=grant if is_rework(grant) and stage == "coder" else None,
         )
         if stage == "coder" and coder_board.attempt_path(home, grant).exists():
             raise ValueError("Attempted work cannot be enrolled or renewed.")
@@ -532,7 +529,7 @@ def enroll(
                 and previous["grant_sha256"] != digest(grant)
                 and not (
                     stage == "coder"
-                    and grant["schema"] == 3
+                    and is_rework(grant)
                     and grant["rework"]["grant_sha256"] == previous["grant_sha256"]
                 )
             ):

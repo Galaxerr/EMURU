@@ -11,6 +11,7 @@ from pathlib import Path
 
 from emuru.projects import coder_board, supervisor
 from emuru.projects.coder import validate_grant
+from emuru.projects.continuation_execution import is_rework
 from emuru.projects.scout import digest, encoded
 from emuru.projects.supervisor_controls import control_state
 from emuru.projects.supervisor_scout import (
@@ -383,7 +384,7 @@ def reserve(home, vault, root, grant, image):
     validate_grant(grant)
     coder_board.authorize(home, vault, root, grant["task"], grant, readonly=True)
     coder_board.ensure_idle(
-        home, root, grant["task"], rework_grant=grant if grant["schema"] == 3 else None
+        home, root, grant["task"], rework_grant=grant if is_rework(grant) else None
     )
     identity = supervisor.identity(root, image)
     with supervisor._locked(home, write=True) as (parent, size, marker):
@@ -427,11 +428,11 @@ def reserve(home, vault, root, grant, image):
         batch = require_task(home, records, grant)
         charge = allowance(grant)
         used = reserved(records, grant["project"])
-        if used["coder_runs"] and grant["schema"] != 3 and batch is None:
+        if used["coder_runs"] and not is_rework(grant) and batch is None:
             raise ValueError(
                 "Project initial coder already attempted; only separately authorized rework may follow."
             )
-        if grant["schema"] == 3:
+        if is_rework(grant):
             from emuru.projects.supervisor_reviewer import rework_predecessor
 
             rework_predecessor(records, grant)
@@ -481,7 +482,7 @@ def load(home, grant):
         ):
             raise ValueError("Exact coder admission/grant/reservation required.")
         folder = coder_board.attempt_path(home, grant)
-        if grant["schema"] in {2, 3} and folder.exists():
+        if grant["schema"] in {2, 3, 4} and folder.exists():
             from emuru.projects.reviewer import check_loop
 
             check_loop(folder, grant)
@@ -1055,7 +1056,7 @@ def finish(stage, folder, run, *, reconciling=False):
             raise InterruptedError(
                 "Coder stop requested before completion; effects uncertain."
             )
-        phase = "awaiting-review" if stage.grant["schema"] in {2, 3} else "verified"
+        phase = "awaiting-review" if stage.grant["schema"] in {2, 3, 4} else "verified"
         if phase == "verified":
             result = coder_board._complete_success(
                 stage.home,
@@ -1263,7 +1264,7 @@ def recover(home, vault, root, task_id, grant, *, cleanup=False, stage=None):
             and claim is None
             and (
                 not any(r["phase"] == "claim-started" for r in events)
-                or len(kb.list_runs(db, task_id)) != (3 if grant["schema"] == 3 else 1)
+                or len(kb.list_runs(db, task_id)) != (3 if is_rework(grant) else 1)
             )
         ):
             raise ValueError("Coder claim outcome cannot be uniquely associated.")
