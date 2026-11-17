@@ -576,3 +576,31 @@ def test_continuation_binding_concurrent_identical_request(continuation_binding)
         )
         == 1
     )
+
+
+def test_continuation_capture_alias_preserves_original_identity(continuation_binding):
+    from emuru.projects import results
+
+    c = continuation_binding
+    c.command(c.inspect())
+    records = continuation._records(c.home)
+    original = next(r for r in records if r["kind"] == "task-binding")
+    c.preview["proposal_id"] = "d" * 32
+    c.command(c.inspect())
+    before = snapshot(c.home), snapshot(c.vault)
+    assert (
+        results.canonical_spec(c.home, c.vault, ROOT, "d" * 32, original["task"], 42, 7)
+        == "a" * 32
+    )
+    assert (snapshot(c.home), snapshot(c.vault)) == before
+    c.preview["content"] = c.preview["content"].replace(
+        "Task first", "Changed first requirement"
+    )
+    c.preview["proposal_id"] = "e" * 32
+    c.preview["after_revision"] = hashlib.sha256(
+        c.preview["content"].encode()
+    ).hexdigest()
+    c.note.write_text(c.preview["content"])
+    c.command(c.inspect())
+    with pytest.raises(ValueError, match="not bound"):
+        results.canonical_spec(c.home, c.vault, ROOT, "e" * 32, original["task"], 42, 7)

@@ -191,8 +191,6 @@ def authorize(
             capture=capture,
         )
     if grant["schema"] == 4:
-        if capture:
-            raise ValueError("Continuation capture unavailable until Ticket 04.")
         from emuru.projects.continuation_batch import require_task
         from emuru.projects.continuation_execution import admission_records
 
@@ -210,7 +208,7 @@ def authorize(
                 grant,
                 review=review,
                 admitted=admitted,
-                historical=historical,
+                historical=historical or capture,
             )
             is None
         ):

@@ -327,3 +327,79 @@ def test_capture_status_is_observational_and_owner_bound(
         results.command(home, vault, root, text, 43, 7)
     assert database.read_bytes() == retained
     assert (vault / path).read_text() == before
+
+
+def test_continuation_capture_schema4_reopens_review_before_capture(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+
+    from emuru.projects import board, coder, coder_board, reviewer
+
+    grant = {"schema": 4, "proposal": "a" * 32, "owner": 42, "bot": 7}
+    monkeypatch.setattr(coder_board, "_find_attempt", lambda *a: tmp_path)
+    monkeypatch.setattr(coder, "load_grant", lambda *a: grant)
+
+    @contextmanager
+    def native(*args):
+        yield None, None
+
+    monkeypatch.setattr(board, "project_board_readonly", native)
+
+    def refuse(*args, **kwargs):
+        assert kwargs == {"capture": True, "historical": True}
+        raise ValueError("Predecessor evidence changed")
+
+    monkeypatch.setattr(reviewer, "verify", refuse)
+    with pytest.raises(ValueError, match="Predecessor evidence changed"):
+        results.verify_completion(
+            tmp_path, tmp_path, tmp_path, "a" * 32, "t_abc", 2, 42, 7
+        )
+
+
+def test_continuation_capture_index_recovery_and_applied_history(
+    capture_scope, monkeypatch
+):
+    import hashlib
+
+    from test_proposal_status import apply
+    from vault_helpers import capture_binding
+
+    from emuru.projects.scout import digest, encoded
+    from emuru.vault import indexer
+    from emuru.vault import mutations as m
+
+    home, vault, _queue, request = capture_scope
+    binding = capture_binding(vault)
+    path = "10_Projects/recovery.md"
+    note = vault / path
+    before = "- [x] Human task ^task-sample-first\nHuman bytes\n"
+    note.write_text(before)
+    preview = m.prepare_result_capture(
+        home,
+        vault,
+        request,
+        digest(binding),
+        encoded(binding).decode(),
+        path,
+        hashlib.sha256(before.encode()).hexdigest(),
+        before.splitlines()[0],
+        results.format_capture(before, before.splitlines()[0], "Verified result."),
+    )
+    monkeypatch.setattr(results, "operator_verification", lambda *a: binding)
+    original = indexer.index_vault
+    monkeypatch.setattr(indexer, "index_vault", lambda *a: {"incomplete": True})
+    assert apply(capture_scope, preview)["outcome"] == "index_pending"
+    saved = note.read_bytes(), note.stat().st_mtime_ns
+
+    def unavailable(*args):
+        pytest.fail("Durable receipts must not reopen unavailable execution artifacts")
+
+    monkeypatch.setattr(results, "operator_verification", unavailable)
+    monkeypatch.setattr(indexer, "index_vault", original)
+    assert m.recover_proposals(home, vault)[0]["outcome"] == "applied"
+    assert (note.read_bytes(), note.stat().st_mtime_ns) == saved
+    note.write_bytes(saved[0] + b"Later human edit\n")
+    later = note.read_bytes(), note.stat().st_mtime_ns
+    assert apply(capture_scope, preview)["outcome"] == "applied"
+    assert (note.read_bytes(), note.stat().st_mtime_ns) == later

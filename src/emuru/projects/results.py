@@ -52,8 +52,6 @@ def verify_completion(home, vault, root, spec, task, run, owner, bot):
     if folder is None:
         raise ValueError("No verified coding attempt.")
     grant = load_grant(folder / "grant.json")
-    if grant["schema"] == 4:
-        raise ValueError("Continuation capture unavailable until Ticket 04.")
     if (grant["proposal"], str(grant["owner"]), str(grant["bot"])) != (
         spec,
         str(owner),
@@ -62,14 +60,23 @@ def verify_completion(home, vault, root, spec, task, run, owner, bot):
         raise ValueError("Capture owner/spec binding mismatch.")
     with board.project_board_readonly(home, root) as (kb, db):
         receipt = reviewer.verify(
-            home, vault, root, task, grant, folder, kb, db, capture=True
+            home,
+            vault,
+            root,
+            task,
+            grant,
+            folder,
+            kb,
+            db,
+            capture=True,
+            historical=grant["schema"] == 4,
         )
         card = kb.get_task(db, task)
         native_run = kb.get_run(db, run)
         if (
             receipt["status"] != "verified"
             or receipt["run"] != run
-            or card.status != "done"
+            or card.status not in {"done", "archived"}
             or native_run is None
             or native_run.outcome != "completed"
             or native_run.ended_at is None
@@ -114,6 +121,44 @@ def verify_completion(home, vault, root, spec, task, run, owner, bot):
         "Next action: approve this capture separately; confirm indexed readback after application."
     )
     return binding, preview["path"], block, detail
+
+
+def canonical_spec(home, vault, root, spec, task, owner, bot):
+    """Resolve confirmed revision aliases without reopening historical artifacts."""
+    import json
+
+    from emuru.projects import board, continuation
+    from emuru.vault import mutations
+
+    with board.project_board_readonly(home, root) as (kb, db):
+        card = kb.get_task(db, task)
+        if card is None:
+            raise ValueError("Capture task unavailable.")
+        original = json.loads(card.body)["proposal"]
+        if original == spec:
+            return spec
+        preview = mutations.approved_project(
+            home, vault, spec, owner, bot, readonly=True
+        )
+        project = board._digest(
+            [str(owner), str(bot), str(vault.resolve()), preview["path"]]
+        )
+        records = continuation._records(home)
+        completed = {
+            r["intent"]
+            for r in records
+            if r["kind"] == "binding-complete" and r["project"] == project
+        }
+        if not any(
+            r["kind"] == "task-binding"
+            and r["project"] == project
+            and r["proposal"] == spec
+            and r["task"] == task
+            and r["intent"] in completed
+            for r in records
+        ):
+            raise ValueError("Capture task not bound to this revision.")
+        return original
 
 
 def command(home, vault, root, text, owner, bot):
@@ -165,6 +210,8 @@ def command(home, vault, root, text, owner, bot):
             raise ValueError(
                 "Explicit proposal schema upgrade required before capture."
             )
+        if (home / "emuru-projects/kanban.db").exists():
+            spec = canonical_spec(home, vault, root, spec, task, owner, bot)
         rows = db.execute(
             "SELECT proposal_id,binding,request_id FROM project_result_captures ORDER BY generation"
         ).fetchall()

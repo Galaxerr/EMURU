@@ -659,13 +659,10 @@ def _bind(home, vault, root, preview, owner, bot, selection, token, request, tex
             or manifest_reserve > 65536
         ):
             raise ValueError("Binding manifests exceed bounds; select fewer tasks.")
-        if (
-            size
-            + manifest_reserve
-            + metadata_pending(records)
-            + remaining * supervisor.RECEIPT_BYTES
-            > supervisor.METADATA_BYTES - supervisor.EMERGENCY_BYTES
-            or emergency_size(records) > supervisor.EMERGENCY_BYTES
+        if size + manifest_reserve + metadata_pending(
+            records
+        ) + remaining * supervisor.RECEIPT_BYTES > supervisor.METADATA_BYTES - max(
+            supervisor.EMERGENCY_BYTES, emergency_size(records)
         ):
             raise ValueError(
                 "Binding metadata capacity exhausted; restriction reserve retained."

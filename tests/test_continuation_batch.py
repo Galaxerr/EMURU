@@ -564,7 +564,9 @@ def test_continuation_execution_and_batch_restriction_admission_race(
 
 
 @pytest.mark.parametrize("continuation_binding", ["three"], indirect=True)
-def test_continuation_execution_native_three_task_chain(batch_case, monkeypatch):
+def test_continuation_execution_native_three_task_chain_continuation_capture(
+    batch_case, monkeypatch
+):
     import copy
     import hashlib
     import multiprocessing
@@ -713,8 +715,151 @@ def test_continuation_execution_native_three_task_chain(batch_case, monkeypatch)
                 "reviewer_run": receipt["run"],
             }
         )
-        proof.append({"grant": grant, "receipt": receipt, "report": report})
+        from emuru.projects import results
+        from emuru.vault import mutations as m
+
+        mutation_policy = c.home / "mutation-policy.json"
+        mutation_policy.write_text(
+            json.dumps(
+                {"enabled": True, "roots": ["10_Projects"], "vault_path": str(c.vault)}
+            )
+        )
+        mutation_policy.chmod(0o600)
+        monkeypatch.setattr(
+            m, "require_authority", lambda *a, **kw: m.load_policy(c.home)
+        )
+        text = f"/project capture {grant['proposal']} {card.id} {receipt['run']}"
+        c.admit(text)
+        before = c.note.read_bytes()
+        captured = results.command(c.home, c.vault, ROOT, text, 42, 7)
+        assert captured["outcome"] == "proposed"
+        assert c.note.read_bytes() == before
+        assert results.command(c.home, c.vault, ROOT, text, 42, 7) == captured
+        monkeypatch.setattr(
+            results,
+            "operator_verification",
+            lambda home, vault, binding: results.verify_completion(
+                home,
+                vault,
+                ROOT,
+                binding["spec"],
+                binding["task"],
+                binding["review_run"],
+                binding["owner"],
+                binding["bot"],
+            )[0],
+        )
+        if index == 2:
+            c.preview["proposal_id"] = "d" * 32
+            bind = c.inspect()
+            original_append = supervisor._append
+            interrupted = False
+
+            def lost_binding_ack(*args, original_append=original_append, **kwargs):
+                nonlocal interrupted
+                result = original_append(*args, **kwargs)
+                if not interrupted and args[3]["kind"] == "task-binding":
+                    interrupted = True
+                    raise OSError("Lost binding acknowledgement with pending capture")
+                return result
+
+            with monkeypatch.context() as patch:
+                patch.setattr(supervisor, "_append", lost_binding_ack)
+                with pytest.raises(OSError, match="Lost binding acknowledgement"):
+                    c.command(bind)
+            c.admit("/project inspect " + "d" * 32)
+            state = snapshot(c.home), snapshot(c.vault)
+            inspection = board.project_command(
+                c.home, c.vault, ROOT, "/project inspect " + "d" * 32, 42, 7
+            )
+            assert (
+                "incomplete; original authenticated bind retry required" in inspection
+            )
+            assert captured["proposal_id"] in inspection
+            assert "proposed" in inspection
+            assert "Cumulative reserved:" in inspection
+            assert (snapshot(c.home), snapshot(c.vault)) == state
+            assert c.note.read_bytes() == before
+            c.command(bind)
+        approval = c.admit("separate exact capture approval")
+        with pytest.raises(ValueError, match="Complete preview"):
+            m.apply_proposal(
+                c.home,
+                c.vault,
+                captured["proposal_id"],
+                captured["approval_digest"],
+                writers_paused=True,
+                owner=42,
+                bot=7,
+                application_request=approval,
+            )
+        m.record_preview(
+            c.home, captured["proposal_id"], captured["approval_digest"], complete=True
+        )
+        evidence = folder / "evidence.json"
+        retained, mode = evidence.read_bytes(), evidence.stat().st_mode & 0o777
+        evidence.chmod(0o600)
+        evidence.write_bytes(retained + b" altered")
+        try:
+            with pytest.raises((ValueError, OSError)):
+                m.apply_proposal(
+                    c.home,
+                    c.vault,
+                    captured["proposal_id"],
+                    captured["approval_digest"],
+                    writers_paused=True,
+                    owner=42,
+                    bot=7,
+                    application_request=approval,
+                )
+            assert c.note.read_bytes() == before
+        finally:
+            evidence.write_bytes(retained)
+            evidence.chmod(mode)
+        applied = m.apply_proposal(
+            c.home,
+            c.vault,
+            captured["proposal_id"],
+            captured["approval_digest"],
+            writers_paused=True,
+            owner=42,
+            bot=7,
+            application_request=approval,
+        )
+        assert applied["outcome"] in {"applied", "index_pending"}
+        after, mtime = c.note.read_bytes(), c.note.stat().st_mtime_ns
+        assert after.count(f"task {card.id}, coder run".encode()) == 1
+        c.admit(text)
+        assert (
+            results.command(c.home, c.vault, ROOT, text, 42, 7)["proposal_id"]
+            == captured["proposal_id"]
+        )
+        assert (c.note.read_bytes(), c.note.stat().st_mtime_ns) == (after, mtime)
+        proof.append(
+            {
+                "grant": grant,
+                "receipt": receipt,
+                "report": report,
+                "capture": captured,
+                "application": applied,
+            }
+        )
         previous_data = source.encode()
+    c.preview["proposal_id"] = "d" * 32
+    c.command(c.inspect())
+    saved = c.note.read_bytes(), c.note.stat().st_mtime_ns
+    for item in proof:
+        text = f"/project capture {'d' * 32} {item['grant']['task']} {item['receipt']['run']}"
+        c.admit(text)
+        assert (
+            results.command(c.home, c.vault, ROOT, text, 42, 7)["proposal_id"]
+            == item["capture"]["proposal_id"]
+        )
+    assert (c.note.read_bytes(), c.note.stat().st_mtime_ns) == saved
+    with m._read_database(c.home / "emuru-mutations/mutations.sqlite") as journal:
+        assert journal.execute(
+            "SELECT count(DISTINCT completion_key),count(*) FROM project_result_captures"
+        ).fetchone() == (3, 3)
     assert len({p["grant"]["grant_id"] for p in proof}) == 3
     destination = os.environ.get("EMURU_CODER_QUALIFICATION")
     if destination:

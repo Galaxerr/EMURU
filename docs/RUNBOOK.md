@@ -678,7 +678,7 @@ backup and recovery marker; older executors must refuse this profile.
 Repeat the original authenticated bind after an interrupted write; only missing
 cards, edges and receipts are filled. Inspection and restart never repair state.
 Cards stay blocked. Binding allocates no allowance and launches no worker. Continued
-execution remains refused until the later batch-authority tickets are implemented.
+execution requires the separately authorized batch and single-task grants described below.
 Native done/archived and a checked note line never establish verified completion.
 
 ### Bounded continuation batches (v0.5.8 Ticket 02)
@@ -749,6 +749,44 @@ Use existing cleanup/reconcile controls for interrupted work; neither recovery n
 restart reruns code. Schemas 1–3 retain their historical semantics.
 
 Verified code and note publication are separate. Pending predecessor capture does
-not prevent otherwise authorized execution. New schema-4 capture explicitly refuses
-until Ticket 04; historical M7 receipts remain readable. No automatic note write or
+not prevent otherwise authorized execution. Schema-4 capture reopens the complete input and predecessor lineage through the
+historical verification path; historical M7 receipts remain readable. No automatic note write or
 project-complete claim follows from a verified successor.
+
+
+### Continued result capture and recovery (v0.5.8 Ticket 04)
+
+After independent review, use `/project capture <spec-proposal-id> <task-id>
+<review-run-id>` in the authenticated owner's private chat. Keep the command on
+one line. A confirmed current-revision alias resolves to the original card,
+proposal and reviewer run; it does not create another completion identity.
+Changed contracts require their own bound card and verified result. If the stable
+anchor is unavailable, supply a second line, `anchor: <exact existing task line>`.
+The line must match uniquely. No checkbox, block ID or unrelated human bytes are
+rewritten.
+
+Capture prepares a complete note preview. Apply it through the existing separate
+exact approval workflow after pausing other writers. Before the first write, the
+pinned-runtime verifier reopens the grant, composed input, predecessor evidence,
+independent native reviews and terminal result. Missing or altered evidence
+refuses application. A changed note requires a fresh preview and approval; never
+edit receipts to bypass a refusal.
+
+Use `/project capture-status <spec-proposal-id> <task-id> <review-run-id>` to read
+retained capture state. Repeat capture after a lost acknowledgement to recover the
+same proposal. After rejection or expiry, explicitly request `capture-new` with
+the same three IDs for a fresh generation and renewed anchor/approval. Applied
+receipts remain historical facts even after later note edits or loss of old
+execution artifacts. `index_pending` means the note was saved: recover indexing,
+not execution or another paragraph. Index recovery does not rewrite the note.
+
+Inspect continues to report native status, verification, restrictions, reservations,
+binding recovery and capture proposals separately. Pending capture is not note
+publication or project completion. Restart repairs neither partial binding nor
+batch enrollment; retry the original exact authenticated operation only where
+status requests it. Execution still requires an explicit operator command.
+Capture journal capacity and supervisor metadata limits remain independent.
+Preserve the complete stopped profile, journal, board, continuation manifests,
+allowances and artifacts for upgrade or rollback; never prune history to make a
+request fit. Synthetic native/container checks establish deterministic boundary
+behavior, not live provider usefulness or manual owner acceptance.
