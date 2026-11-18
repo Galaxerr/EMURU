@@ -133,6 +133,10 @@ def test_continuation_batch_preview_readonly_enroll_replay(batch_case):
     assert (snapshot(c.home), snapshot(c.vault)) == before
     assert report["ceilings"]["active_seconds"] == 3600
     assert report["dependency_order"] == ["first", "second"]
+    assert report["blockers"] == {
+        "first": [],
+        "second": [f"Predecessor {c.cards[0].id} has no verified completion."],
+    }
     assert report["consumed"]["coder_runs"] == report["unspent"]["coder_runs"] == 0
     allowance = batch.enroll(
         c.home, c.vault, ROOT, c.manifest, c.policy, c.image, report["digest"]
@@ -861,6 +865,9 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
             "SELECT count(DISTINCT completion_key),count(*) FROM project_result_captures"
         ).fetchone() == (3, 3)
     assert len({p["grant"]["grant_id"] for p in proof}) == 3
+    from emuru.deployment import check_review_state
+
+    check_review_state(c.home, ROOT)
     destination = os.environ.get("EMURU_CODER_QUALIFICATION")
     if destination:
         Path(destination).mkdir(mode=0o700, parents=True, exist_ok=True)

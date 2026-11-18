@@ -572,6 +572,7 @@ def _preview(home, vault, root, manifest, policy, image, records, kb, db):
     bound_plan = continuation._manifest(
         home, identity=records[complete["intent"] - 1]["manifest"]
     )
+    parents = {}
     for entry, label in zip(manifest["tasks"], labels, strict=True):
         mapping = plan["mappings"][label]
         old = bound_plan["mappings"].get(label)
@@ -607,6 +608,7 @@ def _preview(home, vault, root, manifest, policy, image, records, kb, db):
         }
         if set(kb.parent_ids(db, card.id)) != expected:
             raise ValueError("Batch native dependency readback changed.")
+        parents[label] = expected
     completed = set()
     from emuru.projects import coder_board, reviewer
     from emuru.projects.coder import load_grant
@@ -616,6 +618,9 @@ def _preview(home, vault, root, manifest, policy, image, records, kb, db):
         for r in records
         if r["kind"] == "batch-task" and r["project"] == manifest["project"]
     }
+    relevant_tasks.update(
+        task for dependencies in parents.values() for task in dependencies
+    )
     for card in kb.list_tasks(db, tenant=manifest["project"], include_archived=True):
         if card.id not in relevant_tasks or card.status not in {"done", "archived"}:
             continue
@@ -699,9 +704,10 @@ def _preview(home, vault, root, manifest, policy, image, records, kb, db):
         "ceilings": ceilings,
         "dependency_order": order,
         "blockers": {
-            label: ["Schema-4 successor execution unavailable until Ticket 03"]
-            if plan["mappings"][label]["contract"]["dependencies"]
-            else []
+            label: [
+                f"Predecessor {task} has no verified completion."
+                for task in sorted(parents[label] - completed)
+            ]
             for label in labels
         },
         "input_policy": "Selected baseline files plus exact independently reviewed predecessor changes; conflicts require clarification.",

@@ -18,6 +18,7 @@ from emuru.telegram.queue import TelegramQueue, load_telegram_settings
 READY_CHECKPOINT = (
     "EMURU Telegram checkpoint: required guards and selected MCP tools READY"
 )
+CONTINUATION_GRANT_SCHEMA = 4
 BUILD_FILES = (
     "Dockerfile",
     ".dockerignore",
@@ -211,16 +212,26 @@ def check_review_state(home, target_root):
         if (
             not isinstance(grant, dict)
             or type(grant.get("schema")) is not int
-            or grant["schema"] not in {1, 2, 3}
+            or grant["schema"] not in {1, 2, 3, CONTINUATION_GRANT_SCHEMA}
         ):
             raise ValueError("Unknown coder state schema; preserve newest state.")
-        if grant["schema"] == 3:
+        continuation = grant["schema"] == CONTINUATION_GRANT_SCHEMA
+        if continuation:
+            source = Path(target_root) / "src/emuru/deployment.py"
+            if (
+                not source.is_file()
+                or "CONTINUATION_GRANT_SCHEMA = 4\n" not in source.read_text()
+            ):
+                raise ValueError(
+                    "Continuation grant state is incompatible; preserve newest state and refuse rollback."
+                )
+        if grant["schema"] == 3 or (continuation and grant["rework"] is not None):
             source = Path(target_root) / "src/emuru/projects/rework.py"
             if not source.is_file() or "STATE_SCHEMA = 1\n" not in source.read_text():
                 raise ValueError(
                     "Rework state is incompatible; preserve newest state and refuse rollback."
                 )
-        if grant["schema"] in {2, 3}:
+        if grant["schema"] in {2, 3, CONTINUATION_GRANT_SCHEMA}:
             state = _read(folder / "loop.json")
             source = Path(target_root) / "src/emuru/projects/reviewer.py"
             if (
