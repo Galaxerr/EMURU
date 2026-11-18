@@ -610,9 +610,6 @@ def _preview(home, vault, root, manifest, policy, image, records, kb, db):
             raise ValueError("Batch native dependency readback changed.")
         parents[label] = expected
     completed = set()
-    from emuru.projects import coder_board, reviewer
-    from emuru.projects.coder import load_grant
-
     relevant_tasks = {e["native_task"] for e in manifest["tasks"]} | {
         r["task"]
         for r in records
@@ -624,36 +621,8 @@ def _preview(home, vault, root, manifest, policy, image, records, kb, db):
     for card in kb.list_tasks(db, tenant=manifest["project"], include_archived=True):
         if card.id not in relevant_tasks or card.status not in {"done", "archived"}:
             continue
-        try:
-            folder = coder_board._find_attempt(home, card.id)
-            if folder is None:
-                continue
-            grant = load_grant(folder / "grant.json")
-            receipt = reviewer.verify(
-                home,
-                vault,
-                root,
-                card.id,
-                grant,
-                folder,
-                kb,
-                db,
-                historical=True,
-                capture=True,
-            )
-            native_run = kb.get_run(db, receipt["run"])
-            if (
-                receipt["status"] == "verified"
-                and native_run is not None
-                and native_run.task_id == card.id
-                and native_run.outcome == "completed"
-                and native_run.ended_at is not None
-                and json.loads(card.result or "null") == receipt
-            ):
-                completed.add(card.id)
-        except (OSError, ValueError, TypeError, KeyError):
-            # Missing old artifacts never establish success or block unrelated contracts.
-            continue
+        if verified_completion(home, vault, root, kb, db, card):
+            completed.add(card.id)
     consumed, unspent, new, ceilings = _account(
         home, records, manifest, policy, completed
     )
@@ -923,10 +892,46 @@ def enroll(home, vault, root, manifest, policy, image, expect, *, seconds=86400)
         return result
 
 
+def verified_completion(home, vault, root, kb, db, card):
+    """Reopen the immutable review and matching terminal native receipt."""
+    from emuru.projects import coder_board, reviewer
+    from emuru.projects.coder import load_grant
+
+    if card.status not in {"done", "archived"}:
+        return False
+    try:
+        folder = coder_board._find_attempt(home, card.id)
+        if folder is None:
+            return False
+        receipt = reviewer.verify(
+            home,
+            vault,
+            root,
+            card.id,
+            load_grant(folder / "grant.json"),
+            folder,
+            kb,
+            db,
+            historical=True,
+            capture=True,
+        )
+        native = kb.get_run(db, receipt["run"])
+        return (
+            receipt["status"] == "verified"
+            and native is not None
+            and native.task_id == card.id
+            and native.outcome == "completed"
+            and native.ended_at is not None
+            and json.loads(card.result or "null") == receipt
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def require_task(
     home, records, grant, *, review=False, admitted=False, historical=False
 ):
-    """Admission only. No claim, grant renewal, or schema-4 interpretation."""
+    """Reopen the exact enrollment and execution scope without claiming work."""
     tasks = memberships(records, grant["task"])
     if not tasks:
         if any(
@@ -1008,10 +1013,18 @@ def require_task(
         grant["bot"],
         readonly=True,
     )
+    binding_records = records[: allowance["generation"] - 1] if historical else records
+    completed_intents = {
+        r["intent"]
+        for r in binding_records
+        if r["kind"] == "binding-complete" and r["project"] == grant["project"]
+    }
     bindings = {
         r["logical_key"]: r
-        for r in records
-        if r["kind"] == "task-binding" and r["project"] == grant["project"]
+        for r in binding_records
+        if r["kind"] == "task-binding"
+        and r["project"] == grant["project"]
+        and r["intent"] in completed_intents
     }
     with board.project_board_readonly(home, Path(__file__).resolve().parents[3]) as (
         kb,

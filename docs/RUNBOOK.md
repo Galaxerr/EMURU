@@ -707,7 +707,9 @@ current allowance and retain all consumed reservations, task caps and the origin
 boot-bound deadline. A second Scout and a third unchanged task attempt are refused.
 
 `/project inspect <proposal>` shows batch digest, control token, spent/remaining
-counters and expiry. The owner can use `/project batch-hold|batch-continue|batch-cancel
+counters and expiry. Each selected task shows its next action or a blocker,
+including missing verified predecessors. Execution still requires admission.
+The owner can use `/project batch-hold|batch-continue|batch-cancel
 <batch-digest> <control-token>` through the existing private Telegram boundary.
 Hold drains the admitted stage and fences later admissions; cancel requests existing
 exact-identity cleanup and revokes unstarted authority. Continue clears only that
@@ -732,7 +734,9 @@ successors. Schema 4 retains all existing grant fields plus `review`, nullable
 digest, task `contract` digest, composed `input_sha256`, and a topologically ordered
 `predecessors` closure. Each predecessor binds `task`, `contract`, `grant_id`,
 `grant_sha256`, `evidence_sha256`, `receipt_sha256`, `final_sha256`, `coder_run` and
-`reviewer_run`. Unknown future output digests cannot authorize a successor.
+`reviewer_run`. The field names above are the canonical persisted schema-4
+format. The enrolled batch binds the logical task and completed binding digest.
+Unknown future output digests cannot authorize a successor.
 
 The controller reopens immutable original/final snapshots and independent native
 reviews before admission and review. Only explicit read paths enter the fresh

@@ -548,7 +548,7 @@ def command(home, vault, root, text, owner, bot):
             plan = _snapshot(
                 home, vault, root, preview, owner, bot, selection, None, None, records
             )
-        return _render(plan) + "\n" + _facts(home, root, preview, plan)
+        return _render(plan) + "\n" + _facts(home, vault, root, preview, plan)
     return _bind(
         home, vault, root, preview, owner, bot, selection, fields[4], request, text
     )
@@ -818,9 +818,15 @@ def _bind(home, vault, root, preview, owner, bot, selection, token, request, tex
         return response
 
 
-def _facts(home, root, preview, plan):
+def _facts(home, vault, root, preview, plan):
     """Observational status stays outside task identity and selection tokens."""
-    from emuru.projects.continuation_batch import project_limits, projection
+    from emuru.projects.continuation_batch import (
+        control_state,
+        memberships,
+        project_limits,
+        projection,
+        verified_completion,
+    )
     from emuru.projects.supervisor_scout import reserved
 
     records = _records(home)
@@ -857,9 +863,69 @@ def _facts(home, root, preview, plan):
             + [
                 "Native tasks: none. Verified execution: none. Allowance: none. Capture: none."
             ]
+            + [
+                f"Task {label}: owner must confirm exact binding."
+                for label in plan["selection"]
+            ]
         )
     with board.project_board_readonly(home, root) as (kb, db):
-        for card in kb.list_tasks(db, tenant=plan["project"], include_archived=True):
+        cards = {
+            card.id: card
+            for card in kb.list_tasks(db, tenant=plan["project"], include_archived=True)
+        }
+        relevant = {
+            identity
+            for item in plan["mappings"].values()
+            for identity in (
+                item["native_task"],
+                *plan["board"].get(item["native_task"] or item["key"], []),
+            )
+        }
+        verified = {
+            identity
+            for identity in relevant & cards.keys()
+            if verified_completion(home, vault, root, kb, db, cards[identity])
+        }
+        for label, item in plan["mappings"].items():
+            identity = item["native_task"]
+            parents = plan["board"].get(identity or item["key"], [])
+            blockers = sorted(set(parents) - verified)
+            membership = memberships(records, identity)
+            restriction = control_state(records, identity)
+            if identity is None:
+                action = "owner must confirm exact binding"
+            elif identity in verified:
+                action = "independent review verified; capture is separate"
+            elif blockers:
+                action = "await verified predecessors " + ", ".join(blockers)
+            elif restriction in {"held", "revoked"}:
+                action = "execution " + restriction
+            elif cards[identity].status == "running":
+                action = "await current native run"
+            elif cards[identity].status != "blocked":
+                action = "inspect native execution and review facts"
+            elif not membership:
+                action = "operator must enroll an exact batch"
+            elif batch is None or (
+                records[membership[-1]["allowance"] - 1]["manifest"] != batch["digest"]
+            ):
+                action = "operator must check current batch membership"
+            elif batch["expired"]:
+                action = "batch expired"
+            elif (
+                sum(
+                    r["kind"] == "coder-stage"
+                    and r.get("phase") == "admitted"
+                    and r["task"] == identity
+                    for r in records
+                )
+                >= membership[-1]["attempts"]
+            ):
+                action = "coder attempt cap exhausted"
+            else:
+                action = "execution candidate; operator must authorize the exact launch"
+            lines.append(f"Task {label}: {action}.")
+        for card in cards.values():
             binding = json.loads(card.body)
             lines.append(
                 f"Historical native card: {card.id}; status: {card.status}; parents: {', '.join(kb.parent_ids(db, card.id)) or 'none'}"
@@ -894,9 +960,6 @@ def _facts(home, root, preview, plan):
                         f"status: /project capture-status {value['spec']} {value['task']} {value['review_run']}; "
                         f"preview: /project capture {value['spec']} {value['task']} {value['review_run']}"
                     )
-    lines.append(
-        "Next actor: owner confirms exact binding; operator separately approves execution. Native terminal status alone never satisfies predecessor verification."
-    )
     return "\n".join(lines)
 
 
