@@ -26,6 +26,82 @@ def is_rework(grant):
     )
 
 
+def approval_fingerprint(grant, identity, context):
+    """Allow reuse only for an initial, dependency-free, read-only task."""
+    continuation = grant["continuation"]
+    if (
+        is_rework(grant)
+        or continuation["predecessors"]
+        or grant["write_files"]
+        or grant["create_files"]
+        or context[1] == "GROQ_API_KEY"
+    ):
+        # Groq reopens its credentials independently of the sampled gateway context.
+        raise ValueError("Execution requires fresh explicit owner authorization.")
+    scope = {
+        k: v
+        for k, v in grant.items()
+        if k
+        not in {
+            "grant_id",
+            "proposal",
+            "approval",
+            "revision",
+            "continuation",
+            "approval_reuse",
+        }
+    }
+    return digest(
+        {
+            "policy": 1,
+            "scope": scope,
+            "contract": continuation["contract"],
+            "input": continuation["input_sha256"],
+            "execution": identity,
+            "provider": context,
+        }
+    )
+
+
+def enrollment_authorization(home, vault, root, records, grant, identity, previous):
+    """Resolve an explicitly reusable owner grant from the immutable ledger."""
+    from emuru.projects import supervisor
+    from emuru.projects.coder_gateway import provider_context
+    from emuru.projects.supervisor_controls import control_state
+    from emuru.vault import mutations
+
+    reuse = grant.get("approval_reuse")
+    if reuse is None:
+        return None
+    fingerprint = approval_fingerprint(grant, identity, provider_context(root))
+    if reuse is True:
+        return {"fingerprint": fingerprint, "reused_from": None}
+    if (
+        previous is None
+        or previous["grant_sha256"] != reuse
+        or previous.get("execution_authorization")
+        != {"fingerprint": fingerprint, "reused_from": None}
+        or previous["proposal"] == grant["proposal"]
+        or previous["boot_id"] != supervisor.boot_id()
+        or supervisor.time.monotonic_ns() >= previous["deadline_ns"]
+        or control_state(records, previous) != "unrestricted"
+    ):
+        raise ValueError(
+            "Reusable owner authorization unavailable; fresh approval required."
+        )
+    origin = mutations.approved_project(
+        home, vault, previous["proposal"], grant["owner"], grant["bot"], readonly=True
+    )
+    if (
+        origin["approval_digest"] != previous["authority"]["approval"]
+        or origin["after_revision"] != previous["authority"]["revision"]
+    ):
+        raise ValueError(
+            "Original owner authorization changed; fresh approval required."
+        )
+    return {"fingerprint": fingerprint, "reused_from": previous["generation"]}
+
+
 def validate(grant):
     value = grant["continuation"]
     hashes = {"batch", "contract", "input_sha256"}

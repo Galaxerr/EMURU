@@ -396,7 +396,9 @@ def reserve(home, vault, root, grant, image):
             (
                 r
                 for r in reversed(records)
-                if r["kind"] == "enrollment" and r["grant_sha256"] == digest(grant)
+                if r["kind"] == "enrollment"
+                and r["stage"] == "coder"
+                and r["task"] == grant["task"]
             ),
             None,
         )
@@ -424,8 +426,23 @@ def reserve(home, vault, root, grant, image):
         ):
             raise ValueError("Coder stage already attempted; no replay.")
         from emuru.projects.continuation_batch import project_limits, require_task
+        from emuru.projects.continuation_execution import enrollment_authorization
 
         batch = require_task(home, records, grant)
+        authorization = enrollment.get("execution_authorization")
+        origin = authorization["reused_from"] if authorization else None
+        if authorization != enrollment_authorization(
+            home,
+            vault,
+            root,
+            records,
+            grant,
+            identity,
+            records[origin - 1] if origin is not None else None,
+        ):
+            raise ValueError(
+                "Execution authorization changed; fresh approval required."
+            )
         charge = allowance(grant)
         used = reserved(records, grant["project"])
         if used["coder_runs"] and not is_rework(grant) and batch is None:
@@ -589,6 +606,17 @@ class CoderStage:
             self.event(phase, count=count + 1)
         elif kind != "tool":
             raise ValueError("Unknown coder admission kind.")
+
+    def check_approval_context(self, context):
+        from emuru.projects.continuation_execution import approval_fingerprint
+
+        records = self.records()
+        enrollment = records[self.stage["enrollment"] - 1]
+        authorization = enrollment.get("execution_authorization")
+        if authorization is None or authorization[
+            "fingerprint"
+        ] != approval_fingerprint(self.grant, enrollment["identity"], context):
+            raise ValueError("Execution context changed; fresh approval required.")
 
     def claim(self, folder):
         if self.stage["launcher"] != launcher_identity():
@@ -1243,10 +1271,11 @@ def recover(home, vault, root, task_id, grant, *, cleanup=False, stage=None):
         ):
             raise ValueError("Coder recovery native project binding changed.")
         binding = json.loads(card.body)
+        from emuru.projects.continuation_batch import card_matches
+        from emuru.projects.continuation_execution import admission_records
+
         if (
-            any(
-                binding.get(k) != grant[k] for k in ("proposal", "revision", "approval")
-            )
+            not card_matches(home, admission_records(home), grant, card)
             or digest(binding.get("task")) != grant["task_digest"]
         ):
             raise ValueError("Coder recovery native task binding changed.")

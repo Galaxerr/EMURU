@@ -174,6 +174,9 @@ def authorize(
     if (capture or historical) and not (readonly and review and run_id is not None):
         raise ValueError("Capture verification cannot authorize execution.")
     grant = validate_grant(grant)
+    from emuru.projects.continuation_batch import card_matches
+    from emuru.projects.continuation_execution import admission_records
+
     if grant["schema"] in {2, 3, 4} and attempt_path(home, grant).exists():
         from emuru.projects.reviewer import check_loop
 
@@ -192,7 +195,6 @@ def authorize(
         )
     if grant["schema"] == 4:
         from emuru.projects.continuation_batch import require_task
-        from emuru.projects.continuation_execution import admission_records
 
         records = admission_records(home)
         admitted = any(
@@ -295,9 +297,9 @@ def authorize(
                 )
             )
             or binding.get("schema") != 1
-            or binding.get("revision") != grant["revision"]
-            or binding.get("proposal") != grant["proposal"]
-            or binding.get("approval") != grant["approval"]
+            or not card_matches(
+                home, records if grant["schema"] == 4 else (), grant, card
+            )
             or task not in approved_tasks
             or digest(task) != grant["task_digest"]
             or "scout" in binding

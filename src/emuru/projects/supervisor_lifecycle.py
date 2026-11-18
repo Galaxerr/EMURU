@@ -54,6 +54,15 @@ def check_compatible(home, root):
     if not supervisor.enabled(home):
         return
     records = snapshot(home)
+    if any("execution_authorization" in r for r in records):
+        candidate = Path(root) / "src/emuru/projects/supervisor.py"
+        if (
+            not candidate.is_file()
+            or "EXECUTION_AUTHORIZATION_SCHEMA = 1\n" not in candidate.read_text()
+        ):
+            raise ValueError(
+                "Execution authorization state incompatible; preserve newest state and refuse rollback."
+            )
     if any(
         r["kind"] in {"batch-allowance", "batch-task", "batch-control"} for r in records
     ):

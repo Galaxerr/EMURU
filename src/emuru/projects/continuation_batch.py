@@ -1064,6 +1064,67 @@ def require_task(
     return allowance
 
 
+def card_matches(home, records, grant, card):
+    """Match the immutable native body or its exact completed schema-4 alias."""
+    binding = json.loads(card.body)
+    if all(binding.get(k) == grant[k] for k in ("proposal", "revision", "approval")):
+        return True
+    if grant["schema"] != 4:
+        return False
+    for member in memberships(records, grant["task"]):
+        allowance = records[member["allowance"] - 1]
+        if allowance["manifest"] != grant["continuation"]["batch"]:
+            continue
+        complete = next(
+            r
+            for r in records[: allowance["generation"] - 1]
+            if r["kind"] == "binding-complete"
+            and r["project"] == grant["project"]
+            and r["binding_digest"] == allowance["binding_digest"]
+        )
+        intent = records[complete["intent"] - 1]
+        if any(intent[k] != grant[k] for k in ("proposal", "revision", "approval")):
+            return False
+        plan = continuation._manifest(home, identity=intent["manifest"])
+        return any(
+            item["native_task"] == card.id
+            and item["key"] == card.idempotency_key
+            and item["contract_digest"] == grant["continuation"]["contract"]
+            and item["body_digest"] == digest(binding)
+            for item in plan["mappings"].values()
+        )
+    return False
+
+
+def enrollment_card_matches(home, records, enrollment, card):
+    """Use the exact batch at enrollment time for task controls and status."""
+    if card.tenant != enrollment["project"] or card.id != enrollment["task"]:
+        return False
+    authority = enrollment.get("authority")
+    if authority is None:
+        return json.loads(card.body).get("proposal") == enrollment["proposal"]
+    grant = {
+        "schema": 1,
+        "project": enrollment["project"],
+        "task": enrollment["task"],
+        "proposal": enrollment["proposal"],
+        "revision": authority["revision"],
+        "approval": authority["approval"],
+    }
+    prefix = records[: enrollment["generation"] - 1]
+    members = memberships(prefix, card.id)
+    if enrollment["stage"] == "coder" and members:
+        member = members[-1]
+        grant.update(
+            schema=4,
+            continuation={
+                "batch": prefix[member["allowance"] - 1]["manifest"],
+                "contract": member["contract_digest"],
+            },
+        )
+    return card_matches(home, prefix, grant, card)
+
+
 def token(records, allowance):
     relevant = [
         r

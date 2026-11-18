@@ -1,7 +1,6 @@
 """Authenticated deterministic project restrictions, independent of conversation turns."""
 
 import hashlib
-import json
 import os
 import re
 from pathlib import Path
@@ -305,6 +304,7 @@ def _owner_control(
     home, vault, root, text, owner, bot, request, uid, *, coder_proof=None
 ):
     from emuru.projects import board
+    from emuru.projects.continuation_batch import enrollment_card_matches
     from emuru.telegram.queue import control_receipt
 
     fields = text.split()
@@ -372,23 +372,15 @@ def _owner_control(
             home, vault, proposal, owner, bot, readonly=True
         )
         if action == "continue" and (
-            not preview["current"] or preview["after_revision"] != authority["revision"]
+            not preview["current"]
+            or preview["after_revision"] != authority["revision"]
+            or preview["approval_digest"] != authority["approval"]
         ):
             raise ValueError("Project approval changed; no control committed.")
         with board.project_board_readonly(home, root) as (kb, db):
             card = kb.get_task(db, task)
-            binding = json.loads(card.body) if card else {}
-            if (
-                not card
-                or card.tenant != enrollment["project"]
-                or any(
-                    binding.get(key) != expected
-                    for key, expected in (
-                        ("proposal", proposal),
-                        ("revision", authority["revision"]),
-                        ("approval", authority["approval"]),
-                    )
-                )
+            if card is None or not enrollment_card_matches(
+                home, records, enrollment, card
             ):
                 raise ValueError("Cross-project native task refused.")
             claimed = next(

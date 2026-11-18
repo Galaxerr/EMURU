@@ -15,6 +15,23 @@ from emuru.projects.coder_sandbox import bounded_process
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def provider_context(root):
+    route = read_route(Path.home() / ".local/state/emuru/container/route.json")
+    values = read_env(Path(root) / ".env")
+    selected = {
+        "ollama": "OLLAMA_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "openai-api": "OPENAI_API_KEY",
+        "groq": "GROQ_API_KEY",
+    }[route["primary"]["provider"]]
+    key = values.get(selected) or (
+        values.get("GOOGLE_API_KEY") if selected == "GEMINI_API_KEY" else None
+    )
+    if not key:
+        raise ValueError("Selected cloud route credential is unavailable.")
+    return route, selected, key
+
+
 @contextlib.contextmanager
 def cloud_gateway(
     folder, daemon_root=None, process_event=None, *, deadline=None, supervision=None
@@ -52,19 +69,9 @@ def cloud_gateway(
     remaining(120)
     folder = Path(folder)
     daemon_root = Path(daemon_root) if daemon_root else ROOT
-    route = read_route(Path.home() / ".local/state/emuru/container/route.json")
-    values = read_env(ROOT / ".env")
-    selected = {
-        "ollama": "OLLAMA_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "openai-api": "OPENAI_API_KEY",
-        "groq": "GROQ_API_KEY",
-    }[route["primary"]["provider"]]
-    upstream_key = values.get(selected) or (
-        values.get("GOOGLE_API_KEY") if selected == "GEMINI_API_KEY" else None
-    )
-    if not upstream_key:
-        raise ValueError("Selected cloud route credential is unavailable.")
+    route, selected, upstream_key = provider_context(ROOT)
+    if supervision is not None and "approval_reuse" in supervision.grant:
+        supervision.check_approval_context((route, selected, upstream_key))
     folder.mkdir(mode=0o700)
     gateway_key = "sk-" + secrets.token_hex(32)
     write_private(folder / "gateway.key", gateway_key + "\n")

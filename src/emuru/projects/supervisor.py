@@ -14,6 +14,7 @@ from emuru.vault import mutations
 
 STATE_SCHEMA = 1
 CONTINUATION_SCHEMA = 2
+EXECUTION_AUTHORIZATION_SCHEMA = 1
 METADATA_BYTES = 1024 * 1024
 RECEIPT_BYTES = 4096
 EMERGENCY_BYTES = 4096
@@ -168,7 +169,8 @@ def _records(parent, size, marker):
                 "identity",
             }
             if (
-                set(value) not in (required, required | {"authority"})
+                set(value) - {"execution_authorization"}
+                not in (required, required | {"authority"})
                 or value["stage"] not in {"coder", "scout"}
                 or not isinstance(value["boot_id"], str)
                 or not value["boot_id"]
@@ -201,6 +203,30 @@ def _records(parent, size, marker):
                     )
                 ):
                     raise ValueError("Supervisor owner authority binding invalid.")
+            if "execution_authorization" in value:
+                auth = value["execution_authorization"]
+                if (
+                    value["stage"] != "coder"
+                    or "authority" not in value
+                    or not isinstance(auth, dict)
+                    or set(auth) != {"fingerprint", "reused_from"}
+                    or not isinstance(auth["fingerprint"], str)
+                    or not re.fullmatch("[0-9a-f]{64}", auth["fingerprint"])
+                ):
+                    raise ValueError("Invalid execution authorization record.")
+                origin = auth["reused_from"]
+                if origin is not None and (
+                    type(origin) is not int
+                    or not 1 <= origin < value["generation"]
+                    or records[origin - 1].get("execution_authorization")
+                    != {"fingerprint": auth["fingerprint"], "reused_from": None}
+                    or any(
+                        records[origin - 1][k] != value[k]
+                        for k in ("project", "task", "identity", "boot_id")
+                    )
+                    or value["deadline_ns"] > records[origin - 1]["deadline_ns"]
+                ):
+                    raise ValueError("Invalid reused execution authorization lineage.")
             identity = value["identity"]
             if (
                 not isinstance(identity, dict)
@@ -524,6 +550,34 @@ def enroll(
                 ),
                 None,
             )
+            from emuru.projects.continuation_batch import require_task
+            from emuru.projects.continuation_execution import enrollment_authorization
+
+            if stage == "coder":
+                batch = require_task(home, records, grant)
+                original = previous
+                replay = (
+                    previous is not None
+                    and previous["grant_sha256"] == digest(grant)
+                    and "execution_authorization" in previous
+                )
+                if replay:
+                    origin = previous["execution_authorization"]["reused_from"]
+                    original = records[origin - 1] if origin is not None else None
+                authorization = enrollment_authorization(
+                    home, vault, root, records, grant, current_identity, original
+                )
+                if replay:
+                    if authorization != previous["execution_authorization"]:
+                        raise ValueError(
+                            "Original execution authorization changed; fresh approval required."
+                        )
+                    return previous
+            else:
+                from emuru.projects.continuation_batch import require_scout
+
+                batch = require_scout(home, records, project, task, grant)
+                authorization = None
             if (
                 previous is not None
                 and previous["grant_sha256"] != digest(grant)
@@ -531,6 +585,17 @@ def enroll(
                     stage == "coder"
                     and is_rework(grant)
                     and grant["rework"]["grant_sha256"] == previous["grant_sha256"]
+                )
+                and not (
+                    stage == "coder"
+                    and grant["schema"] == 4
+                    and batch is not None
+                    and previous["proposal"] != grant["proposal"]
+                    and not any(
+                        r["kind"] == "coder-stage"
+                        and r.get("grant_sha256") == previous["grant_sha256"]
+                        for r in records
+                    )
                 )
             ):
                 raise ValueError(
@@ -550,18 +615,12 @@ def enroll(
                         "reserved": dict.fromkeys(COUNTERS, 0),
                     },
                 )
-            from emuru.projects.continuation_batch import require_task
-
-            if stage == "coder":
-                batch = require_task(home, records, grant)
-            else:
-                from emuru.projects.continuation_batch import require_scout
-
-                batch = require_scout(home, records, project, task, grant)
             started = time.monotonic_ns()
             deadline = started + seconds * 10**9
             if batch is not None:
                 deadline = min(deadline, batch["deadline_ns"])
+            if authorization is not None and authorization["reused_from"] is not None:
+                deadline = min(deadline, previous["deadline_ns"])
             return _append(
                 folder,
                 records,
@@ -577,6 +636,11 @@ def enroll(
                     "started_ns": started,
                     "deadline_ns": deadline,
                     "identity": current_identity,
+                    **(
+                        {"execution_authorization": authorization}
+                        if authorization is not None
+                        else {}
+                    ),
                     "authority": {
                         "owner": grant["owner"] if stage == "coder" else owner,
                         "bot": grant["bot"] if stage == "coder" else bot,
@@ -617,8 +681,9 @@ def status(home, root, project, card):
             raise ValueError(
                 "Supervisor source/image/pin/schema incompatible; preserve newest state."
             )
-        binding = json.loads(card.body)
-        if card.tenant != project or binding.get("proposal") != value["proposal"]:
+        from emuru.projects.continuation_batch import enrollment_card_matches
+
+        if not enrollment_card_matches(home, records, value, card):
             raise ValueError("Supervisor native project/task/proposal mismatch.")
         from emuru.projects.supervisor_scout import reserved
 

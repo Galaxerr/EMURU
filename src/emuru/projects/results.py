@@ -52,10 +52,13 @@ def verify_completion(home, vault, root, spec, task, run, owner, bot):
     if folder is None:
         raise ValueError("No verified coding attempt.")
     grant = load_grant(folder / "grant.json")
-    if (grant["proposal"], str(grant["owner"]), str(grant["bot"])) != (
-        spec,
-        str(owner),
-        str(bot),
+    if (str(grant["owner"]), str(grant["bot"])) != (str(owner), str(bot)) or (
+        grant["proposal"] != spec
+        and (
+            grant["schema"] != 4
+            or canonical_spec(home, vault, root, grant["proposal"], task, owner, bot)
+            != spec
+        )
     ):
         raise ValueError("Capture owner/spec binding mismatch.")
     with board.project_board_readonly(home, root) as (kb, db):
@@ -94,7 +97,7 @@ def verify_completion(home, vault, root, spec, task, run, owner, bot):
         "vault": str(vault.resolve()),
         "project": grant["project"],
         "spec": spec,
-        "revision": grant["revision"],
+        "revision": preview["after_revision"],
         "task": task,
         "coder_run": receipt["coder_run"],
         "review_run": run,

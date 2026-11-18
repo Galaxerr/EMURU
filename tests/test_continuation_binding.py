@@ -129,6 +129,84 @@ def continuation_binding(tmp_path, monkeypatch, request):
         text = command("/project inspect " + preview["proposal_id"])
         return re.search(r"^Confirm: (.+)$", text, re.MULTILINE)[1]
 
+    if getattr(request, "param", None) == "three":
+        import multiprocessing
+
+        from emuru import deployment
+        from emuru.projects import supervisor as ledger
+        from emuru.projects.supervisor_lifecycle import snapshot as ledger_snapshot
+
+        marker = folder / "supervisor-enabled.json"
+        marker.write_bytes(encoded({"schema": 1, "generation": 0, "head": None}))
+        project = board._digest(["42", "7", str(vault), preview["path"]])
+        task = board.spec_tasks(preview["content"])[0]
+        with board.project_board(home, ROOT) as (native, db):
+            legacy_card = native.create_task(
+                db,
+                title=task["description"],
+                body=json.dumps(
+                    {
+                        "schema": 1,
+                        "revision": preview["after_revision"],
+                        "proposal": preview["proposal_id"],
+                        "approval": preview["approval_digest"],
+                        "task": task,
+                    },
+                    sort_keys=True,
+                ),
+                tenant=project,
+                idempotency_key="emuru:"
+                + board._digest([project, preview["after_revision"], task["id"]]),
+                created_by="emuru-owner",
+                initial_status="blocked",
+                workspace_kind="scratch",
+                project_id="",
+                max_retries=0,
+            )
+            original_body = native.get_task(db, legacy_card).body
+        with ledger._locked(home, write=True) as (parent, size, old):
+            records, size = ledger._records(parent, size, old)
+            legacy, _ = ledger._append(
+                supervisor,
+                records,
+                size,
+                {
+                    "kind": "project",
+                    "project": project,
+                    "reserved": dict.fromkeys(ledger.COUNTERS, 0),
+                },
+            )
+        before = snapshot(supervisor)
+
+        def stop_before_publish():
+            deployment.write_private = lambda *args: os._exit(18)
+            deployment.upgrade_continuation(home, ROOT)
+
+        process = multiprocessing.get_context("fork").Process(
+            target=stop_before_publish
+        )
+        process.start()
+        try:
+            process.join(20)
+            assert process.exitcode == 18
+        finally:
+            if process.is_alive():
+                process.kill()
+                process.join(10)
+        assert json.loads(marker.read_bytes())["schema"] == 1
+        assert snapshot(supervisor) == before
+        result = deployment.upgrade_continuation(home, ROOT)
+        assert result["state_changed"]
+        backup = json.loads(Path(result["backup"]).read_bytes())
+        assert (
+            backup["files"]["00000001.json"].encode()
+            == (supervisor / "00000001.json").read_bytes()
+        )
+        assert snapshot(supervisor) == before
+        assert ledger_snapshot(home) == [legacy]
+        with board.project_board_readonly(home, ROOT) as (native, db):
+            assert native.get_task(db, legacy_card).body == original_body
+
     return SimpleNamespace(
         home=home,
         vault=vault,

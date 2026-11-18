@@ -62,7 +62,12 @@ _FIELDS = {
 def validate_grant(grant):
     """Validate frozen scope/ceilings, without consulting real board or vault state."""
     review = isinstance(grant, dict) and grant.get("schema") in {2, 3, 4}
-    if not isinstance(grant, dict) or set(grant) != _FIELDS | (
+    optional = (
+        {"approval_reuse"} & grant.keys()
+        if isinstance(grant, dict) and grant.get("schema") == 4
+        else set()
+    )
+    if not isinstance(grant, dict) or set(grant) != _FIELDS | optional | (
         (
             {"review", "rework", "continuation"}
             if grant.get("schema") == 4
@@ -74,6 +79,12 @@ def validate_grant(grant):
         else set()
     ):
         raise ValueError("Invalid coder grant fields.")
+    if optional:
+        reuse = grant["approval_reuse"]
+        if reuse is not True and (
+            not isinstance(reuse, str) or not re.fullmatch("[0-9a-f]{64}", reuse)
+        ):
+            raise ValueError("Invalid coder approval reuse authority.")
     if review:
         from emuru.projects.reviewer import authority
 

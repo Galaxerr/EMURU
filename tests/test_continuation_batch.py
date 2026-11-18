@@ -575,6 +575,7 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
     import hashlib
     import multiprocessing
     import os
+    import shutil
     import uuid
     from pathlib import Path
 
@@ -610,6 +611,18 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
     predecessors = []
     previous_data = b"def sum_prices(prices):\n    return 0\n"
     proof = []
+
+    def inspect(proposal):
+        command = f"/project inspect {proposal}"
+        c.admit(command)
+        before = snapshot(c.home), snapshot(c.vault)
+        report = board.project_command(c.home, c.vault, ROOT, command, 42, 7)
+        assert (snapshot(c.home), snapshot(c.vault)) == before
+        return report
+
+    inspection = inspect(c.policy["proposal"])
+    assert "Task first: execution candidate" in inspection
+    assert "Task second: await verified predecessors" in inspection
     for index, label in enumerate(["first", "second", "third"]):
         card = cards[label]
         grant = copy.deepcopy(c.policy)
@@ -732,6 +745,27 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
         monkeypatch.setattr(
             m, "require_authority", lambda *a, **kw: m.load_policy(c.home)
         )
+        if index == 1:
+            pending = proof[0]["capture"]
+            assert pending["outcome"] == "proposed"
+            approval = c.admit("separate pending predecessor capture approval")
+            m.record_preview(
+                c.home,
+                pending["proposal_id"],
+                pending["approval_digest"],
+                complete=True,
+            )
+            proof[0]["application"] = m.apply_proposal(
+                c.home,
+                c.vault,
+                pending["proposal_id"],
+                pending["approval_digest"],
+                writers_paused=True,
+                owner=42,
+                bot=7,
+                application_request=approval,
+            )
+            assert proof[0]["application"]["outcome"] in {"applied", "index_pending"}
         text = f"/project capture {grant['proposal']} {card.id} {receipt['run']}"
         c.admit(text)
         before = c.note.read_bytes()
@@ -739,6 +773,11 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
         assert captured["outcome"] == "proposed"
         assert c.note.read_bytes() == before
         assert results.command(c.home, c.vault, ROOT, text, 42, 7) == captured
+        if index == 0:
+            inspection = inspect(grant["proposal"])
+            assert "Task first: independent review verified" in inspection
+            assert "Task second: execution candidate" in inspection
+            assert "Task third: await verified predecessors" in inspection
         monkeypatch.setattr(
             results,
             "operator_verification",
@@ -753,38 +792,73 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
                 binding["bot"],
             )[0],
         )
+        if index == 0:
+            proof.append(
+                {
+                    "grant": grant,
+                    "receipt": receipt,
+                    "report": report,
+                    "capture": captured,
+                }
+            )
+            previous_data = source.encode()
+            continue
         if index == 2:
             c.preview["proposal_id"] = "d" * 32
             bind = c.inspect()
+            c.admit(bind)
             original_append = supervisor._append
-            interrupted = False
 
             def lost_binding_ack(*args, original_append=original_append, **kwargs):
-                nonlocal interrupted
                 result = original_append(*args, **kwargs)
-                if not interrupted and args[3]["kind"] == "task-binding":
-                    interrupted = True
-                    raise OSError("Lost binding acknowledgement with pending capture")
+                if args[3]["kind"] == "task-binding":
+                    os._exit(17)
                 return result
 
-            with monkeypatch.context() as patch:
-                patch.setattr(supervisor, "_append", lost_binding_ack)
-                with pytest.raises(OSError, match="Lost binding acknowledgement"):
-                    c.command(bind)
-            c.admit("/project inspect " + "d" * 32)
-            state = snapshot(c.home), snapshot(c.vault)
-            inspection = board.project_command(
-                c.home, c.vault, ROOT, "/project inspect " + "d" * 32, 42, 7
+            def interrupted_bind(bind=bind):
+                supervisor._append = lost_binding_ack
+                board.project_command(c.home, c.vault, ROOT, bind, 42, 7)
+
+            process = multiprocessing.get_context("fork").Process(
+                target=interrupted_bind
             )
+            process.start()
+            try:
+                process.join(20)
+                assert process.exitcode == 17
+            finally:
+                if process.is_alive():
+                    process.kill()
+                    process.join(10)
+            inspection = inspect("d" * 32)
             assert (
                 "incomplete; original authenticated bind retry required" in inspection
             )
             assert captured["proposal_id"] in inspection
             assert "proposed" in inspection
             assert "Cumulative reserved:" in inspection
-            assert (snapshot(c.home), snapshot(c.vault)) == state
             assert c.note.read_bytes() == before
             c.command(bind)
+            c.preview["proposal_id"] = "e" * 32
+            c.preview["content"] = c.preview["content"].replace(
+                "Task first", "Changed first requirement"
+            )
+            c.preview["after_revision"] = hashlib.sha256(
+                c.preview["content"].encode()
+            ).hexdigest()
+            c.note.write_bytes(
+                before.replace(b"Task first", b"Changed first requirement")
+            )
+            before = c.note.read_bytes()
+            c.command(c.inspect())
+            old_capture = captured
+            c.admit(text)
+            assert results.command(c.home, c.vault, ROOT, text, 42, 7) == old_capture
+            renew = text.replace(" capture ", " capture-new ")
+            c.admit(renew)
+            captured = results.command(c.home, c.vault, ROOT, renew, 42, 7)
+            assert captured["proposal_id"] != old_capture["proposal_id"]
+            assert c.note.read_bytes() == before
         approval = c.admit("separate exact capture approval")
         with pytest.raises(ValueError, match="Complete preview"):
             m.apply_proposal(
@@ -833,9 +907,10 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
         assert applied["outcome"] in {"applied", "index_pending"}
         after, mtime = c.note.read_bytes(), c.note.stat().st_mtime_ns
         assert after.count(f"task {card.id}, coder run".encode()) == 1
-        c.admit(text)
+        replay = renew if index == 2 else text
+        c.admit(replay)
         assert (
-            results.command(c.home, c.vault, ROOT, text, 42, 7)["proposal_id"]
+            results.command(c.home, c.vault, ROOT, replay, 42, 7)["proposal_id"]
             == captured["proposal_id"]
         )
         assert (c.note.read_bytes(), c.note.stat().st_mtime_ns) == (after, mtime)
@@ -849,8 +924,6 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
             }
         )
         previous_data = source.encode()
-    c.preview["proposal_id"] = "d" * 32
-    c.command(c.inspect())
     saved = c.note.read_bytes(), c.note.stat().st_mtime_ns
     for item in proof:
         text = f"/project capture {'d' * 32} {item['grant']['task']} {item['receipt']['run']}"
@@ -863,11 +936,23 @@ def test_continuation_execution_native_three_task_chain_continuation_capture(
     with m._read_database(c.home / "emuru-mutations/mutations.sqlite") as journal:
         assert journal.execute(
             "SELECT count(DISTINCT completion_key),count(*) FROM project_result_captures"
-        ).fetchone() == (3, 3)
+        ).fetchone() == (3, 4)
     assert len({p["grant"]["grant_id"] for p in proof}) == 3
-    from emuru.deployment import check_review_state
+    from emuru.deployment import check_review_state, stopped_profile
 
     check_review_state(c.home, ROOT)
+    older = c.home.parent / "older-executor"
+    projects = older / "src/emuru/projects"
+    projects.mkdir(parents=True)
+    for name in ("continuation_batch.py", "supervisor.py", "supervisor_lifecycle.py"):
+        shutil.copyfile(ROOT / "src/emuru/projects" / name, projects / name)
+    before = snapshot(c.home), snapshot(c.vault)
+    with (
+        stopped_profile(c.home),
+        pytest.raises(ValueError, match="Continuation grant state is incompatible"),
+    ):
+        check_review_state(c.home, older)
+    assert (snapshot(c.home), snapshot(c.vault)) == before
     destination = os.environ.get("EMURU_CODER_QUALIFICATION")
     if destination:
         Path(destination).mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -923,6 +1008,172 @@ def test_continuation_execution_admission_refuses_before_native_claim(
     assert snapshot(c.home) == before
     with board.project_board_readonly(c.home, ROOT) as (kb, db):
         assert all(kb.list_runs(db, card.id) == [] for card in c.cards)
+
+
+@pytest.mark.parametrize(
+    "mode", ["fresh", "reuse", "no-consent", "context", "limits", "writes"]
+)
+def test_continuation_alias_execution_authorization(
+    batch_case, tmp_path, monkeypatch, mode
+):
+    import shutil
+    import uuid
+
+    from emuru.deployment import check_review_state
+    from emuru.projects import (
+        coder_board,
+        coder_gateway,
+        continuation_execution,
+        supervisor_coder,
+    )
+    from emuru.projects.supervisor_lifecycle import snapshot as ledger
+
+    c = batch_case
+    context = [
+        {"primary": {"provider": "gemini", "model": "fixture"}},
+        "GEMINI_API_KEY",
+        "synthetic",
+    ]
+    monkeypatch.setattr(coder_gateway, "provider_context", lambda root: context)
+    if mode != "writes":
+        c.policy["write_files"] = []
+        for entry in c.manifest["tasks"]:
+            entry["write_files"] = []
+    c.batch_enroll()
+    grant = dict(c.policy, schema=4, rework=None)
+    grant["continuation"] = {
+        "batch": digest(c.manifest),
+        "contract": c.manifest["tasks"][0]["contract_digest"],
+        "input_sha256": digest(
+            continuation_execution.manifest(continuation_execution.baseline(grant))
+        ),
+        "predecessors": [],
+    }
+    if mode in {"reuse", "context", "limits"}:
+        grant["approval_reuse"] = True
+    policy = tmp_path / "alias-grant.json"
+
+    def enroll(value):
+        policy.write_text(json.dumps(value))
+        policy.chmod(0o600)
+        return supervisor.enroll(
+            c.home, c.vault, ROOT, "coder", policy, value["task"], c.image
+        )
+
+    original = enroll(grant)
+    c.preview.update(proposal_id="d" * 32, approval_digest="c" * 64)
+    c.command(c.inspect())
+    bound = next(r for r in reversed(ledger(c.home)) if r["kind"] == "binding-complete")
+    c.manifest.update(
+        proposal=c.preview["proposal_id"],
+        binding_digest=bound["binding_digest"],
+        previous_allowance=digest(c.manifest),
+    )
+    c.policy.update(
+        proposal=c.preview["proposal_id"], approval=c.preview["approval_digest"]
+    )
+    c.batch_enroll()
+    alias = {
+        **grant,
+        "grant_id": uuid.uuid4().hex,
+        "proposal": c.policy["proposal"],
+        "approval": c.policy["approval"],
+        "continuation": {**grant["continuation"], "batch": digest(c.manifest)},
+    }
+    if mode != "fresh":
+        alias["approval_reuse"] = digest(grant)
+    if mode == "context":
+        context[2] = "different synthetic credential"
+    if mode == "limits":
+        alias["limits"] = {**grant["limits"], "model_iterations": 1}
+    before = snapshot(c.home), snapshot(c.vault)
+    if mode in {"no-consent", "context", "limits", "writes"}:
+        with pytest.raises(ValueError, match="fresh"):
+            enroll(alias)
+        assert (snapshot(c.home), snapshot(c.vault)) == before
+        return
+    enrolled = enroll(alias)
+    if mode == "reuse":
+        assert enrolled["execution_authorization"] == {
+            "reused_from": original["generation"],
+            "fingerprint": original["execution_authorization"]["fingerprint"],
+        }
+    else:
+        assert "execution_authorization" not in enrolled
+    from emuru.projects.supervisor_controls import control_state, owner_control
+    from emuru.telegram.queue import TelegramQueue, load_telegram_settings
+    from emuru.vault import mutations
+
+    queue = TelegramQueue(
+        c.home / "emuru-telegram/queue.sqlite3",
+        load_telegram_settings(ROOT / "infra/hermes/telegram-settings.json"),
+        42,
+        clock=lambda: 100000,
+    )
+    try:
+        for uid, action, expected in (
+            (1, "hold", "held"),
+            (2, "continue", "unrestricted"),
+        ):
+            token = supervisor.status(c.home, ROOT, alias["project"], c.cards[0])[
+                "token"
+            ]
+            text = f"/project {action} {alias['proposal']} {alias['task']} {token}"
+            queue.stage(
+                7,
+                [
+                    {
+                        "update_id": uid,
+                        "message": {
+                            "message_id": uid,
+                            "date": 100000,
+                            "chat": {"id": 42, "type": "private"},
+                            "from": {"id": 42, "is_bot": False},
+                            "text": text,
+                        },
+                    }
+                ],
+                "emuru",
+            )
+            row = queue.claim(7, "emuru")
+            request, _ = mutations.begin_request(
+                c.home, c.vault, 42, 7, uid, text, fresh=True
+            )
+            owner_control(c.home, c.vault, ROOT, text, 42, 7, request, uid)
+            queue.finish(row["sequence"], True)
+            assert control_state(ledger(c.home), enrolled) == expected
+    finally:
+        queue.close()
+    with pytest.raises(ValueError):
+        supervisor_coder.reserve(c.home, c.vault, ROOT, grant, c.image)
+    stage = supervisor_coder.reserve(c.home, c.vault, ROOT, alias, c.image)
+    assert stage["enrollment"] == enrolled["generation"]
+    assert stage["grant_sha256"] == digest(alias)
+    with board.project_board_readonly(c.home, ROOT) as (kb, db):
+        assert kb.get_task(db, grant["task"]).body == c.cards[0].body
+        assert kb.list_runs(db, grant["task"]) == []
+    supervision = supervisor_coder.CoderStage(c.home, c.vault, ROOT, alias)
+    folder = coder_board.create_attempt(c.home, alias, supervision=supervision)
+    run = coder_board.claim(
+        c.home, c.vault, ROOT, alias["task"], alias, folder, supervision=supervision
+    )
+    assert coder_board.check_intent(folder, alias)["grant_sha256"] == digest(alias)
+    with board.project_board_readonly(c.home, ROOT) as (kb, db):
+        assert [r.id for r in kb.list_runs(db, alias["task"])] == [run["run"]]
+    if mode == "reuse":
+        old = tmp_path / "old-schema4"
+        project = old / "src/emuru/projects"
+        project.mkdir(parents=True)
+        for name in ("continuation_batch.py", "supervisor_lifecycle.py"):
+            shutil.copyfile(ROOT / "src/emuru/projects" / name, project / name)
+        (project / "supervisor.py").write_text("CONTINUATION_SCHEMA = 2\n")
+        before = snapshot(c.home)
+        check_review_state(c.home, ROOT)
+        with pytest.raises(
+            ValueError, match="Execution authorization state incompatible"
+        ):
+            check_review_state(c.home, old)
+        assert snapshot(c.home) == before
 
 
 @pytest.mark.parametrize("verdict", ["changes_requested", "blocked"])
