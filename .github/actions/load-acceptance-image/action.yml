@@ -1,0 +1,51 @@
+name: Load acceptance image
+description: >
+  Download the shared acceptance image artifact, load it into Docker and
+  (optionally) pre-pull the pinned infrastructure images in parallel.
+  Requires LITELLM_IMAGE and OLLAMA_IMAGE in the environment when pull-infra is true,
+  and the project's dependencies to be synced (setup-python-env).
+
+inputs:
+  pull-infra:
+    description: Pull the pinned LiteLLM and Ollama images.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: emuru-acceptance-image
+        path: ${{ runner.temp }}/emuru-image
+
+    - name: Load image and fetch pinned infrastructure
+      shell: bash
+      env:
+        PULL_INFRA: ${{ inputs.pull-infra }}
+      run: |
+        set -euo pipefail
+        pids=()
+        if [ "$PULL_INFRA" = "true" ]; then
+          for img in "$LITELLM_IMAGE" "$OLLAMA_IMAGE"; do
+            # Skip the pull when the image is already present (local act runs
+            # use --pull=false with preloaded images).
+            (docker image inspect "$img" >/dev/null 2>&1 || docker pull --quiet "$img" >/dev/null) &
+            pids+=($!)
+          done
+        fi
+        zstd -dc "$RUNNER_TEMP/emuru-image/emuru-image.tar.zst" | docker load
+        for pid in "${pids[@]}"; do
+          wait "$pid"
+        done
+
+    - name: Verify image and export its tag
+      shell: bash
+      run: |
+        uv run --frozen python - <<'PYTHON'
+        import os
+        import runpy
+        _, image = runpy.run_path("scripts/hermes/container.py")["ensure_image"](build=False)
+        with open(os.environ["GITHUB_ENV"], "a") as output:
+            output.write(f"EMURU_TEST_IMAGE={image}\n")
+        PYTHON

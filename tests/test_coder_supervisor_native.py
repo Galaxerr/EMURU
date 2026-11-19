@@ -479,13 +479,17 @@ def launch_child(fixture, window, connection):
                 ),
                 review=self.stage["kind"] == "reviewer-stage",
             )
-        identity = create(self, command, name, service, image, **kwargs)
-        if (
+        filling_capacity = (
             window == "cap-check"
             and service == "check"
             and "developer_main" in command[-1]
             and sum(r.get("phase") == "check-admitted" for r in self.records()) == 4
-        ):
+        )
+        if filling_capacity:
+            # Keep the fourth check running while the host fills the receipt ledger.
+            command = [*command[:-1], "import time; time.sleep(45); " + command[-1]]
+        identity = create(self, command, name, service, image, **kwargs)
+        if filling_capacity:
 
             def fill():
                 while True:
@@ -717,7 +721,7 @@ def wait_active(fixture, process, window):
         (1, "cancel-inference"),
         ("check", "cancel-check"),
         ("check", "kill-check"),
-        ("check", "cap-check"),
+        (1, "cap-check"),
         (1, "evidence"),
         (1, "native-ack"),
         (2, "schema-two"),
