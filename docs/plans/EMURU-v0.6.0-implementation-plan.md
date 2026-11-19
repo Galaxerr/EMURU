@@ -9,7 +9,7 @@
 
 > **Planning accuracy:** The sections below preserve the original design and milestone
 > criteria. Current implementation and accepted deviations are described in the
-> [v0.5.7 implementation record](../releases/v0.5.7-implementation.md); proposed
+> [v0.5.8 implementation record](../releases/v0.5.8-implementation.md); proposed
 > paths/APIs below are not proof that later milestones exist. Upstream behavior
 > must be verified against the pinned Hermes source and disposable runtime.
 
@@ -245,7 +245,7 @@ Each milestone must be **useful in its own right**, testable on disposable data,
 
 ## 12. M7 — v0.5.7: Verified result capture through guarded vault proposals
 
-**Delivered and accepted, 2026-11-15.** The [implementation record](../releases/v0.5.7-implementation.md) is authoritative for exact commands, task-line-only anchoring, artifact provenance, current-source evidence guards, additive journal upgrade and all fourteen passing M7 criteria. The design below preserves the original milestone intent, not additional implemented APIs.
+**Delivered and accepted, 2026-11-15.** See the [runbook](../RUNBOOK.md#verified-result-capture-v057) for commands and the [historical M7 acceptance record](https://github.com/Galaxerr/EMURU/blob/871e36646a7e69ff42641d4b8193759c448388af/docs/releases/v0.5.7-implementation.md) for original evidence.
 
 **User story:** After a reviewed task, EMURU says what changed and prepares a concise update to the **original project note**, including verified tests, code reference and next action. The owner approves; no new duplicate decision/project note is created.
 
@@ -277,7 +277,7 @@ Each milestone must be **useful in its own right**, testable on disposable data,
 
 **Status:** Implementation complete. Ticket 06 technical and bounded live
 qualification passed. Hosted CI passed for the owner-accepted candidate and its
-previous documentation follow-up. Final release-record CI is pending at push.
+release-record follow-ups, including all 14 jobs on commit `871e366`.
 See the [release and acceptance record](../releases/v0.5.8-implementation.md).
 
 ## 14. M9 — v0.6.0: End-to-end qualification and release

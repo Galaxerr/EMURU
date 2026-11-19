@@ -4,17 +4,14 @@ EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately
 with your Telegram bot to find notes, follow links, save Inbox notes, and review
 proposed project or task changes. Conversation history persists across restarts.
 
-**v0.5.7: M7 implementation and acceptance complete.** Verified code results can
-now become an exact, owner-approved update to the original project note. Capture
-requires an explicit private command, independently verified evidence, a complete
-preview and a separate approval. Duplicate requests reuse proposals or receipts;
-stale notes, changed evidence and uncertain outcomes refuse unsafe writes.
+**v0.5.8 / M8 qualification complete.** Continue existing projects in dependency
+order through bounded, owner-approved batches. One coder and one independent
+reviewer run at a time. Each verified result capture requires separate approval.
 
-See the [consolidated implementation and acceptance record](docs/releases/v0.5.7-implementation.md)
-for the qualified commit, source/image identities, CI, genuine owner/model evidence
-and limits. These identities precede the later documentation consolidation; README
-is a build input, so the edited checkout needs its own image verification before
-future deployment. Package metadata remains `0.5.3`.
+The [implementation and acceptance record](docs/releases/v0.5.8-implementation.md)
+identifies the qualified source and image, hosted CI, and live evidence. This
+README revision changes the build fingerprint. Verify a matching image for the
+updated checkout before deployment. Package metadata remains `0.5.3`.
 
 The runtime remains Docker-only and cloud-primary-only. Inference uses an
 authenticated LiteLLM gateway with one cloud attempt and no automatic local
@@ -50,6 +47,8 @@ fallback. Permanent-host production certification is a separate milestone.
   approve exact note bytes separately. Rejection, stale edits, expiry, restart and
   indexing failure preserve the note/evidence without duplicate publication. See
   [verified result capture](docs/RUNBOOK.md#verified-result-capture-v057).
+- Inspect and bind existing tasks, then approve a bounded continuation batch.
+  See [continuation operation](docs/RUNBOOK.md#continuation-inspection-and-binding-v058-ticket-01).
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
@@ -78,10 +77,9 @@ of Git. Groq `openai/gpt-oss-120b` is the development candidate default; Ollama
 Cloud, Gemini and OpenAI remain explicitly selectable. A configured local
 candidate does not enable automatic local inference.
 
-The accepted v0.5.7 disposable qualification used Groq with genuine coding,
-fixed checks and independent review. Full native check generation and native/Monty
-equivalence remain unverified; this does not promote a route or activate an
-existing deployment. See [qualification scope](docs/releases/v0.5.7-implementation.md#remaining-limits-and-future-decisions).
+The v0.5.8 disposable qualification used six Groq Free-plan requests for one
+synthetic coding task and independent review. Authenticated private Telegram
+capture and exact application passed. See [qualification scope](docs/releases/v0.5.8-implementation.md#remaining-limits-and-future-decisions).
 
 For a **new installation**, follow [container deployment](docs/RUNBOOK.md#container-deployment)
 to select the route, initialize private state and install guidance. Existing
@@ -137,8 +135,8 @@ runtime, gateway, lifecycle and rollback without a live Telegram poller.
 
 - [RUNBOOK](docs/RUNBOOK.md): setup, daily operation and troubleshooting.
 - [ARCHITECTURE](docs/ARCHITECTURE.md): repository map, state and safety boundaries.
-- [v0.5.7 implementation](docs/releases/v0.5.7-implementation.md): verified-result
-  capture, inherited supervision, final acceptance, exact evidence and limits.
+- [v0.5.8 implementation](docs/releases/v0.5.8-implementation.md): bounded
+  continuation, verified capture, qualification evidence and limits.
 - [Development verification](docs/DEVELOPMENT.md): offline checks and qualification boundaries.
-- [Milestone roadmap](docs/plans/EMURU-v0.6.0-implementation-plan.md): completed M1–M7 and future M8–M9.
+- [Milestone roadmap](docs/plans/EMURU-v0.6.0-implementation-plan.md): completed M1–M8 and planned M9.
 - [Deployment backlog](docs/deployment-backlog.md): future permanent-host setup and recovery tooling.

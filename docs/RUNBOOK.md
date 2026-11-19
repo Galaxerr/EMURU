@@ -5,9 +5,9 @@ runtime; host scripts are operator tools. For capabilities and credentials, star
 with [README](../README.md). Permanent-host certification is tracked separately in
 [the deployment backlog](deployment-backlog.md).
 
-Current milestone: **v0.5.7 / M7**, qualified and owner-accepted; execution
+Current milestone is **v0.5.8 / M8**, qualified and owner-accepted. Execution
 remains opt-in and disabled by default. See the
-[implementation and acceptance record](releases/v0.5.7-implementation.md) for
+[implementation and acceptance record](releases/v0.5.8-implementation.md) for
 qualified identities, exact CI, genuine capture evidence and limits. Package
 metadata remains `0.5.3`. The later documentation revision changes README/image
 provenance: verify a new source/image pair before deploying that checkout.
@@ -354,7 +354,7 @@ uv run --frozen python scripts/hermes/scout-check.py
 
 ### Bounded operator-run coding
 
-The inherited M4 path remains available in v0.5.7.
+The inherited M4 path remains available in v0.5.8.
 Use only under separate task execution authorization, as an unprivileged
 Docker-capable operator. The default Telegram profile cannot start coding.
 An approved note alone never grants repository access or execution authority.
@@ -433,7 +433,7 @@ General retry/retention controls remain outside this increment.
 
 ### Disposable integrated coding qualification
 
-The inherited M5 review/rework path remains available in v0.5.7.
+The inherited M5 review/rework path remains available in v0.5.8.
 Review is explicitly enabled per private grant:
 schema `2` adds `review` equal to `emuru.projects.reviewer.authority()` (schema,
 enabled=true, current checklist digest). All original grant fields and limits
@@ -586,7 +586,7 @@ The bounded project allowance is one Scout, two coders/two reviewers and 1,920
 reserved seconds, with the original 1,800-second coder/reviewer loop inside it.
 Metadata is capped at 1 MiB with emergency restriction capacity. Status reports
 reservations, not measured consumption or a guaranteed provider spend ceiling.
-See the [complete resource limits](releases/v0.5.7-implementation.md#resource-qualification-and-limits).
+See the [complete resource limits](releases/v0.5.8-implementation.md#resource-qualification-and-limits).
 
 ## Troubleshooting and recovery
 
@@ -655,7 +655,7 @@ uv run --frozen python scripts/hermes/container-check.py
 It requires Docker, pinned infrastructure images and a built acceptance image
 (`emuru:latest` or `EMURU_TEST_IMAGE`); see [CI](../.github/workflows/ci.yml) for preparation.
 It owns the native suite and wake/update/rollback drill; do not also run `wake-check.py`
-in the same pass. Live provider checks are opt-in. Current accepted qualification and its exact identities are recorded in the [implementation report](releases/v0.5.7-implementation.md); routine tests do not renew it.
+in the same pass. Live provider checks are opt-in. Current accepted qualification and its exact identities are recorded in the [implementation report](releases/v0.5.8-implementation.md); routine tests do not renew it.
 MCP integration tests need local socket IPC; sandbox `EPERM` requires a permitted
 rerun, not increased timeouts or skipped tests.
 

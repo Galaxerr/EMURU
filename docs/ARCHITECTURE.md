@@ -4,11 +4,10 @@ EMURU runs a pinned Hermes agent in Docker, exposes constrained vault tools over
 stdio MCP, and accepts owner-private Telegram text. Markdown is durable knowledge;
 native sessions are conversation history. Neither trains model weights.
 
-Current milestone: **v0.5.7 / M7**, qualified and owner-accepted. The
-[consolidated implementation record](releases/v0.5.7-implementation.md) binds the
-accepted candidate to exact source/image, hosted CI and genuine qualification
-records. The later documentation revision changes README/image provenance; it is
-not a new qualified image. Package metadata remains `0.5.3`; M8–M9 are future work.
+Current milestone is **v0.5.8 / M8**. Technical and disposable live qualification
+passed, and the owner accepted the qualified candidate. The
+[implementation record](releases/v0.5.8-implementation.md) lists the exact
+source, image, and hosted CI results. Package metadata remains `0.5.3`.
 
 ```text
 Telegram owner → native adapter → durable queue/worker → Hermes
@@ -52,7 +51,7 @@ when their Docker client dies. No model capability is qualified by this mileston
 The inherited M4 coding path is qualified on disposable data. Native Hermes
 inference exposes exactly `coder_read`, `coder_write` and `coder_check`. A separate
 trusted host dispatcher controls disposable offline check containers. Approval does not establish runtime security or compatibility. The
-[implementation record](releases/v0.5.7-implementation.md) records actual evidence.
+[implementation record](releases/v0.5.8-implementation.md) records actual evidence.
 
 The controller exports approved committed UTF-8 files under their original paths.
 The task workspace has no Git metadata, branch, commit or task HEAD. Mediated
@@ -116,7 +115,7 @@ One stable project shares at most one Scout and two coder/two reviewer stages,
 1,920 reserved active seconds and 1 MiB supervisor metadata. Coder/reviewer loops
 retain their original 1,800-second and artifact/check ceilings. Full allowances
 are reserved before claim without refunds. Exact cap and boundary evidence is in
-the [implementation record](releases/v0.5.7-implementation.md#resource-qualification-and-limits).
+the [implementation record](releases/v0.5.8-implementation.md#resource-qualification-and-limits).
 
 Sleep/down and stage admission serialize on the same profile fence. Active,
 uncertain or uninspectable work blocks shutdown before services stop. Wake clears
@@ -164,8 +163,18 @@ survives later human edits; indexing recovery never rewrites the note. Read-only
 status changes no domain journal, note or index state. New profiles include the
 capture schema; existing profiles need an explicit stopped-profile upgrade with
 backup. Corrupt/newer linkage refuses without deletion, and old executors cannot
-roll back unsupported capture state. H1/H2/H4 contracts and the full criterion
-matrix are retained in the [implementation record](releases/v0.5.7-implementation.md).
+roll back unsupported capture state. H1/H2/H4 contracts and the M7 acceptance matrix are retained in the
+[historical acceptance record](https://github.com/Galaxerr/EMURU/blob/871e36646a7e69ff42641d4b8193759c448388af/docs/releases/v0.5.7-implementation.md).
+
+## Dependency-aware continuation (v0.5.8)
+
+Inspection reconciles task anchors, native Kanban cards, verified results, and
+capture receipts. Owner approval binds missing task identities and authorizes
+bounded batches. The dispatcher admits one stage at a time. Schema 4 grants
+bind successor inputs to verified predecessor artifacts and receipts. Pending
+capture stays distinct from applied progress. Restart reconciliation reopens
+persisted state, and further dispatch requires valid admission. See the
+[continuation runbook](RUNBOOK.md#continuation-inspection-and-binding-v058-ticket-01).
 
 ## Repository map
 
@@ -260,6 +269,6 @@ README-only edits change image provenance even when runtime code is unchanged.
 Re-verify the image/source pair for a future build or deployment; do not relabel an
 old image. Keep private runtime state, histories, credentials and real notes out of Git.
 
-The [v0.5.7 record](releases/v0.5.7-implementation.md) records current milestone acceptance and inherited limits.
+The [v0.5.8 record](releases/v0.5.8-implementation.md) records current milestone acceptance and inherited limits.
 Permanent-host setup, encrypted backup/restore, migration, operational recovery,
 cutover and reboot evidence belong to the [deployment backlog](deployment-backlog.md).

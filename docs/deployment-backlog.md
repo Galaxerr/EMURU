@@ -1,8 +1,8 @@
 # Permanent-host deployment backlog
 
-Updated for v0.5.7 / M7, 2026-11-15. Technical qualification and owner acceptance
-are recorded in the [implementation record](releases/v0.5.7-implementation.md).
-Permanent-host certification remains separate from completed M7 acceptance.
+Updated for v0.5.8 / M8. Technical qualification and owner acceptance
+are recorded in the [implementation record](releases/v0.5.8-implementation.md).
+Permanent-host certification remains separate from completed M8 qualification.
 The temporary laptop does not require production certification. These
 items are out of scope for development acceptance, not failed tests or waived
 security mechanisms. No infrastructure or additional rollback image is requested
