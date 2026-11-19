@@ -661,6 +661,9 @@ rerun, not increased timeouts or skipped tests.
 
 ### Continuation inspection and binding (v0.5.8 Ticket 01)
 
+See the [v0.5.8 release and acceptance record](releases/v0.5.8-implementation.md)
+for qualification status and release gates.
+
 Use `/project inspect <applied-spec-proposal-id>` or append an explicit comma-separated
 selection of approved task labels. Inspection reads snapshots, displays exact task
 contracts, anchors, historical mappings and dependencies, and returns the complete

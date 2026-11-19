@@ -275,7 +275,9 @@ Each milestone must be **useful in its own right**, testable on disposable data,
 
 **Tests and GO criteria:** (a) two or three synthetic dependent tasks execute in order; (b) a repeated continuation request reuses existing cards/results; (c) failed or rejected task blocks dependent work; (d) existing note with an unrelated human edit is preserved; (e) no cycles/deadlocks or concurrent worktree collision; (f) history and pending approvals survive restart; (g) owner can select stop or continue without unexpected extra work. **GO:** real project continuation grounded in persisted facts. **NO-GO:** duplicate boards/notes, phantom task completion or automatic execution from untrusted note instructions.
 
-**Release note:** v0.5.8 supports multi-step, dependency-aware project continuation.
+**Status:** Implementation complete. Ticket 06 technical qualification passed.
+Final GO awaits exact-commit hosted CI, genuine provider and Telegram qualification,
+and explicit owner acceptance. See the [release and acceptance record](../releases/v0.5.8-implementation.md).
 
 ## 14. M9 — v0.6.0: End-to-end qualification and release
 
