@@ -1,6 +1,6 @@
 # EMURU v0.6.0 — Native project execution and verified result capture
 
-**Status:** Updated 2026-11-15: M1–M7 delivered; v0.5.7 qualification and owner acceptance GO. M8–M9 remain future work; release activation is separate.
+**Status:** Updated 2026-11-19. M1–M8 implementation is complete. M8 release qualification is tracked in the [v0.5.8 implementation record](../releases/v0.5.8-implementation.md). M9 remains future work.
 **Prepared:** 2026-10-21.  
 **Repository:** `Galaxerr/EMURU`.  
 **Inspected baseline:** `main` at `129b8754e9e6ffa301cc25d44cd963f90316dda5` (2026-10-20).  
@@ -22,7 +22,7 @@ opt-in and execution disabled by default. The consolidated record retains exact
 candidate/source/image/CI, genuine owner/model evidence, review closures and
 limits. Task Git execution and controlled remote operations are separately scoped
 future capabilities; this update assigns no new milestone or remote authority.
-M8 multi-task continuation and M9 integrated acceptance remain future work.
+See the [v0.5.8 implementation record](../releases/v0.5.8-implementation.md) for subsequent M8 delivery and acceptance status.
 
 ## 1. Objective and definition of success
 
@@ -275,9 +275,10 @@ Each milestone must be **useful in its own right**, testable on disposable data,
 
 **Tests and GO criteria:** (a) two or three synthetic dependent tasks execute in order; (b) a repeated continuation request reuses existing cards/results; (c) failed or rejected task blocks dependent work; (d) existing note with an unrelated human edit is preserved; (e) no cycles/deadlocks or concurrent worktree collision; (f) history and pending approvals survive restart; (g) owner can select stop or continue without unexpected extra work. **GO:** real project continuation grounded in persisted facts. **NO-GO:** duplicate boards/notes, phantom task completion or automatic execution from untrusted note instructions.
 
-**Status:** Implementation complete. Ticket 06 technical qualification passed.
-Hosted CI passed and the owner accepted the exact candidate. Final GO awaits
-genuine provider and Telegram qualification. See the [release and acceptance record](../releases/v0.5.8-implementation.md).
+**Status:** Implementation complete. Ticket 06 technical and bounded live
+qualification passed. Hosted CI passed for the owner-accepted candidate and its
+previous documentation follow-up. Final release-record CI is pending at push.
+See the [release and acceptance record](../releases/v0.5.8-implementation.md).
 
 ## 14. M9 — v0.6.0: End-to-end qualification and release
 
