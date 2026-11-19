@@ -104,6 +104,7 @@ def test_supervised_gateway_cleanup_preserves_reused_container_name(
     stage = SimpleNamespace(
         check=lambda: None,
         command=command,
+        grant={},
         create_network=lambda *a, **kw: None,
         create=lambda *a: "a" * 64,
         remove=remove,

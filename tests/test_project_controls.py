@@ -25,6 +25,7 @@ def controls(enrollment, monkeypatch):
         lambda *a, **kw: {
             "current": True,
             "after_revision": grant["revision"],
+            "approval_digest": grant["approval"],
             "proposal_id": grant["proposal"],
         },
     )
@@ -112,6 +113,7 @@ def test_exact_binding_can_be_restricted_after_expiry_and_note_edit_without_rene
         lambda *a, **kw: {
             "current": False,
             "after_revision": grant["revision"],
+            "approval_digest": grant["approval"],
             "proposal_id": grant["proposal"],
         },
     )
