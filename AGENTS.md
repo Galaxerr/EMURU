@@ -1,76 +1,32 @@
+## Token & Output Discipline
+- Apply `caveman` and `ponytail` styles to all internal reasoning, tool summaries, and status updates. Use standard prose only in user-facing docs (`docs/`) and final deliverables.
+- Keep final responses terse: files changed, commands run + exit codes, blockers/decisions needed. Zero filler.
+- Never dump raw logs or multi-hundred-line tracebacks into context. Redirect verbose test/verification logs to `/tmp/<task>.log` and inspect only exit codes, summary counts, and failing assertions.
+- Default to a single agent. Never spawn subagents or run multi-pass review loops unless explicitly requested.
 
-# Agentic Engineering Workflow
+## Repo Layout & Toolchain (`EMURU`)
+- **Subsystems:**
+  - `src/emuru/projects/` — core domain logic: project state, proposals, result capture/journal (`results.py`), continuation batches/execution, coder/reviewer boards, and supervisor limits.
+  - `src/emuru/telegram/` — owner command handlers, native bot runtime (`native.py`), approvals, and status rendering.
+  - `scripts/hermes/` — CLI entrypoints, offline smoke checks (`telegram.py --offline`), wake/rework checks (`wake-check.py`, `rework-check.py`), and worker runners (`coder.py`).
+  - `tests/` & `docs/` — pytest suites (`test_result_capture.py`, `test_continuation_*.py`, `telegram/`) and operator docs (`docs/RUNBOOK.md`).
+- **Test runner:** `uv run --frozen pytest -q -k '<pattern>'` (never run the full suite during red-green iteration; run broad regression suites once at the end).
+- **Lint/format:** `uv run --frozen ruff check .` and `uv run --frozen ruff format --check .`
 
-## Role
+## Codebase Navigation (`graphify`)
+- Always query `graphify` before raw file/grep exploration when `graphify-out/graph.json` exists:
+  - `graphify query "<question>"` | `graphify path "<A>" "<B>"` | `graphify explain "<concept>"`
+  - Broad navigation: read `graphify-out/wiki/index.md` first; read `graphify-out/GRAPH_REPORT.md` only if queries are insufficient.
+- Dirty `graphify-out/` files are normal; never skip `graphify` or flag `graphify-out/graph.json` diffs as churn.
+- Run `graphify update .` once after code edits complete.
 
-Act as an autonomous senior software engineer.
+## Planning & Execution
+- Small/unambiguous tasks: implement directly. Complex/ambiguous tasks: propose a brief plan (scope, files, acceptance criteria) and wait for approval; never replan an approved task.
+- Make the smallest maintainable change reusing existing abstractions. No speculative features, unrelated refactors, or unrequested docs.
+- Ask before changing product scope, public contracts/interfaces, security/data boundaries, dependencies, or operational/paid provider costs.
+- Never commit, push, merge, expose secrets, or run live/paid qualification checks unless explicitly authorized.
 
-The user defines the desired outcome, constraints, and acceptance criteria.
-You own implementation, focused testing, debugging, and verification.
-
-Prefer completing work over discussing how to complete it.
-
-## Planning
-
-- For small, unambiguous changes, implement directly.
-- For complex or ambiguous features, propose a concise plan and wait for approval.
-- Inspect relevant existing code before proposing architectural changes.
-- Plans must include scope, approach, key decisions, and acceptance criteria.
-- Do not repeatedly replan an already approved task.
-
-## Implementation
-
-- Implement the smallest maintainable change satisfying the requirements.
-- Follow existing project conventions and reuse existing abstractions.
-- Avoid speculative features, unrelated refactoring, and unnecessary dependencies.
-- Do not create large documentation files unless requested or necessary.
-- Run relevant tests and fix failures you introduce.
-- Validate user-visible behavior end-to-end when feasible.
-- Do not ask for routine implementation decisions.
-
-## Delegation
-
-- Default to a single agent.
-- Use subagents only for genuinely independent, substantial work where delegation is beneficial.
-- Never spawn agents merely to satisfy a workflow.
-- Do not delegate trivial changes or create recursive review loops.
-- Prefer one independent review after implementation, not multiple continuous reviews.
-- Avoid concurrent writes to the same files.
-
-## Decision Boundaries
-
-Ask the user when a decision materially changes:
-- Product behavior or feature scope
-- Architecture or external interfaces
-- Security or data handling
-- Dependencies or operational costs
-
-Otherwise, choose the simplest reasonable implementation.
-
-
-## Project Validation
-
-Before implementing a feature:
-- Inspect the relevant application components.
-- Consult existing tests and CI workflows.
-- Identify how to run the affected services.
-
-After implementing:
-- Run targeted unit tests.
-- Run applicable lint/static checks.
-- Run integration tests for affected components.
-- Perform a smoke test of the affected runtime behavior when available.
-- Use the existing Docker Compose workflow where appropriate.
-
-Report which checks passed, failed, or could not run.
-
-Never invent test results.
-
-## Delivery
-
-- Do not push, merge, or modify protected branches without authorization.
-- Never commit credentials, secrets, or generated runtime state.
-- Keep the final response concise.
-- Report what changed, tests performed, unresolved issues, and any required human decisions.
-- Do not output lengthy internal reasoning or raw logs.
-- Stop after the requested outcome is achieved and verified.
+## Root-Cause Failure Handling
+- On failure: inspect exact exit status/log -> isolate confirmed root cause (distinguish code vs. env/config/fixture) -> apply minimal fix -> verify with targeted test.
+- Max 2 distinct repair attempts per root cause; never retry identical commands without a new hypothesis.
+- Escalate only when blocked by missing credentials, external dependencies, or out-of-scope decisions—report confirmed cause, evidence, attempts, and minimal owner action needed.

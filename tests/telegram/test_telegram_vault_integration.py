@@ -22,6 +22,8 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
     root = Path(__file__).resolve().parents[2]
     vault = tmp_path / "vault"
     shutil.copytree(root / "tests/fixtures/hermes-vault", vault)
+    failed_path = "30_Resources/broken.md"
+    (vault / failed_path).write_text("---\ntitle: [broken\n---\n")
     env = {
         key: os.environ[key]
         for key in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
@@ -57,6 +59,9 @@ def test_replay_read_write_reindex_and_ambiguous_write_are_not_retried(
                 calls.append(name)
                 result = await session.call_tool(name, arguments)
                 assert not result.is_error
+                if name == "vault_search":
+                    assert result.structured_content["incomplete"] is True
+                    assert result.structured_content["failed_paths"] == [failed_path]
                 return result.model_dump_json()
 
             async def fake_agent(payload):

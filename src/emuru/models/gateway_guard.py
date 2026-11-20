@@ -253,8 +253,26 @@ class Guard(CustomLLM):
                             params["max_tokens"] = params.get(
                                 "max_tokens", route["fallback"]["output_reserve_tokens"]
                             )
-                        # Buffer upstream deltas: malformed/partial tool arguments never reach Hermes.
-                        result = await self.collect(router, backend, messages, params)
+                        if (
+                            backend == "primary"
+                            and route["primary"]["provider"] == "groq"
+                            and params.get("response_format") is not None
+                        ):
+                            # Groq JSON mode is nonstreaming; LiteLLM's fake stream has no upstream terminator.
+                            result = await asyncio.wait_for(
+                                router.acompletion(
+                                    model=backend,
+                                    messages=messages,
+                                    stream=False,
+                                    **params,
+                                ),
+                                deadline("EMURU_CLOUD_FIRST_TOKEN_SECONDS", 30),
+                            )
+                        else:
+                            # Buffer deltas: partial tool arguments never reach Hermes.
+                            result = await self.collect(
+                                router, backend, messages, params
+                            )
                         if backend == "local":
                             bound = context_bound(messages, params)
                             if (

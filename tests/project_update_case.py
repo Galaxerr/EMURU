@@ -41,6 +41,7 @@ async def update_case(inference, model, vault, path, prompt, *, home=None, soul=
         {"role": "user", "content": prompt + "\n" + FORMAT},
     ]
     opened, previews, trace = {}, [], []
+    failed_proposals, refresh_required, stale_reopens = set(), False, 0
     async with Client(server) as client:
         definitions = (await client.list_tools()).tools
         tools = [
@@ -92,6 +93,13 @@ async def update_case(inference, model, vault, path, prompt, *, home=None, soul=
                     "unregistered tool requested"
                 )
                 if name == "vault_propose":
+                    signature = json.dumps(args, sort_keys=True)
+                    assert signature not in failed_proposals, (
+                        "identical failed proposal repeated"
+                    )
+                    assert not refresh_required, (
+                        "stale proposal without fresh vault_open"
+                    )
                     assert args["path"] == path
                     if creating:
                         assert opened and args.get("content")
@@ -100,15 +108,43 @@ async def update_case(inference, model, vault, path, prompt, *, home=None, soul=
                             "proposal without opening resolved project"
                         )
                         assert args.get("content") is None
-                        assert args["expected_revision"] == opened[path]["revision"]
                         assert opened[path]["content"].count(args["anchor"]) == 1
                 result = await client.call_tool(name, args)
-                assert not result.is_error, result.content
+                if result.is_error:
+                    error = "\n".join(
+                        block.text for block in result.content if hasattr(block, "text")
+                    )
+                    assert (
+                        name == "vault_propose"
+                        and "Stale or missing full-file revision." in error
+                    ), error
+                    assert not failed_proposals, (
+                        "corrected proposal failed; stop recovery"
+                    )
+                    failed_proposals.add(signature)
+                    refresh_required = True
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": json.dumps({"isError": True, "error": error}),
+                        }
+                    )
+                    continue
                 data = result.structured_content
                 if name == "vault_open":
                     assert not data["truncated"]
+                    if failed_proposals:
+                        stale_reopens += 1
+                        assert stale_reopens <= 1, (
+                            "stale recovery reopened more than once"
+                        )
+                        assert args["path"] == path
+                        refresh_required = False
                     opened[args["path"]] = data
                 if name == "vault_propose":
+                    if not creating:
+                        assert args["expected_revision"] == opened[path]["revision"]
                     previews.append(data)
                 messages.append(
                     {

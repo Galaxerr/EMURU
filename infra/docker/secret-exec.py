@@ -5,8 +5,9 @@ import stat
 import sys
 from pathlib import Path
 
+sys.path.insert(0, "/opt/emuru/src")
+
 if os.environ.get("EMURU_SOURCE_ID"):
-    sys.path.insert(0, "/opt/emuru/src")
     from emuru.deployment import source_identity
 
     if source_identity(Path("/opt/emuru")) != os.environ["EMURU_SOURCE_ID"]:
@@ -25,7 +26,16 @@ for name in (
     "OLLAMA_API_KEY",
     "GEMINI_API_KEY",
     "OPENAI_API_KEY",
+    "GROQ_API_KEY",
 ):
+    if name == "GROQ_API_KEY":
+        route = os.environ.get("EMURU_CONTAINER_ROUTE")
+        if not route:
+            continue
+        from emuru.models.gateway import read_route
+
+        if read_route(route)["primary"]["provider"] != "groq":
+            continue
     path = Path("/run/secrets") / name.lower()
     if path.exists():
         info = path.stat()

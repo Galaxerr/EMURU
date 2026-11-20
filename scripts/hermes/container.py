@@ -12,7 +12,7 @@ import stat
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,6 +32,8 @@ from emuru.models.gateway import (
     valid_qualification,
     write_private,
 )
+from emuru.models.groq import gateway_secret
+from emuru.projects import supervisor, supervisor_lifecycle
 from emuru.telegram.queue import QueueDiagnosticsError, diagnostics
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -213,7 +215,8 @@ def initialize(
     if workspace_env is not None:
         write_env(workspace_env, {"EMURU_GATEWAY_KEY": gateway_key})
 
-    selected_key = UPSTREAM_KEYS[route["primary"]["provider"]]
+    provider = route["primary"]["provider"]
+    selected_key = "GROQ_API_KEY" if provider == "groq" else UPSTREAM_KEYS[provider]
     for name in UPSTREAM_KEYS.values():
         secret_path = values[f"EMURU_{name}_FILE"]
         value = os.environ.get(name, "") if name == selected_key else ""
@@ -457,6 +460,7 @@ def ensure_image(root=None, *, build=True):
             identity,
         ],
         check=True,
+        stdout=subprocess.DEVNULL,
     )
     return identity, image
 
@@ -473,6 +477,9 @@ def prepare_update(command, values, rollback_source=None):
         snapshot = private_path(home / "sources" / rollback_source)
         if source_identity(snapshot) != rollback_source:
             raise ValueError("Rollback source snapshot mismatch")
+        from emuru.deployment import check_review_state
+
+        check_review_state(Path(values["EMURU_PROFILE"]), snapshot)
         # Orchestration and runtime must match; schema/guidance checks run in the target image.
         for name in (
             "infra/docker/compose.yaml",
@@ -601,8 +608,10 @@ def require_systemd_idle():
 
 
 def wake(home=None, *, rollback_source=None):
-    with lifecycle_lock():
+    with lifecycle_lock(), ExitStack() as resources:
         values = saved_deployment(home)
+        profile_home = Path(values["EMURU_PROFILE"])
+        project_warning = supervisor_lifecycle.wake_inspection(profile_home, ROOT)
         require_systemd_idle()
         command = [
             "docker",
@@ -623,6 +632,24 @@ def wake(home=None, *, rollback_source=None):
         if running.stdout.strip() == "emuru":
             if rollback_source is not None:
                 raise ValueError("Stop the worker before rollback")
+            if supervisor.enabled(profile_home):
+                try:
+                    identity, image = ensure_image(build=False)
+                    verify_release(
+                        command,
+                        {
+                            **os.environ,
+                            "EMURU_SOURCE_ID": identity,
+                            "EMURU_IMAGE": image,
+                        },
+                    )
+                    project_warning = supervisor_lifecycle.clear_after_wake(
+                        profile_home, ROOT, image=image
+                    )
+                except (ValueError, OSError, subprocess.CalledProcessError) as error:
+                    project_warning = f"Running release compatibility unproven; sleep fence retained ({type(error).__name__})."
+            if project_warning:
+                print(project_warning)
             print(
                 "EMURU worker already running; updates deferred until explicit sleep/wake"
             )
@@ -649,6 +676,13 @@ def wake(home=None, *, rollback_source=None):
             if rollback_source is None
             else prepare_update(command, values, rollback_source)
         )
+        if (
+            "EMURU_ROUTE" in values
+            and read_route(values["EMURU_ROUTE"])["primary"]["provider"] == "groq"
+        ):
+            env["EMURU_GROQ_API_KEY_FILE"] = resources.enter_context(
+                gateway_secret(ROOT / ".env")
+            )
         subprocess.run(
             [
                 *command,
@@ -762,6 +796,12 @@ def wake(home=None, *, rollback_source=None):
         finally:
             if not ready:
                 subprocess.run([*command, "stop", "emuru"], check=True, env=env)
+        if supervisor.enabled(profile_home):
+            project_warning = supervisor_lifecycle.clear_after_wake(
+                profile_home, Path(env["EMURU_SOURCE_ROOT"]), image=env["EMURU_IMAGE"]
+            )
+        if project_warning:
+            print(project_warning)
         print("EMURU READY")
 
 
@@ -830,17 +870,22 @@ def containers():
 
 def sleep(home=None, *, remove=False):
     with lifecycle_lock():
-        deployment_metadata(home)
-        docker_compose("stop", "--timeout", "660", "emuru")
-        worker = containers().get("emuru")
-        if worker and worker["status"] not in STOPPED_STATES:
-            raise ValueError("Worker stop not confirmed; inference retained")
-        docker_compose("stop", "litellm", "ollama")
-        if any(item["status"] not in STOPPED_STATES for item in containers().values()):
-            raise ValueError("Inference stop not confirmed")
-        if remove:
-            docker_compose("down", "--remove-orphans")
+        values = deployment_metadata(home)
+        with supervisor_lifecycle.sleeping(Path(values["EMURU_PROFILE"]), ROOT):
+            _sleep_services(remove)
     print("EMURU STOPPED")
+
+
+def _sleep_services(remove):
+    docker_compose("stop", "--timeout", "660", "emuru")
+    worker = containers().get("emuru")
+    if worker and worker["status"] not in STOPPED_STATES:
+        raise ValueError("Worker stop not confirmed; inference retained")
+    docker_compose("stop", "litellm", "ollama")
+    if any(item["status"] not in STOPPED_STATES for item in containers().values()):
+        raise ValueError("Inference stop not confirmed")
+    if remove:
+        docker_compose("down", "--remove-orphans")
 
 
 def status(home=None):

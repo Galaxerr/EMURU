@@ -4,8 +4,17 @@ EMURU is a self-hosted knowledge assistant for an Obsidian vault. Chat privately
 with your Telegram bot to find notes, follow links, save Inbox notes, and review
 proposed project or task changes. Conversation history persists across restarts.
 
-**v0.5.0 is a Docker-only, cloud-primary-only development release.** Inference uses
-an authenticated LiteLLM gateway with one cloud attempt and no automatic local
+**v0.6.0.** Run owner-supervised project execution from private Telegram through
+verified result capture. Continue existing projects in dependency
+order through bounded, owner-approved batches. One coder and one independent
+reviewer run at a time. Each verified result capture requires separate approval.
+
+The [release acceptance record](docs/releases/v0.6.0-acceptance.md) lists
+the technical and live evidence, owner acceptance, and candidate identities.
+Verify the source fingerprint and matching image before deployment.
+
+The runtime remains Docker-only and cloud-primary-only. Inference uses an
+authenticated LiteLLM gateway with one cloud attempt and no automatic local
 fallback. Permanent-host production certification is a separate milestone.
 
 ## What you can do
@@ -14,6 +23,32 @@ fallback. Permanent-host production certification is a separate milestone.
 - Save new Markdown notes in `00_Inbox` without overwriting existing notes.
 - With an explicitly enabled mutation policy, preview and approve a note creation
   or an exact update under approved roots. The model cannot apply proposals.
+- Plan a new project or continue an existing project with scoped tasks and planned
+  acceptance checks. Track an applied spec with `/project track <proposal-id>`;
+  inspect native Kanban IDs/status with `/project status <proposal-id>`.
+  Tracked tasks remain blocked and unassigned until separately authorized work.
+- Run an opt-in, offline read-only scout against explicitly selected committed
+  repository files. Reports retain baseline HEAD, file hashes and a native Kanban
+  receipt. See [scout operation](docs/RUNBOOK.md#read-only-repository-scout-v053).
+- Qualify one separately authorized coding task with a private immutable grant,
+  selected-file workspace and authenticated status. See the
+  [coder runbook](docs/RUNBOOK.md#bounded-operator-run-coding).
+  Capture verified, independently reviewed output through the separate flow below.
+- With explicit review authority, require independent review before verified local
+  completion. Findings can request changes or block unsafe work. Authorize at most
+  one rework on the same card; a second rejection is terminal. Repeated launches
+  inspect existing facts, and uncertain work is never automatically replayed. See
+  [review and rework operation](docs/RUNBOOK.md#disposable-integrated-coding-qualification).
+- Inspect enrolled work with `/project status`; use exact-token owner controls to
+  hold, continue or cancel. Hold permits an admitted stage to drain; continue
+  launches nothing; cancel preserves uncertainty until stop is proven. See
+  [project supervision](docs/RUNBOOK.md#project-supervision-v056).
+- Capture a verified result beside its existing task using `/project capture`;
+  approve exact note bytes separately. Rejection, stale edits, expiry, restart and
+  indexing failure preserve the note/evidence without duplicate publication. See
+  [verified result capture](docs/RUNBOOK.md#verified-result-capture-v057).
+- Inspect and bind existing tasks, then approve a bounded continuation batch.
+  See [continuation operation](docs/RUNBOOK.md#continuation-inspection-and-binding).
 - Start a fresh conversation with `/new`; previous transcripts remain preserved.
 
 Readable roots are `00_Inbox`, `10_Projects`, `20_Areas`, `30_Resources`,
@@ -38,7 +73,13 @@ ${EDITOR:-nano} .env
 
 Set `TELEGRAM_BOT_TOKEN`, `EMURU_TELEGRAM_OWNER_ID`, `EMURU_VAULT_PATH` (absolute
 vault path), and the selected provider key in `.env`. Keep it owner-owned and out
-of Git. Ollama Cloud is the default; Gemini and OpenAI are explicit alternatives.
+of Git. Groq `openai/gpt-oss-120b` is the development candidate default; Ollama
+Cloud, Gemini and OpenAI remain explicitly selectable. A configured local
+candidate does not enable automatic local inference.
+
+The v0.6.0 disposable qualification used six Groq Free-plan requests for one
+synthetic coding task and independent review. Authenticated private Telegram
+capture and exact application passed. See [live qualification](docs/releases/v0.6.0-acceptance.md#live-qualification).
 
 For a **new installation**, follow [container deployment](docs/RUNBOOK.md#container-deployment)
 to select the route, initialize private state and install guidance. Existing
@@ -61,7 +102,9 @@ automatically after reboot; inspect status and wake explicitly.
 
 Review the complete proposal, then pause Obsidian, synchronization and other vault
 writers before choosing Accept. Reject or reply with edits to change the proposal.
-Commands are available when replying or using buttons is inconvenient:
+For verified-result capture, use the exact preview approval instruction; a fresh
+`capture-new` flow replaces generic revision. Commands for ordinary proposals are
+available when replying or using buttons is inconvenient:
 
 ```text
 /apply <proposal-id> writers-paused
@@ -92,5 +135,8 @@ runtime, gateway, lifecycle and rollback without a live Telegram poller.
 
 - [RUNBOOK](docs/RUNBOOK.md): setup, daily operation and troubleshooting.
 - [ARCHITECTURE](docs/ARCHITECTURE.md): repository map, state and safety boundaries.
-- [v0.5.0 acceptance](docs/releases/v0.5.0-acceptance.md): manual, automated and hosted CI evidence.
+- [v0.6.0 release acceptance](docs/releases/v0.6.0-acceptance.md): technical
+  and live qualification, owner acceptance and release gates.
+- [Development verification](docs/DEVELOPMENT.md): offline checks and qualification boundaries.
+- [Milestone roadmap](docs/plans/EMURU-v0.6.0-implementation-plan.md): M1–M9 design and acceptance criteria.
 - [Deployment backlog](docs/deployment-backlog.md): future permanent-host setup and recovery tooling.

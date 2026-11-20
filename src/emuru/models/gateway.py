@@ -332,9 +332,12 @@ def settings(route=None):
 def upstream(primary):
     provider = primary["provider"]
     params = {
-        "model": {"ollama": "ollama_chat", "gemini": "gemini", "openai-api": "openai"}[
-            provider
-        ]
+        "model": {
+            "ollama": "ollama_chat",
+            "gemini": "gemini",
+            "groq": "groq",
+            "openai-api": "openai",
+        }[provider]
         + "/"
         + primary["model"],
         "num_retries": 0,
@@ -346,8 +349,15 @@ def upstream(primary):
     else:
         params["api_key"] = (
             "os.environ/"
-            + {"gemini": "GEMINI_API_KEY", "openai-api": "OPENAI_API_KEY"}[provider]
+            + {
+                "gemini": "GEMINI_API_KEY",
+                "groq": "GROQ_API_KEY",
+                "openai-api": "OPENAI_API_KEY",
+            }[provider]
         )
+    if provider == "groq":
+        # Keep reasoning out of tool history and bound hidden reasoning overhead.
+        params.update(reasoning_effort="low", include_reasoning=False)
     return params
 
 

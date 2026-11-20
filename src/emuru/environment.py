@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 API_KEYS = {
+    "GROQ_API_KEY",
     "EMURU_GATEWAY_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
@@ -63,6 +64,8 @@ def read_env(path):
 def load_env(path, environ=None):
     environ = os.environ if environ is None else environ
     for key, value in read_env(path).items():
+        if key == "GROQ_API_KEY":
+            continue  # Gateway-only credential; never export to native workers.
         environ.setdefault(key, value)
     return environ
 

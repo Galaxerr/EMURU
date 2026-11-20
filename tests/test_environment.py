@@ -8,7 +8,7 @@ from emuru.environment import load_env, read_env, write_env
 def test_loads_private_workspace_keys_and_keeps_process_overrides(tmp_path):
     path = tmp_path / ".env"
     path.write_text(
-        "# local secrets\nOLLAMA_API_KEY='value=with spaces'\nOPENAI_API_KEY=file\n"
+        "# local secrets\nOLLAMA_API_KEY='value=with spaces'\nOPENAI_API_KEY=file\nGROQ_API_KEY=synthetic-groq\n"
     )
     path.chmod(0o600)
     environ = {"OPENAI_API_KEY": "process"}
@@ -19,6 +19,7 @@ def test_loads_private_workspace_keys_and_keeps_process_overrides(tmp_path):
         "OLLAMA_API_KEY": "value=with spaces",
         "OPENAI_API_KEY": "process",
     }
+    assert read_env(path)["GROQ_API_KEY"] == "synthetic-groq"
 
 
 def test_rejects_unprotected_env_and_unknown_entries(tmp_path):

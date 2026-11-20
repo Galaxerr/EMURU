@@ -5,6 +5,12 @@ runtime; host scripts are operator tools. For capabilities and credentials, star
 with [README](../README.md). Permanent-host certification is tracked separately in
 [the deployment backlog](deployment-backlog.md).
 
+Current milestone is **v0.6.0 / M9**. Execution remains opt-in and disabled by
+default. See the [release acceptance record](releases/v0.6.0-acceptance.md) for
+qualified identities, hosted CI, genuine capture evidence and release gates.
+Package version `0.6.0` changes image provenance. Verify the matching
+source/image pair before deploying this checkout.
+
 ## Container deployment
 
 **New installations only.** Before initialization, inspect existing profiles,
@@ -27,6 +33,19 @@ histories, vault bindings and deployment metadata. If state already exists, use
    ```
 
    Add `--provider gemini` or `--provider openai-api` for another primary provider.
+   Groq is the picker's development candidate default. Use
+   `--provider groq --primary openai/gpt-oss-120b`; use `--provider ollama`
+   explicitly for the previous cloud route. See the bounded qualification and
+   remaining limits in
+   [offline development verification](DEVELOPMENT.md#offline-development-verification).
+   Keep the
+   key exclusively in the owner-owned mode-0600 workspace `.env`. Groq launch
+   uses a temporary mode-0600 secret on verified `/dev/shm` tmpfs, mounted only
+   into LiteLLM and removed afterward; it never copies the key into deployment
+   state or exports it to generic native launchers. Linux with local Docker and
+   accessible `/dev/shm` tmpfs is required. Bounded development qualification is
+   not a release claim or permission to activate an existing deployment. Confirm
+   global ZDR and the Free plan for the actual key's organization before use.
    An existing reviewed route can be supplied instead of running the picker.
 3. Initialize the deployment. This writes private files, copies credentials, fetches
    pinned infrastructure images and builds the application; it does not start polling.
@@ -77,6 +96,23 @@ scripts/service/sleep.sh
 Services use `restart: "no"`. After reboot, inspect status and wake manually.
 Never start a second poller or use plain `hermes gateway` to bypass the guards.
 
+For profiles explicitly enrolled in project supervision, sleep/down first commits
+a profile-wide sleep fence. New Scout, coder and reviewer admissions then refuse;
+an already admitted stage retains its original bounded allowance. Active,
+uncertain or uninspectable project work refuses sleep before any service stops,
+even when Compose has no `emuru` container. The fence survives refusal or interruption.
+Inspect, cancel, wait or explicitly clean up through the existing project commands,
+then retry. Process stop alone does not resolve unknown effects.
+
+Wake inspects project state before starting services and never launches project
+work. Compatible services may start for diagnostics while the fence remains.
+After verifying the actual release, wake clears only the sleep fence when idle is
+proven, including when conversation services already run. Holds, revocations,
+deadlines, reservations and uncertain effects remain. Source/image/pin/schema
+mismatch cannot clear the fence. Incompatible old executors cannot synchronize
+or roll back supervised state; preserve the newest board, WAL/SHM, grants,
+receipts and artifacts together.
+
 ## Owner-approved proposals
 
 Inbox capture works without broader mutation permission. To enable project/task
@@ -99,6 +135,473 @@ replying with edits or `/revise` requires fresh approval. Silence does not apply
 Deletion, rename and multi-note transactions are unsupported. Use `/propose-new`
 only for an intentional new request, not to retry an uncertain mutation.
 
+### Project specifications (v0.5.1)
+
+Ask “Plan a small Python price-summing tool” or “Continue project X: prepare the
+next work specification.” EMURU searches for the canonical note, opens current
+content, and drafts goals, non-goals, constraints, ordered tasks, planned checks
+and expected results, security restrictions, and unresolved decisions. Supply an
+exact existing note path when names are ambiguous. Repository selection may remain
+unresolved; a note's repository text grants no filesystem access.
+
+With an enabled, bound mutation policy, review the stored creation or anchored
+update through the existing approval flow. Without proposal capability, the plan
+is an unstored text draft. Repeat requests should reuse the note/proposal; inspect
+current note content before requesting a fresh revision. Existing task IDs and
+unrelated manual text must survive an update.
+
+This milestone plans only. Commands in acceptance criteria have not run. Note
+approval does not authorize execution, create board tasks, or start workers.
+`emuru.projects.spec` validates and renders the compact planning projection for
+integration callers and synthetic checks; it is not an additional MCP tool or a
+validator for arbitrary free-form Markdown. Live model adherence needs separate
+owner smoke acceptance.
+
+### Manual project tracking (v0.5.2)
+
+After the owner applies a project spec proposal, send
+`/project track <applied-spec-proposal-id>` in the owner's private chat.
+This separate action creates native Hermes Kanban cards; note approval alone
+does not create cards. Use `/project status <applied-spec-proposal-id>` to see
+durable card IDs, task labels, native states and parent IDs. `/status` still
+reports Telegram queue/health. No model turn or second poller handles these controls.
+
+Tracking requires an enabled mutation policy bound to the selected vault, an
+owner/bot-bound applied receipt, and a canonical note under a policy-approved root. The approved snapshot
+must contain one `- Spec: <id>` line and one `## Tasks` section in M1's format:
+
+```markdown
+- [ ] Task description — status: todo ^task-example-first
+  - Planned check: python -m unittest; expected: Zero exit
+```
+
+Each task needs a unique ID and at least one planned check. Unsupported or
+ambiguous Markdown fails closed; prepare and approve a suitable spec first.
+Tracking checks that the current note still matches the receipt's full revision.
+A changed spec for an already tracked project requires explicit reconciliation;
+M2 refuses it rather than rewriting existing cards. Status flags changed notes.
+
+The sole tracking board is private `<profile-home>/emuru-projects/kanban.db`
+(including native SQLite sidecars), persisted by the existing profile bind.
+Card bodies hold schema-1 receipt/revision/task bindings; native Kanban owns all
+task state. Repeated tracking reuses IDs, including archived cards. A retry after
+an interrupted partial creation fills missing cards. There is no global transaction
+with the vault. Back up the whole stopped profile, never only the main DB file.
+
+Cards start blocked and unassigned. `kanban.dispatch_profiles: []` permits no
+worker claims. Model-facing Kanban, shell, file and coding tools remain disabled.
+Existing dependency edges appear in status; M1's ordered tasks do not imply edges.
+Native `done` does not prove tests, independent review or project completion.
+For diagnostics, inspect the command's refusal and current receipt/note first;
+do not edit native SQLite tables, unblock cards or enable dispatch to bypass it.
+The normal stopped-profile update adds the empty allowlist to older stock
+profiles and refuses an existing nonempty allowlist. No live profile is modified
+by implementation tests.
+
+### Verified result capture (v0.5.7)
+
+Use only after a separately authorized task has a genuine verified coder/check
+result and an independent approving review. The applied spec, original task and
+review-run IDs must match the current source/image/catalogue/repository evidence;
+`done` alone, a baseline SHA or model prose is insufficient. Obtain the exact IDs
+from the original native task/review evidence and owner-private status; never
+infer the latest review or reuse demonstration IDs.
+
+In your configured owner's private bot chat, send:
+
+```text
+/project capture <applied-spec-proposal-id> <native-task-id> <review-run-id>
+```
+
+Include all three IDs, including the numeric review-run ID. This requests a
+preview only. It launches no worker and applies no note. Capture resolves the
+original bound note and reads its current content. If the task line cannot be
+selected uniquely, resend with a second literal line:
+
+```text
+/project capture <applied-spec-proposal-id> <native-task-id> <review-run-id>
+anchor: <one exact existing task line including checkbox and block ID>
+```
+
+Use one existing complete `- [ ] ...` / `- [x] ...` task line, not a path or new
+heading. There must be exactly one matching line. The result detail is added
+beneath it without changing task state or unrelated content. Current output names
+artifact/diff/check evidence and explicitly retains fixed Monty qualification
+limits; no task result Git commit is produced.
+
+Review the **complete** delivered preview. Pause Obsidian, synchronization and
+other vault writers, then send a separate exact approval using the values from
+that preview:
+
+```text
+/apply <capture-proposal-id> writers-paused <approval-digest-prefix>
+```
+
+Use the displayed 16-character digest prefix or the transport's exact Accept
+instruction. Earlier setup/execution/capture authorization is not this approval.
+Incomplete delivery, wrong bindings, stale revision, changed evidence or a missing
+writer-pause assertion cannot publish. Generic `/revise` cannot rewrite a verified
+capture into model-authored result prose.
+
+To reject the draft, use its rejection control or
+`/reject <capture-proposal-id> <approval-digest-prefix>`. Repeating ordinary
+capture returns the existing pending proposal or terminal outcome; it does not
+reopen rejection/expiry. For a genuinely fresh preview after a closed rejected,
+expired, stale or `not_applied` generation, send a **new** authenticated message:
+
+```text
+/project capture-new <applied-spec-proposal-id> <native-task-id> <review-run-id>
+/project capture-status <applied-spec-proposal-id> <native-task-id> <review-run-id>
+```
+
+These are separate commands: `capture-new` requests renewal; `capture-status`
+only inspects existing linkage/outcome. Renewed content needs a fresh exact
+approval. An applied result returns its historical receipt even after a later
+human edit; it does not restore old note bytes or create another result.
+
+After approval, distinguish `applied` from `index_pending`. Saved-note publication
+is not repeated to repair indexing: use the existing indexed-read/recovery path
+and confirm indexed readback separately. For `prepared`, `not_applied`,
+`quarantined` or uncertainty, preserve receipts, current note and original
+artifacts and investigate before any new request. Never edit journal rows or
+replay workers to clear a capture refusal.
+
+New profiles include capture linkage. If an existing profile reports
+`Explicit proposal schema upgrade required before capture.`, stop intake and all
+project stages, take a complete stopped backup and approve the narrow schema
+upgrade. The existing operator API is `emuru.deployment.upgrade_proposals` (module
+command `python -m emuru.deployment proposal-upgrade`, with `HERMES_HOME` set to
+the selected profile **inside the verified maintenance container**). It preserves
+a private journal backup and accepts only known old schemas. This is not a
+`container.py` subcommand or an instruction to run the application on the host.
+Do not reinitialize a profile, delete linkage or force an old image to accept new
+state. Permanent-host migration/activation still requires its separate plan.
+
+### Read-only repository scout (v0.5.3)
+
+Scout execution is an explicit local owner action. Telegram tracking and note
+approval do not authorize it. Run the dispatcher as your normal unprivileged
+Docker-capable user against the existing M2 profile. The separate
+`infra/docker/scout.compose.yaml` is opt-in; normal wake/sleep is unchanged.
+It runs fixed first-party inspection code, without model calls or project tooling.
+
+Prepare a private, owner-owned mode-0600 JSON policy outside the repository:
+
+```json
+{
+  "schema": 1,
+  "repository": "sample",
+  "path": "/absolute/path/to/approved-repository",
+  "baseline": "REPLACE_WITH_EXACT_40_CHARACTER_HEAD",
+  "files": ["README.md", "src/app.py"],
+  "tasks": ["REPLACE_WITH_TRACKED_NATIVE_CARD_ID"],
+  "timeout_seconds": 30
+}
+```
+
+Use the task ID from `/project status`, not an ID inferred from note prose.
+Set baseline from `git -C /absolute/path/to/approved-repository rev-parse HEAD`.
+Review every selected file: select no credentials or private notes. Dotfiles,
+secret-key extensions, traversal, symlinks, submodules and linked Git worktrees
+are refused. Files must be committed UTF-8 text, at most 100 selections, 256 KiB
+per file and 2 MiB total. Working-tree edits are excluded. Repository HEAD must
+still match the policy. Changes to task/baseline/selection/budget require explicit
+policy review. No install, test, shell command or remote Git operation is authorized.
+
+Build the current source-verified image through the normal image/update workflow
+first. Scout refuses an absent/mismatched image; it never silently builds or pulls.
+Then run:
+
+```bash
+uv run --frozen python scripts/hermes/scout.py \
+  --home /absolute/path/to/existing/profiles/emuru \
+  --policy /absolute/path/to/private/scout-policy.json \
+  --task t_REPLACE_WITH_NATIVE_CARD_ID
+```
+
+Successful dispatcher stdout is one JSON document followed by a newline; image
+verification must not add its identity confirmation to stdout. Refusal diagnostics
+go to stderr with a nonzero exit. The result distinguishes `done` reconnaissance
+from `blocked`/`uncertain`.
+Only the new reconnaissance card completes; the coding task remains blocked.
+Reports contain selected file paths, sizes, line counts, SHA-256 hashes, directory
+map and bounded suggested next steps. They contain no source text, semantic review
+or test results. The result includes repository label, exact baseline, report hash,
+native run and attachment IDs under `evidence`. Top-level `run` is the current
+active native run, so it is `null` after completion; `evidence.run` retains the
+completed run ID. `/project status` shows this evidence separately.
+Reports persist at `<profile-home>/emuru-projects/scout-artifacts/<sha256>.json`;
+back up the whole stopped profile, including board sidecars and artifacts.
+
+Repeat delivery returns the existing card/receipt without another inspection.
+After interruption, inspect the native claim and report files before any operator
+reconciliation. A running/ready scout anywhere on the board prevents another
+claim, even with a changed grant. A blocked scout also prevents new grants until
+the owner independently confirms no scout container is running and reconciles
+the reconnaissance card through native APIs (for example, archives that card).
+The same archived grant is never re-executed. No automatic expiry/reclaim, retries or general
+dispatcher is enabled. A handled failure blocks its exact run. A killed runner
+can leave an uncertain native run even after the bounded worker has exited.
+Do not edit SQLite, reuse stale run IDs or mark code complete to clear the block.
+For opt-in hold/continue/cancel, see [project supervision](#project-supervision-v056); uncertain effects still require proven cleanup.
+
+Disposable acceptance (no real profile/vault or provider needed):
+
+```bash
+uv run --frozen python scripts/hermes/scout-check.py
+```
+
+### Bounded operator-run coding
+
+Use only under separate task execution authorization, as an unprivileged
+Docker-capable operator. The default Telegram profile cannot start coding.
+An approved note alone never grants repository access or execution authority.
+
+1. Apply the reviewed project spec through guarded vault approval, then use
+   `/project track <proposal-id>` and owner-private `/project status <proposal-id>`
+   to identify the original native coding card. The initial supported task is
+   `sum_prices.py:sum_prices(prices)` over integer lists.
+2. Review selected committed UTF-8 source for disclosure to the selected cloud
+   provider. Build/verify the current-source image using the existing image
+   workflow. The coding launcher never builds, pulls or downloads dependencies.
+3. Prepare an immutable, operator-owned mode-0600 JSON grant outside the source
+   repository. Parent directories must be private and free of symlinks. Use the
+   exact schema accepted by `src/emuru/projects/coder.py:validate_grant`:
+
+| Grant fields | Required binding |
+| --- | --- |
+| `schema`, `grant_id` | `1`, fresh 32-character lowercase hex attempt ID |
+| `owner`, `bot` | Authenticated numeric Telegram owner/bot IDs |
+| `vault` | `scout.digest(os.path.abspath(vault))` |
+| `project` | `board._digest([str(owner), str(bot), os.path.abspath(vault), approved_note_path])` |
+| `proposal`, `approval`, `revision` | Applied proposal ID, `approval_digest`, `after_revision` from current `mutations.approved_project` |
+| `task`, `task_digest` | Original tracked native card ID, `scout.digest(task)` for its exact approved structured task |
+| `repository`, `path`, `baseline` | Reviewed repository label, absolute repository path, exact authentic 40-character source HEAD |
+| `read_files`, `write_files`, `create_files` | Exact relative files; writes/creates within reads and disjoint; include `sum_prices.py` in reads/writes |
+| `check_ids`, `catalogue`, `network` | `["python_unittest"]`, current `coder_board.catalogue_digest()`, `"none"` |
+| `limits` | Every key in `coder.LIMITS`, positive integers at or below its ceilings |
+
+Do not derive approval fields from model prose or fabricate receipts. There is no
+public grant-creation command; the operator reviews the native card and current
+applied receipt using the existing trusted APIs. The disposable example in
+`scripts/hermes/coder-task-check.py:prepare` demonstrates the complete binding;
+its synthetic IDs and receipts never authorize real state. Spec/task, source HEAD
+and catalogue are revalidated before dispatch and completion.
+
+Ceilings: one task, 600 seconds per attempt, 12 model iterations, four checks of
+60 seconds each, one CPU, 512 MiB memory, 64 PIDs, 100 selected files, 256 KiB per
+file, 2 MiB selected source, 64 KiB output per check, 256 KiB combined output,
+8 MiB retained artifacts, and fresh 64 MiB/1,024-inode `/tmp`. Checks have no network,
+Docker socket, vault, board or model credentials. No shell, Git, delete, rename,
+chmod, install or arbitrary command tool is exposed. Monetary usage is observational.
+
+With `.env` pointing to the intended approved `EMURU_VAULT_PATH`, launch once:
+
+```bash
+uv run --frozen python scripts/hermes/coder.py \
+  --home /absolute/path/to/existing/profiles/emuru \
+  --policy /absolute/path/to/private/coder-grant.json \
+  --task t_REPLACE_WITH_NATIVE_CARD_ID
+```
+
+Inspect the JSON receipt and owner-private `/project status <proposal-id>`.
+Evidence and scoped diff are native attachments under
+`<home>/emuru-projects/coder-attempts/<grant_id>/`; inspect `evidence.json`,
+`diff.patch`, immutable source manifests, grant/run identity and recorded process
+facts. Status reopens and hashes actual artifacts. Five fresh Monty sessions must
+return typed expected values for empty, positive, negative, zero and duplicate
+inputs. Native developer tests are supplemental: nonzero exit blocks acceptance;
+zero exit never proves unittest completion or native/Monty equivalence.
+`tested local result / awaiting owner review` means only bounded local acceptance.
+`tests_failed` records a verified failing check; `blocked` records a refused or
+failed attempt. Unproven identities, artifacts or process stop remain `uncertain`.
+The owner must inspect the diff, broader correctness and independent review;
+publication and verified-result capture require separate authority and exact note approval.
+
+Repeat launch only inspects the existing attempt; it never retries work. After a
+crash, preserve the complete stopped profile and artifacts. An expired lease,
+changed grant or lost reply cannot clear ownership. If status is uncertain, first
+investigate the exact launcher/container identities. Explicit `--cleanup` on the
+same command proves launcher death, stops recorded resources and removes retained
+gateway credentials; it preserves intent, evidence, workspace and ownership.
+After proven stop, `--reconcile` can finalize already checked evidence under the
+current grant/approval/baseline. It runs no inference or checks. Missing or partial
+evidence remains uncertain; never edit SQLite or delete attempts to unblock work.
+General retry/retention controls remain outside this increment.
+
+### Disposable integrated coding qualification
+
+Review is explicitly enabled per private grant:
+schema `2` adds `review` equal to `emuru.projects.reviewer.authority()` (schema,
+enabled=true, current checklist digest). All original grant fields and limits
+remain required. Schema-1 grants retain M4 behavior and cannot authorize review.
+Disabled, unknown or stale review authority is refused before any claim.
+
+Use the existing operator launcher with that grant. Successful checks request
+review on the same card; the separate reviewer receives a complete packet without
+tools or mounts. A matching approval yields `verified` local output; concrete
+findings yield `changes_requested` and wait for owner action. A concrete hard
+security refusal may yield `blocked`, stopping without rework authority. Repeated
+launch only inspects prior facts unless a fresh schema-3 rework grant is supplied. Missing review
+facts remain `uncertain`; explicit cleanup/reconcile never launches a reviewer,
+reruns checks or fabricates an approval. Older executors cannot accept newest
+review state through the supported rollback workflow.
+
+Exactly one operator-authorized rework is supported. Supply a new private grant
+with schema `3`, a new `grant_id`, unchanged owner/task/HEAD/file/check scope and
+review authority, and limits no greater than the first grant. Its `rework` object
+has schema `1`, `loop` equal to the initial grant ID, `coder_run` and `reviewer_run`
+from the rejected receipt, and these SHA-256 bindings: `grant_sha256` (initial grant),
+`evidence_sha256` (exact evidence file bytes), `receipt_sha256` (initial review
+receipt), `findings_sha256` (its blockers list), and `final_sha256` (parent final
+manifest). Object hashes use the existing canonical `scout.digest`; file hashes
+use exact bytes. Only a validated `changes_requested` receipt permits this grant.
+Use the same launcher and original card. Schema-2 grants never authorize rework.
+
+The second workspace starts from verified parent final bytes; its diff still binds
+the original HEAD. New bytes require fresh checks and a distinct reviewer run.
+Second rejection becomes `review_rejected` with native blocking. A third grant,
+partial lineage, stale authority, or unknown usage cannot dispatch. Full stage
+allowances are reserved without refunds, including after crashes; totals cannot
+exceed two coder/two reviewer runs, 1,800 active seconds, 24/8 model iterations,
+eight checks, 640 KiB captured output, or 17 MiB retained artifacts. Waiting for
+owner authorization executes nothing. Both attempts and rejection history remain
+private and retained. Supported cleanup and metadata-only reconciliation use the
+same `--policy`, `--task`, `--cleanup` and `--reconcile` options; an uncertain
+transition is never replayed. Rollback to an executor without schema-3 support is
+refused while preserving newest state.
+
+Reviewer ceilings are 300 active seconds, four model calls/iterations, 256 KiB
+complete input, 64 KiB output and 32 KiB strict verdict. Existing coder caps remain
+unchanged; one coder/reviewer allowance is reserved durably before claim. Inspect
+private `coder-attempts/<grant_id>/review/` receipts and loop reservation. Source
+can reach the approved cloud model. Independent review does not authenticate
+native unittest completion or prove native/Monty equivalence.
+
+Use fresh synthetic data only; evidence stays private under ignored `.runtime/`.
+Provider-backed commands incur selected-provider calls and require explicit
+runtime authorization. They do not use a real owner vault or establish manual
+owner acceptance. Verify the image digest against current source first.
+
+```bash
+uv run --frozen python scripts/hermes/coder-check.py --build --native-self-check --sandbox-self-check --isolation-probes
+uv run --frozen python scripts/hermes/reviewer-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --live
+uv run --frozen python scripts/hermes/rework-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --live
+uv run --frozen python scripts/hermes/rework-check.py --image sha256:REPLACE_WITH_VERIFIED_IMAGE --matrix
+```
+
+Run each command in a separate process. Passing/failing native fixtures use real
+model-led inference, applied synthetic receipts, board/status and Docker checks.
+Controlled isolation/crash fixtures are reported separately from model proof.
+The reviewer fixture covers correct approval, hidden-defect and unsafe-change
+rejection, failed developer checks and interrupted handoffs. The rework live
+fixture seeds the initial defect, uses actual model reviews and a model-led
+authorized rework, and separately proves terminal second rejection. Its matrix
+uses deterministic verdicts and both signals across all initial/rework windows.
+CI runs confinement, tool-free reviewer checks and that matrix without provider
+credentials. Retained evidence is reusable only with matching identities and
+unchanged relevant boundaries; historical proof is never relabeled as current.
+Missing provider access, timeouts, failed probes or partial evidence block
+acceptance; no permission expansion or automatic retry is allowed.
+
+Use the existing full CI workflow once through `act push` and `.actrc` for
+M1–M3, Telegram/vault/cloud contracts, source identity and the owned
+wake/update/rollback drill. Do not duplicate that drill. Keep CI secrets/env at
+`/dev/null`. Local CI does not replace exact-final-commit hosted CI. Predecessor
+acceptance, manual owner acceptance and publication remain separate release gates.
+CI activates `COMPOSE_PROFILES=agent` for native/lifecycle fixture teardown so
+Compose also removes the profiled synthetic worker. Supply that environment
+variable when running those predecessor fixture scripts directly.
+
+### Project supervision (v0.5.6)
+
+Supervision is opt-in for an existing separately authorized Scout policy or coder
+grant. Run enrollment as the unprivileged Docker-capable operator. `--home` is the
+private Hermes profile directory, not the deployment home used by service scripts.
+The current-source image must already exist; enrollment does not build it.
+Use actual private absolute paths and the original tracked task ID:
+
+```bash
+uv run --frozen python scripts/hermes/supervisor.py \
+  --home /absolute/private/profile --vault /absolute/vault \
+  --policy /absolute/private/coder-grant.json --task NATIVE_TASK_ID \
+  --stage coder --seconds 86400
+```
+
+For Scout use `--stage scout`, its existing private policy, and required
+`--owner NUMERIC_OWNER_ID --bot NUMERIC_BOT_ID`. Enrollment revalidates the exact
+approval/card/grant/source/image/pins/schema and legacy exclusion. Its deadline
+cannot exceed 24 hours and expires across reboot. It launches nothing. Fresh
+rework still needs its own valid schema-3 grant and enrollment; stable project
+counters and original loop allowances remain shared, without resets or refunds.
+Never-enrolled profiles keep their existing operator behavior.
+
+In the authenticated owner's private Telegram chat:
+
+```text
+/project status <applied-spec-proposal-id>
+/project hold <applied-spec-proposal-id> <native-task-id> <control-token>
+/project continue <applied-spec-proposal-id> <native-task-id> <control-token>
+/project cancel <applied-spec-proposal-id> <native-task-id> <control-token>
+```
+
+Copy the exact current token from status; inspect status again after a transition
+or stale-token refusal. Status is read-only and distinguishes native outcome,
+control state, verification, stop evidence, original deadline and reserved totals.
+Missing provider usage is `unavailable`, not zero consumption.
+
+- **Hold:** refuses new admission; an already admitted stage may drain its original
+  remaining allowance. It does not stop an active stage immediately.
+- **Continue:** clears only a valid hold with no uncertainty/incompatible fence
+  and available original budget. It launches nothing and cannot revive revoked,
+  expired, attempted or uncertain work.
+- **Cancel:** revokes enrollment and requests stop, including blocked inference or
+  checks. Stop must be independently proven; reservations and uncertain effects
+  remain. Completed outcomes are unchanged. Repeated delivery reuses its receipt.
+
+After continue, explicitly invoke the existing Scout/coder launcher. If a hold
+occurred since coder admission, automatic first-review handoff stays fenced even
+when continue arrived before coder completion. Once status and retained intent
+prove a never-claimed first review, invoke the coder launcher with the same
+`--home`, `--policy`, `--task` and `--review`. Missing intent, attempted review or
+uncertainty refuses this path. It does not authorize rework or a new coder attempt.
+
+Use supported `--cleanup` only after proven launcher death to stop exact recorded
+resources; `--reconcile` only finalizes existing verified evidence after stop.
+Neither retries work. Never delete supervisor facts, receipts or reservations to
+clear a refusal. Cancellation does not establish that unknown effects are resolved.
+
+Sleep/down fences all new Scout/coder/reviewer stages before checking active work.
+A refused shutdown keeps that fence even if no conversation container exists.
+Inspect/cancel/wait or use supported cleanup, then retry. Wake clears only a sleep
+fence after compatible actual-release verification and proven idle state. Hold,
+revocation, deadline, budget and uncertainty persist. Incompatible rollback must
+refuse; retain newest profile, board/sidecars, grants, supervisor facts and artifacts.
+See [service lifecycle](#start-stop-and-status).
+
+The bounded project allowance is one Scout, two coders/two reviewers and 1,920
+reserved seconds, with the original 1,800-second coder/reviewer loop inside it.
+Metadata is capped at 1 MiB with emergency restriction capacity. Status reports
+reservations, not measured consumption or a guaranteed provider spend ceiling.
+
+### Resource limits
+
+| Resource | Ceiling |
+| --- | --- |
+| Enrollment | 24 hours, monotonic and boot-bound |
+| Stable project | One Scout, two coders and two reviewers, 1,920 reserved seconds, with a 1,800-second coder and reviewer loop |
+| Stage time | Coder 600 seconds, reviewer 300 seconds, Scout 120 seconds |
+| Iterations and checks | Coder 12 and reviewer 4 per stage, 24 and 8 per loop. Four checks per coder and eight per loop, 60 seconds per check |
+| Captured output | 64 KiB per check or reviewer, 256 KiB per coder, 640 KiB per loop |
+| Artifacts | 8 MiB per coder, 17 MiB per loop, 64 KiB per Scout report |
+| Reviewer | 256 KiB complete input, 64 KiB output, 32 KiB strict verdict |
+| Selected files | 100 committed UTF-8 files, 256 KiB each, 2 MiB total |
+| Workers and checks | One CPU, 512 MiB, 64 PIDs, fresh scratch of 64 MiB and 1,024 inodes |
+| Supervisor metadata | 1 MiB with a 4 KiB emergency reserve, 4 KiB per receipt, and a 3,500-character status projection |
+
+Reservations are charged before claim and retained after crashes or cancellation.
+Batch reservations apply a cumulative limit. Execution remains serial.
+
 ## Troubleshooting and recovery
 
 | Symptom | Action |
@@ -107,6 +610,7 @@ only for an intentional new request, not to retry an uncertain mutation.
 | Cloud failure | Restore the selected provider/key/connectivity. There is no automatic local fallback or request replay. |
 | Empty vault results | Check the saved target and allowed roots. Do not copy fixtures into the real vault or broaden access. |
 | `saved; indexing pending` / `index_pending` | Keep the saved note. The next indexed read attempts repair; do not repeat the write. |
+| Capture refused | Verify all three exact IDs, current evidence/source/image and policy. Missing or changed proof cannot be repaired by editing receipts. |
 | Stale proposal | Read the current note and obtain a fresh preview and approval. |
 | `not_applied`, `quarantined` or uncertain delivery | Inspect current note bytes and durable receipts before any new request. Do not reset the queue or edit the journal. |
 | Unauthorized Telegram access | Verify the numeric owner ID and private chat. Groups and media are unsupported. |
@@ -143,6 +647,10 @@ There is no supported systemd runtime or rollback path.
 
 ## Run tests
 
+For isolated deterministic checks without provider access, see
+[offline development verification](DEVELOPMENT.md). DEV PASS does not replace
+live qualification or release acceptance.
+
 Use [README's checks](../README.md#development) for routine development. For synthetic
 MCP and offline profile/transport contracts:
 
@@ -161,6 +669,161 @@ uv run --frozen python scripts/hermes/container-check.py
 It requires Docker, pinned infrastructure images and a built acceptance image
 (`emuru:latest` or `EMURU_TEST_IMAGE`); see [CI](../.github/workflows/ci.yml) for preparation.
 It owns the native suite and wake/update/rollback drill; do not also run `wake-check.py`
-in the same pass. Live provider checks are opt-in. Local qualification is deferred.
+in the same pass. Live provider checks are opt-in. See the
+[release acceptance record](releases/v0.6.0-acceptance.md) for qualification and
+candidate identities.
 MCP integration tests need local socket IPC; sandbox `EPERM` requires a permitted
 rerun, not increased timeouts or skipped tests.
+
+### Continuation inspection and binding
+
+Use `/project inspect <applied-spec-proposal-id>` or append an explicit comma-separated
+selection of approved task labels. Inspection reads snapshots, displays exact task
+contracts, anchors, historical mappings and dependencies, and returns the complete
+`/project bind <proposal> <labels> <selection-token>` command. Bind confirms those
+exact bytes; changed note scope requires a new approved specification. Unique legacy
+anchors require this explicit confirmation and are never rewritten with invented IDs.
+
+Before binding, stop the profile and its workers using the existing sleep/stop
+workflow, then run `uv run --frozen python -m emuru.deployment continuation-upgrade`
+in the selected profile environment. The command checks idle ownership, retains
+`emuru-projects/continuation-backup.json` and its exact upgrade recovery marker,
+and preserves historical ledger records. Startup never migrates state. Keep the
+backup and recovery marker; older executors must refuse this profile.
+
+Repeat the original authenticated bind after an interrupted write; only missing
+cards, edges and receipts are filled. Inspection and restart never repair state.
+Cards stay blocked. Binding allocates no allowance and launches no worker. Continued
+execution requires the separately authorized batch and single-task grants described below.
+Native done/archived and a checked note line never establish verified completion.
+
+### Bounded continuation batches
+
+After the stopped-profile upgrade and explicit bind, prepare a private, mode-0600
+batch manifest using the approved specification's exact schema-1 fields. Select
+only already bound contracts/cards; list finite initial/rework attempt caps (1 or
+2), baseline, selected-file scopes, fixed check catalogue and per-stage limits.
+`ceilings` must equal the displayed cumulative consumed C, still-authorized
+unreserved U and new D. Use the current batch digest as `previous_allowance`, or
+null for the first batch. The manifest is bounded to 32 KiB; smaller selections may
+be required by remaining metadata capacity. No new provider or permission is implied.
+
+Use the existing operator CLI and private coder policy as the scope allowlist:
+
+```bash
+uv run --frozen python scripts/hermes/supervisor.py --home "$PROFILE" --vault "$VAULT" --policy "$GRANT" --batch-preview "$MANIFEST"
+uv run --frozen python scripts/hermes/supervisor.py --home "$PROFILE" --vault "$VAULT" --policy "$GRANT" --batch-enroll "$MANIFEST" --expect "$PREVIEW_DIGEST"
+```
+
+Preview reads only. Enrollment checks the exact complete preview, persists immutable
+allowance/task receipts, and launches nothing. Repeat the exact enrollment and digest
+after interrupted publication; status/restart never repairs or replays it. Duplicate
+enrollment returns the original allowance. A later update must compare against the
+current allowance and retain all consumed reservations, task caps and the original
+boot-bound deadline. A second Scout and a third unchanged task attempt are refused.
+
+`/project inspect <proposal>` shows batch digest, control token, spent/remaining
+counters and expiry. Each selected task shows its next action or a blocker,
+including missing verified predecessors. Execution still requires admission.
+The owner can use `/project batch-hold|batch-continue|batch-cancel
+<batch-digest> <control-token>` through the existing private Telegram boundary.
+Hold drains the admitted stage and fences later admissions; cancel requests existing
+exact-identity cleanup and revokes unstarted authority. Continue clears only that
+batch hold after current authority/ownership checks. Per-task restrictions still win;
+continue launches nothing and never renews deadlines or budgets. Tokens change with
+allowance/control changes, not routine worker progress.
+
+Existing initial coder and independent review paths can consume batch membership;
+launch still requires a separate exact single-task grant/enrollment and explicit
+operator command. Schema-4 grants add exact batch, contract, input manifest and
+reviewed predecessor identities; each successor requires its own separate review.
+Pending note approval remains separate from verified execution. No automatic batch
+dispatch, note write or model call follows from preview, enrollment, controls or wake.
+
+
+### Verified successor execution
+
+Use the existing `scripts/hermes/coder.py` operator launcher and supervised
+single-task enrollment for every selected task. Enrollment/binding never dispatches
+successors. Schema 4 retains all existing grant fields plus `review`, nullable
+`rework`, and `continuation`. The latter contains the approved manifest `batch`
+digest, task `contract` digest, composed `input_sha256`, and a topologically ordered
+`predecessors` closure. Each predecessor binds `task`, `contract`, `grant_id`,
+`grant_sha256`, `evidence_sha256`, `receipt_sha256`, `final_sha256`, `coder_run` and
+`reviewer_run`. The field names above are the canonical persisted schema-4
+format. The enrolled batch binds the logical task and completed binding digest.
+Unknown future output digests cannot authorize a successor.
+
+The controller reopens immutable original/final snapshots and independent native
+reviews before admission and review. Only explicit read paths enter the fresh
+workspace. Changed files compose in dependency order; a descendant can replace an
+ancestor only through exact verified lineage. Independent unequal writes, missing
+proof, incompatible repository/baseline identities and unsupported deletions refuse.
+Identical independent writes are compatible. Existing file, packet, artifact and
+stage bounds apply; oversized packets refuse without truncation.
+
+A schema-4 rework grant retains the same continuation scope and binds the original
+eligible `changes_requested` receipt using the existing `rework` object. Only one
+fresh second attempt is permitted. Failed checks and hard blocks remain ineligible.
+Use existing cleanup/reconcile controls for interrupted work; neither recovery nor
+restart reruns code. Schemas 1–3 retain their historical semantics.
+
+Verified code and note publication are separate. Pending predecessor capture does
+not prevent otherwise authorized execution. Schema-4 capture reopens the complete input and predecessor lineage through the
+historical verification path; historical M7 receipts remain readable. No automatic note write or
+project-complete claim follows from a verified successor.
+
+
+### Continued result capture and recovery
+
+After independent review, use `/project capture <spec-proposal-id> <task-id>
+<review-run-id>` in the authenticated owner's private chat. Keep the command on
+one line. A confirmed current-revision alias resolves to the original card,
+proposal and reviewer run; it does not create another completion identity.
+Changed contracts require their own bound card and verified result. If the stable
+anchor is unavailable, supply a second line, `anchor: <exact existing task line>`.
+The line must match uniquely. No checkbox, block ID or unrelated human bytes are
+rewritten.
+
+Review the complete delivered preview, pause Obsidian and other vault writers,
+then send a separate approval with the displayed 16-character digest prefix.
+
+```text
+/apply <capture-proposal-id> writers-paused <approval-digest-prefix>
+```
+
+Before the first write, the pinned-runtime verifier reopens the grant, composed
+input, predecessor evidence, independent native reviews and terminal result.
+Missing or altered evidence refuses application. A changed note requires a fresh
+preview and approval. Preserve the receipts and artifacts when investigating a
+refusal.
+
+Use `/project capture-status <spec-proposal-id> <task-id> <review-run-id>` to read
+retained capture state. Repeat capture after a lost acknowledgement to recover the
+same proposal. After rejection, expiry, a stale preview or `not_applied`, use
+`/project capture-new <spec-proposal-id> <task-id> <review-run-id>` in a new
+authenticated message. Confirm a unique anchor and approve the new preview.
+Applied receipts remain available after later note edits or loss of old execution
+artifacts. `index_pending` means the note was saved. Recover the receipt and
+index with the operator command below, then confirm indexed readback with
+`vault_search`. Index recovery preserves note bytes and mtime.
+
+```bash
+uv run --frozen python scripts/hermes/vault.py mutation-recover \
+  --profile-home "$HERMES_HOME" --vault "$VAULT"
+```
+
+Use `/project inspect <applied-spec-proposal-id>` after restart. It reports
+native status, verification, restrictions, reservations,
+binding recovery and capture proposals separately. Pending capture is not note
+publication or project completion. Restart repairs neither partial binding nor
+batch enrollment; retry the original exact authenticated operation only where
+status requests it. Execution still requires an explicit operator command.
+Capture refuses new entries when its 1 MiB metadata budget is exhausted or
+when the binding or anchor exceeds 4 KiB. The supervisor has a separate 1 MiB
+metadata budget with a restriction reserve.
+Preserve the complete stopped profile, journal, board, continuation manifests,
+allowances and artifacts for upgrade or rollback; never prune history to make a
+request fit. Qualification covers disposable native/container execution with
+synthetic owner requests and provider responses. Live Telegram delivery, provider usefulness,
+manual owner acceptance and production deployment remain outside this scope.

@@ -1,0 +1,365 @@
+"""Host-owned transport to a separate native inference container, never a shell."""
+
+import hashlib
+import json
+import os
+import re
+import selectors
+import signal
+import subprocess
+import time
+import uuid
+
+from emuru.projects.coder_native import MAX_LINE, validate_call, validate_request
+from emuru.projects.coder_sandbox import bounded_process
+
+
+def verify_native_completion(
+    image, name, final, sequence, code, actual, *, review=False
+):
+    """Bind the trusted native final channel to daemon-observed termination only."""
+    if not isinstance(final, dict) or type(final.get("success")) is not bool:
+        raise ValueError("Native completion frame is missing or invalid.")
+    fields = {"type", "success", "tool_calls"}
+    if not review and final["success"] and "model_calls" in final:
+        fields.add("model_calls")
+        if type(final["model_calls"]) is not int or not 0 <= final["model_calls"] <= 12:
+            raise ValueError("Coder model-call count is invalid.")
+    if review and final["success"]:
+        fields.update({"verdict", "model_calls"})
+        if (
+            type(final.get("model_calls")) is not int
+            or not 1 <= final["model_calls"] <= 4
+        ):
+            raise ValueError("Reviewer model-call budget is invalid.")
+    if not final["success"]:
+        fields.add("error")
+    state = actual.get("State") if isinstance(actual, dict) else None
+    config = actual.get("Config") if isinstance(actual, dict) else None
+    if review:
+        host = actual.get("HostConfig", {})
+        if (
+            not isinstance(config, dict)
+            or config.get("User") != f"{os.getuid()}:{os.getgid()}"
+            or host.get("ReadonlyRootfs") is not True
+            or host.get("Privileged") is not False
+            or host.get("CapDrop") != ["ALL"]
+            or "no-new-privileges" not in host.get("SecurityOpt", [])
+            or host.get("Memory") != 512 * 1024 * 1024
+            or host.get("PidsLimit") != 64
+            or host.get("NanoCpus") != 1000000000
+            or not str(host.get("NetworkMode", "")).startswith("emuru-coder-model-")
+            or any(m.get("Type") != "tmpfs" for m in actual.get("Mounts", []))
+        ):
+            raise ValueError("Reviewer confinement inspection failed.")
+    if (
+        set(final) != fields
+        or final["type"] != "final"
+        or type(final["tool_calls"]) is not int
+        or final["tool_calls"] != sequence
+        or review
+        and sequence != 0
+        or (
+            not final["success"]
+            and not re.fullmatch(r"coder_[a-z_]+", str(final.get("error", "")))
+        )
+        or type(code) is not int
+        or code != (0 if final["success"] else 1)
+        or not isinstance(state, dict)
+        or not isinstance(config, dict)
+        or config.get("Image") != image
+        or actual.get("Name") != "/" + name
+        or not re.fullmatch(r"[a-f0-9]{64}", str(actual.get("Id", "")))
+        or state.get("Status") != "exited"
+        or state.get("Running") is not False
+        or state.get("Dead") is not False
+        or state.get("OOMKilled") is not False
+        or state.get("Error") != ""
+        or state.get("ExitCode") != code
+    ):
+        raise ValueError("Native completion lacks consistent lifecycle evidence.")
+    return {
+        "container_id": actual["Id"],
+        "image": image,
+        "exit_code": code,
+        "tool_calls": sequence,
+        "final_sha256": hashlib.sha256(
+            json.dumps(final, sort_keys=True).encode()
+        ).hexdigest(),
+    }
+
+
+def run_inference(
+    image,
+    network,
+    gateway_key,
+    request,
+    dispatch,
+    *,
+    name=None,
+    process_event=None,
+    deadline=None,
+    output_bytes=None,
+    output_usage=None,
+    supervision=None,
+):
+    validate_request(request)
+    review = request.get("role") == "reviewer"
+    output_usage = (
+        output_usage if output_usage is not None else {"native": 0, "checks": 0}
+    )
+    output_bytes = (
+        output_bytes if output_bytes is not None else (64 if review else 256) * 1024
+    )
+    if (
+        type(output_bytes) is not int
+        or not 0 < output_bytes <= (64 if review else 256) * 1024
+    ):
+        raise ValueError("Invalid native output ceiling.")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
+        raise ValueError("Native inference requires an immutable image identity.")
+    if not gateway_key:
+        raise ValueError("Coding inference requires model access.")
+    name = name or "emuru-coder-inference-" + uuid.uuid4().hex
+    if not re.fullmatch(r"emuru-coder-[a-z0-9-]{8,80}", name):
+        raise ValueError("Native inference process identity is invalid.")
+    seconds = request.get("deadline_seconds", 600)
+    now = time.monotonic()
+    deadline = min(now + seconds, deadline) if deadline is not None else now + seconds
+    seconds = deadline - now
+    if seconds <= 0:
+        raise TimeoutError("Native coding inference exceeded its attempt deadline.")
+    command = [
+        "docker",
+        "run",
+        "-i",
+        "--name",
+        name,
+        "--network",
+        network,
+        "--read-only",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--memory",
+        "512m",
+        "--memory-swap",
+        "512m",
+        "--pids-limit",
+        "64",
+        "--cpus",
+        "1",
+        "--log-driver",
+        "none",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m,nr_inodes=1024,mode=1777",
+        "--tmpfs",
+        "/dev/shm:ro,noexec,nosuid,nodev,size=1m",
+        "--env",
+        "EMURU_GATEWAY_KEY",
+        "--env",
+        "HOME=/tmp",
+        "--env",
+        "HERMES_DISABLE_LAZY_INSTALLS=1",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "--entrypoint",
+        "/usr/bin/timeout",
+        image,
+        "--signal=KILL",
+        str(seconds),
+        "/opt/hermes/.venv/bin/python",
+        "-I",
+        "-B",
+        "-c",
+        (
+            "import sys; sys.path.insert(0,'/opt/emuru/src'); "
+            "from emuru.projects.coder_native import main; raise SystemExit(main())"
+        ),
+    ]
+    docker_environment = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}
+    if process_event:
+        process_event(name, "starting")
+    observer = None
+    process = None
+    buffer, sequence, final = bytearray(), 0, None
+    received = 0
+    model_calls = 0
+    try:
+        if supervision is not None:
+            identity = supervision.create(
+                command,
+                name,
+                "inference",
+                image,
+                env={**docker_environment, "EMURU_GATEWAY_KEY": gateway_key},
+            )
+            command = ["docker", "start", "--attach", "--interactive", identity]
+            observer = supervision.client(command)
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env={**docker_environment, "EMURU_GATEWAY_KEY": gateway_key},
+            )
+        except BaseException:
+            if observer is not None:
+                observer(None, "unstarted")
+            raise
+        if observer is not None:
+            observer(process, "bound")
+            supervision.check()
+        process.stdin.write(json.dumps(request).encode() + b"\n")
+        process.stdin.flush()
+        with selectors.DefaultSelector() as poller:
+            poller.register(process.stdout, selectors.EVENT_READ)
+            while poller.get_map():
+                if supervision is not None:
+                    supervision.check()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Native coding inference exceeded its deadline.")
+                for key, _ in poller.select(min(remaining, 0.1)):
+                    chunk = os.read(key.fileobj.fileno(), 16384)
+                    if not chunk:
+                        poller.unregister(key.fileobj)
+                        break
+                    buffer.extend(chunk)
+                    received += len(chunk)
+                    output_usage["native"] = received
+                    if received + output_usage["checks"] > output_bytes:
+                        raise ValueError("Native output exceeded its bound.")
+                    if len(buffer) > MAX_LINE:
+                        raise ValueError("Native coding protocol exceeded its bound.")
+                    while b"\n" in buffer:
+                        line, _, rest = buffer.partition(b"\n")
+                        buffer = bytearray(rest)
+                        event = json.loads(line)
+                        if final is not None or not isinstance(event, dict):
+                            raise ValueError(
+                                "Native coding protocol ended or is invalid."
+                            )
+                        if event.get("type") == "final":
+                            if type(event.get("success")) is not bool:
+                                raise ValueError(
+                                    "Native coding final outcome is invalid."
+                                )
+                            final = event
+                            continue
+                        if event.get("type") == "model":
+                            if (
+                                supervision is None
+                                or set(event) != {"type", "id"}
+                                or type(event["id"]) is not int
+                                or event["id"] != model_calls + 1
+                            ):
+                                raise ValueError(
+                                    "Native model admission correlation failed."
+                                )
+                            supervision.admit("model")
+                            model_calls += 1
+                            process.stdin.write(
+                                json.dumps(
+                                    {"id": model_calls, "result": {"admitted": True}}
+                                ).encode()
+                                + b"\n"
+                            )
+                            process.stdin.flush()
+                            continue
+                        sequence += 1
+                        if review:
+                            raise ValueError("Reviewer attempted a tool call.")
+                        if (
+                            set(event) != {"type", "id", "name", "arguments"}
+                            or event["type"] != "tool"
+                            or event["id"] != sequence
+                        ):
+                            raise ValueError(
+                                "Native coding request correlation failed."
+                            )
+                        validate_call(event["name"], event["arguments"])
+                        result = dispatch(event["name"], event["arguments"])
+                        reply = (
+                            json.dumps({"id": sequence, "result": result}).encode()
+                            + b"\n"
+                        )
+                        if len(reply) > MAX_LINE or time.monotonic() >= deadline:
+                            raise ValueError("Native coding reply exceeded its bounds.")
+                        process.stdin.write(reply)
+                        process.stdin.flush()
+        if buffer or final is None:
+            raise ValueError("Native coding final outcome is missing.")
+        if supervision is not None:
+            supervision.check()
+            if final["success"] and final.get("model_calls") != model_calls:
+                raise ValueError(
+                    "Coder mandatory model counter conflicts with native evidence."
+                )
+        code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        inspected = (
+            supervision.command(["docker", "inspect", name], env=docker_environment)
+            if supervision is not None
+            else bounded_process(
+                ["docker", "inspect", name], b"", 5, 65536, env=docker_environment
+            )
+        )
+        if inspected["exit_code"]:
+            raise ValueError("Native coding lifecycle inspection unavailable.")
+        actual = json.loads(inspected["stdout"])
+        if not isinstance(actual, list) or len(actual) != 1:
+            raise ValueError("Native coding lifecycle inspection is ambiguous.")
+        lifecycle = verify_native_completion(
+            image, name, final, sequence, code, actual[0], review=review
+        )
+        outcome = {
+            "success": final["success"],
+            "tool_calls": sequence,
+            "container": name,
+            "exit_code": code,
+            "model_led": True,
+            "error": final.get("error")
+            if re.fullmatch(r"coder_[a-z_]+", str(final.get("error")))
+            else None,
+            "native_lifecycle": lifecycle,
+        }
+        outcome["output_bytes"] = received
+        if "model_calls" in final:
+            outcome["model_calls"] = final["model_calls"]
+        if review and final["success"]:
+            outcome["verdict"] = final["verdict"]
+            outcome["model_calls"] = final["model_calls"]
+            outcome["output_bytes"] = received
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            process.stdin.close()
+            process.stdout.close()
+            if observer is not None:
+                observer(process, "stopped")
+        if supervision is not None:
+            supervision.remove(name)
+        elif process is not None:
+            removed = bounded_process(
+                ["docker", "rm", "--force", name], b"", 10, 4096, env=docker_environment
+            )
+            absent = bounded_process(
+                ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
+                b"",
+                5,
+                4096,
+                env=docker_environment,
+            )
+            if removed["exit_code"] or absent["exit_code"] or absent["stdout"].strip():
+                raise RuntimeError("Native coding inference termination is uncertain.")
+        if process_event:
+            process_event(name, "stopped")
+    outcome["native_lifecycle"]["removed"] = True
+    return outcome

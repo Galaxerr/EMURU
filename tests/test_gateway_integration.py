@@ -185,6 +185,7 @@ def test_profile_opt_in_and_secret_free_mcp(tmp_path, monkeypatch):
     [
         ("gemini", "gemini-synthetic", "gemini", "GEMINI_API_KEY"),
         ("openai-api", "gpt-synthetic", "openai", "OPENAI_API_KEY"),
+        ("groq", "openai/gpt-oss-120b", "groq", "GROQ_API_KEY"),
     ],
 )
 def test_optional_upstream(tmp_path, monkeypatch, provider, model, prefix, key):
@@ -249,6 +250,7 @@ def test_compose_preserves_pins_private_network_and_secret_isolation():
         "ollama_api_key",
         "gemini_api_key",
         "openai_api_key",
+        "groq_api_key",
     }
     assert not services["ollama"].get("secrets")
 
@@ -312,6 +314,8 @@ def test_same_picker_pair_cli(tmp_path, monkeypatch):
             str(path),
             "--primary",
             "cloud-alias",
+            "--provider",
+            "ollama",
             "--local-candidate",
             "local",
         ],
@@ -326,3 +330,28 @@ def test_same_picker_pair_cli(tmp_path, monkeypatch):
     ):
         main()
     assert path.read_bytes() == before
+
+
+def test_pair_picker_defaults_to_groq_without_changing_ollama_inventory(
+    tmp_path, monkeypatch
+):
+    tmp_path.chmod(0o700)
+    path = tmp_path / "route.json"
+    main = runpy.run_path(str(ROOT / "scripts/hermes/ollama.py"))["main"]
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "ollama.py",
+            "--route",
+            str(path),
+            "--primary",
+            "openai/gpt-oss-120b",
+            "--local-candidate",
+            "local",
+        ],
+    )
+    with patch.object(OllamaClient, "request", responses()):
+        main()
+    route = gateway.read_route(path)
+    assert route["primary"] == {"provider": "groq", "model": "openai/gpt-oss-120b"}
+    assert route["fallback"] == ROUTE["fallback"]

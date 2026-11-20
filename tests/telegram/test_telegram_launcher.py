@@ -365,3 +365,46 @@ def test_signals_preserve_pending_and_uncertain_receipts():
     from telegram_shutdown_fixture import check
 
     check()
+
+
+@pytest.mark.parametrize("mode", ["--check", "--runtime-check"])
+def test_failed_preflight_reports_only_code_locations_and_exception_types(
+    monkeypatch, capsys, tmp_path, mode
+):
+    import runpy
+
+    from emuru.hermes import profile
+
+    secret = "123456789:SYNTHETIC_TOKEN https://api.telegram.org/botSECRET private-vault owner=987654321"
+
+    def fail(root):
+        try:
+            raise TimeoutError(secret)
+        except TimeoutError as cause:
+            raise RuntimeError(secret) from cause
+
+    monkeypatch.setattr(profile, "public_contract", fail)
+    monkeypatch.setattr(sys, "argv", ["telegram-runtime.py", mode])
+    # runtime-check replaces these directly; register them for fixture restoration.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    monkeypatch.setenv("EMURU_HERMES_PROFILE_HOME", str(tmp_path / "profile"))
+    old_mask = os.umask(0o077)
+    try:
+        with pytest.raises(
+            SystemExit, match="^EMURU Telegram: guarded_runtime_failed$"
+        ):
+            runpy.run_path(
+                str(ROOT / "infra/hermes/telegram-runtime.py"), run_name="__main__"
+            )
+    finally:
+        os.umask(old_mask)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "Native Telegram diagnostic: RuntimeError in main at telegram-runtime.py:"
+        in captured.err
+    )
+    assert "Native Telegram diagnostic: TimeoutError" in captured.err
+    assert str(ROOT) not in captured.err
+    for value in secret.split():
+        assert value not in captured.err

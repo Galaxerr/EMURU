@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from emuru.vault import indexer as index
@@ -41,6 +42,8 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         Use this before opening notes when you need to understand
         the available projects, areas, resources, journal entries,
         inbox items, or archived knowledge.
+
+        incomplete and failed_paths identify malformed notes omitted from the index.
         """
         return _call(index.vault_map, vault_root, MAX_MAP_ENTRIES)
 
@@ -60,6 +63,8 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         Returns matching note paths, titles, summaries and excerpts.
         Use the returned path with vault_open when more detail is
         required.
+
+        incomplete and failed_paths report omitted malformed notes, even with no matches.
         """
         if limit < 1:
             raise ToolError("Search limit must be at least 1.")
@@ -77,6 +82,12 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
 
         Paths must be vault-relative, for example:
         10_Projects/EMURU.md
+
+        Returns content, truncated, and revision. For an update, copy the exact
+        string in this response's revision field into vault_propose.expected_revision
+        for this same path. Never hash or copy content as the revision. Even when
+        content is truncated, revision identifies the full raw file. If the intended
+        anchor is missing, reopen with max_chars up to 50000; stop if still missing.
         """
         if max_chars < 1:
             raise ToolError("max_chars must be positive.")
@@ -89,6 +100,8 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
         """
         Return incoming and outgoing wikilink relationships
         for one indexed note.
+
+        incomplete and failed_paths identify malformed notes omitted from relationships.
         """
         return _call(index.vault_neighbors, vault_root, path)
 
@@ -115,6 +128,36 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
     if proposal_home is not None:
 
         @mcp.tool(
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False)
+        )
+        def vault_proposal_status(
+            proposal_id: str | None = None, latest: bool = False
+        ) -> dict[str, Any]:
+            """Read authoritative current proposal lifecycle for the authenticated owner.
+
+            Call freshly before reporting current approval/application/cancellation
+            status; historical vault_propose results cannot override this lookup.
+            Supply proposal_id for one proposal, latest=true for the last created
+            proposal, or neither to list only currently pending approvals.
+            Returns proposals with proposal_id, path, state, outcome and
+            receipt_confirmed. State pending means proposed without a receipt;
+            applied/cancelled/expired are receipt-confirmed. prepared is unresolved,
+            index_pending means saved; indexing pending, uncertain means quarantined,
+            and not_applied means recovery confirmed no application.
+            No creation, approval, application, cancellation, expiry, indexing or
+            recovery occurs. Missing authentication or unavailable state is an error,
+            never evidence of pending status. Owner/bot/vault come from trusted
+            transport, never arguments. No draft content or approval token is returned.
+            """
+            return _call(
+                mutations.proposal_status,
+                proposal_home,
+                vault_root,
+                proposal_id,
+                latest=latest,
+            )
+
+        @mcp.tool(
             description=(
                 "Prepare and store a non-mutating preview for an explicit owner creation or edit request. "
                 "Approved roots: "
@@ -122,7 +165,9 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
                 + ". "
                 "Use this for new projects/resources outside Inbox; do not substitute an unstored draft when this tool is available. "
                 "Creation requires content and an absent target; omit update fields or use JSON null. "
-                "Updates require expected_revision from vault_open, one exact anchor, and replacement; omit content or use JSON null. "
+                "For updates, first vault_open this same path. Copy its latest revision field exactly into expected_revision; never use content, an invented hash, or a previous response's revision. "
+                "Copy one unique exact anchor from that response's content and supply replacement preserving unrelated text and existing block IDs; omit content or use JSON null. "
+                "Do not repeat an identical failed call. On a stale revision, reopen the same path at most once, reassess the anchor and intended edit, and use the fresh revision only in a corrected proposal. If recovery fails, stop and report the path and error. "
                 "Redundant update content is accepted only if it exactly matches the anchored result. "
                 "Search for duplicates first. A direct owner creation request needs no existing Inbox source. "
                 "Never apply or approve changes. Owner approval is handled by the trusted Telegram transport."
@@ -139,13 +184,13 @@ def create_mcp(vault_root: Path, *, proposal_home: Path | None = None) -> MCPSer
             expected_revision: Annotated[
                 str | None,
                 Field(
-                    description="Full vault_open revision for updates; omit or use JSON null for creation."
+                    description="For updates, copy the exact string from the latest vault_open response's revision field for this same path. Not content, a computed hash, before_revision, or after_revision. Omit or use JSON null only for creation."
                 ),
             ] = None,
             anchor: Annotated[
                 str | None,
                 Field(
-                    description="Unique exact text to replace for updates; omit or use JSON null for creation."
+                    description="Copy unique exact text from the latest vault_open content, preserving whitespace and existing block IDs. Must occur exactly once. Omit or use JSON null for creation."
                 ),
             ] = None,
             replacement: Annotated[

@@ -312,6 +312,9 @@ def test_malformed_yaml_after_commit_reports_index_pending(tmp_path, capture):
     target = vault / path
     assert target.read_bytes() == b"new\n"
     assert human.read_bytes() == original
+    found = indexer.vault_search(vault, "new", 8)
+    assert found["count"] == 1 and found["incomplete"] is True
+    assert found["failed_paths"] == ["10_Projects/human.md"]
     modified = target.stat().st_mtime_ns
     if not capture:
         assert apply(home, vault, proposal)["outcome"] == "index_pending"

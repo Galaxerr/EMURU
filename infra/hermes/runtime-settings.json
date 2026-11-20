@@ -40,6 +40,7 @@
   "platforms.telegram.extra.drop_pending_on_cold_boot": false,
   "platforms.telegram.extra.max_concurrent_updates": 1,
   "gateway.standalone": true,
+  "kanban.dispatch_profiles": [],
   "fallback_providers": [],
   "memory.memory_enabled": false,
   "memory.user_profile_enabled": false,

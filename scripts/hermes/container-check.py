@@ -492,7 +492,7 @@ def verify(config_only=False):
         fixture_secrets(config)
         for service in config["services"].values():
             for volume in service.get("volumes", []):
-                if volume["type"] == "bind":
+                if volume["type"] == "bind" and volume["source"] != "/dev/null":
                     volume["source"] = daemon_path(volume["source"])
         write_private(private / "compose.json", json.dumps(config))
         command[-1] = str(private / "compose.json")
@@ -698,6 +698,24 @@ def verify(config_only=False):
         print("Pinned Hermes native inference: PASS", flush=True)
         print(
             app(
+                "/opt/hermes/.venv/bin/python",
+                "/opt/emuru/tests/project_board_case.py",
+                "seed",
+                "/state/project-board-acceptance",
+            ),
+            flush=True,
+        )
+        print(
+            app(
+                "/opt/hermes/.venv/bin/python",
+                "/opt/emuru/tests/scout_board_case.py",
+                "seed",
+                "/state/scout-board-acceptance",
+            ),
+            flush=True,
+        )
+        print(
+            app(
                 "/opt/emuru/.venv/bin/python",
                 "/opt/emuru/tests/telegram_shutdown_fixture.py",
             ),
@@ -708,6 +726,24 @@ def verify(config_only=False):
             flush=True,
         )
         compose("stop", extra=extra)
+        print(
+            app(
+                "/opt/hermes/.venv/bin/python",
+                "/opt/emuru/tests/project_board_case.py",
+                "reopen",
+                "/state/project-board-acceptance",
+            ),
+            flush=True,
+        )
+        print(
+            app(
+                "/opt/hermes/.venv/bin/python",
+                "/opt/emuru/tests/scout_board_case.py",
+                "reopen",
+                "/state/scout-board-acceptance",
+            ),
+            flush=True,
+        )
         override["services"]["litellm"]["environment"] = {
             "EMURU_GATEWAY_TEST_FIXTURE": "1",
             "EMURU_TEST_PRIMARY_BASE": "http://ollama:11434",

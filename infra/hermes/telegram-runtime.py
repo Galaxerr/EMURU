@@ -78,6 +78,26 @@ def private_config():
     return config, int(owner)
 
 
+def report_diagnostic_failure(error):
+    """Print code locations and exception types only; SDK messages can contain tokens."""
+    for _ in range(4):
+        frames = traceback.extract_tb(error.__traceback__)
+        bridge = next(
+            (frame for frame in reversed(frames) if frame.filename == __file__),
+            None,
+        )
+        location = frames[-1] if frames else None
+        details = f"Native Telegram diagnostic: {type(error).__name__}"
+        if bridge is not None:
+            details += f" in {bridge.name} at telegram-runtime.py:{bridge.lineno}"
+        if location is not None:
+            details += f" at {Path(location.filename).name}:{location.lineno}"
+        print(details, file=sys.stderr)
+        error = error.__cause__
+        if error is None:
+            break
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
@@ -354,12 +374,8 @@ if __name__ == "__main__":
         main()
     except Exception as error:  # noqa: BLE001 -- private SDK errors can contain credentials
         # Telegram SDK exceptions may contain the token, URL, or owner's ID.
-        if "--runtime-check" in sys.argv:
-            frame = traceback.extract_tb(error.__traceback__)[-1]
-            print(
-                f"Native seam check failed: {type(error).__name__} at {Path(frame.filename).name}:{frame.lineno}",
-                file=sys.stderr,
-            )
+        if "--runtime-check" in sys.argv or "--check" in sys.argv:
+            report_diagnostic_failure(error)
         code = (
             error.code
             if isinstance(error, profile.ProfileError)

@@ -1,0 +1,10 @@
+{
+  "commit": "7157422022ff06f3e632d1dd394ee1253b17ad37",
+  "source_sha256": {
+    "hermes_cli.kanban_db": "8226cb30b7e781b8eea7e7a5ab9a500b3b556afa90d0decb4e99c99e1d1f0da4",
+    "hermes_cli.kanban_db_connect": "e275e08d03b8af82213452e33db4bd246f485f6cba4db52434c6cdc5944e319f",
+    "hermes_cli.kanban_db_graph": "b3aada2c8ec77fa0b4bcdcd6be084e2e91b9c9d57c68f7200b872232b94360ed",
+    "hermes_cli.kanban_db_dispatch": "0fb9d75d5d242cd9ea06bc0c9cec40658e6b1f21da56bd773767a9598f7843a6",
+    "tools.kanban_tools": "e5f48cb0b471c8624322d6d452be959a1f9505ef11398f67a6f079aeaab0d02f"
+  }
+}

@@ -5,6 +5,8 @@ import multiprocessing
 import os
 import signal
 import sqlite3
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
@@ -94,7 +96,10 @@ def test_private_content_never_enters_outputs(tmp_path):
         vault, "10_Projects/public.md", "# Public Project\nSafe public knowledge."
     )
     write_note(vault, "99_Private/private.md", canary)
+    write_note(vault, "99_Private/broken.md", "---\ntitle: [" + canary + "\n---")
     index_vault(vault)
+    found = vault_search(vault, "public", 8)
+    assert found["incomplete"] is False and found["failed_paths"] == []
     graph_text = (vault / "_index/graph.json").read_text(encoding="utf-8")
     assert canary not in graph_text
     assert not any(
@@ -415,7 +420,7 @@ def test_completion_and_outputs_repaired(tmp_path, name, damage):
     else:
         path.write_text("corrupt")
     assert vault_search(vault, "body", 8)["count"] == 1
-    assert indexer._completed(vault, indexer._fingerprint(indexer._snapshot(vault)))
+    assert indexer._completion(vault, indexer._snapshot(vault))
 
 
 def test_returned_path_change_retries(tmp_path, monkeypatch):
@@ -437,6 +442,114 @@ def test_returned_path_change_retries(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_failed_path_repaired_during_retrieval_retries(tmp_path, monkeypatch):
+    vault = create_vault(tmp_path)
+    write_note(vault, "10_Projects/healthy.md", "healthyword")
+    broken = write_note(vault, "30_Resources/broken.md", "---\ntitle: [broken\n---")
+    index_vault(vault)
+    original = indexer._vault_map
+    calls = []
+
+    def repair(root, limit):
+        result = original(root, limit)
+        if not calls:
+            broken.write_text("repairedword")
+        calls.append(1)
+        return result
+
+    monkeypatch.setattr(indexer, "_vault_map", repair)
+    result = indexer.vault_map(vault, 200)
+    assert result["total_notes"] == 2
+    assert result["incomplete"] is False
+    assert result["failed_paths"] == []
+    assert len(calls) == 2
+
+
+def test_partial_cli_index_reused_by_fresh_process_without_rebuild(tmp_path):
+    vault = create_vault(tmp_path)
+    write_note(vault, "10_Projects/healthy.md", "healthyword")
+    failed_path = "30_Resources/broken.md"
+    write_note(vault, failed_path, "---\ntitle: [PRIVATE_CANARY\n---")
+    built = subprocess.run(
+        [sys.executable, "-m", "emuru.vault.cli", "--vault", str(vault)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    report = json.loads(built.stdout)
+    assert report["notes"] == 1 and report["incomplete"] is True
+    assert report["failed_paths"] == [failed_path]
+    before = (vault / indexer.COMPLETION).read_bytes()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import json, sys
+from pathlib import Path
+from emuru.vault import indexer
+def forbidden(*args):
+    raise AssertionError('cached generation rebuilt')
+indexer._index_vault = forbidden
+print(json.dumps(indexer.vault_search(Path(sys.argv[1]), 'healthyword', 8)))
+""",
+            str(vault),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    cached = json.loads(result.stdout)
+    assert cached["count"] == 1 and cached["incomplete"] is True
+    assert cached["failed_paths"] == [failed_path]
+    assert "PRIVATE_CANARY" not in result.stdout + result.stderr
+    assert (vault / indexer.COMPLETION).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        None,
+        "PRIVATE_CANARY",
+        [{}],
+        ["99_Private/secret.md"],
+        ["30_Resources/broken.md"] * 2,
+    ],
+)
+def test_legacy_or_invalid_partial_state_rebuilds(tmp_path, paths):
+    vault = create_vault(tmp_path)
+    write_note(vault, "10_Projects/healthy.md", "healthyword")
+    failed_path = "30_Resources/broken.md"
+    write_note(vault, failed_path, "---\ntitle: [broken\n---")
+    index_vault(vault)
+    marker = vault / indexer.COMPLETION
+    state = json.loads(marker.read_text())
+    if paths is None:
+        state.pop("failed_paths")
+    else:
+        state["failed_paths"] = paths
+    marker.write_text(json.dumps(state))
+    result = vault_search(vault, "healthyword", 8)
+    assert result["count"] == 1 and result["incomplete"] is True
+    assert result["failed_paths"] == [failed_path]
+
+
+def test_database_failure_is_not_partial_success(tmp_path, monkeypatch):
+    vault = create_vault(tmp_path)
+    write_note(vault, "10_Projects/healthy.md", "healthyword")
+    write_note(vault, "30_Resources/broken.md", "---\ntitle: [broken\n---")
+
+    def fail(*args):
+        raise sqlite3.DatabaseError("PRIVATE_DATABASE_ERROR")
+
+    monkeypatch.setattr(indexer, "write_sqlite", fail)
+    with pytest.raises(ValueError, match="retrieval unavailable"):
+        vault_search(vault, "healthyword", 8)
+    assert not (vault / indexer.COMPLETION).exists()
+
+
 def _kill_refresh(vault, point):
     original = indexer.os.replace
 
@@ -453,9 +566,12 @@ def _kill_refresh(vault, point):
 
 
 @pytest.mark.parametrize("point", ["_index/graph.json", "99_System/INDEX.md"])
-def test_sigkill_publication_surviving_reader_repairs(tmp_path, point):
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_sigkill_publication_surviving_reader_repairs(tmp_path, point, incomplete):
     vault = create_vault(tmp_path)
     note = write_note(vault, "10_Projects/source.md", "oldtoken")
+    if incomplete:
+        write_note(vault, "30_Resources/broken.md", "---\ntitle: [broken\n---")
     index_vault(vault)
     assert vault_search(vault, "oldtoken", 8)["count"] == 1
     note.write_text("newtoken")
@@ -472,7 +588,9 @@ def test_sigkill_publication_surviving_reader_repairs(tmp_path, point):
     assert not (vault / indexer.COMPLETION).exists()
     assert note.read_text() == "newtoken"
     assert vault_search(vault, "oldtoken", 8)["count"] == 0
-    assert vault_search(vault, "newtoken", 8)["count"] == 1
+    result = vault_search(vault, "newtoken", 8)
+    assert result["count"] == 1 and result["incomplete"] is incomplete
+    assert result["failed_paths"] == (["30_Resources/broken.md"] if incomplete else [])
 
 
 def test_retrieval_capture_apply_share_reentrant_lock(tmp_path):
@@ -526,11 +644,14 @@ def test_scan_failures_retry_once(tmp_path, monkeypatch, failures):
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize("incomplete", [False, True])
 def test_publication_exception_rolls_back_but_invalidates_completion(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, incomplete
 ):
     vault = create_vault(tmp_path)
     note = write_note(vault, "10_Projects/note.md", "oldtoken")
+    if incomplete:
+        write_note(vault, "30_Resources/broken.md", "---\ntitle: [broken\n---")
     index_vault(vault)
     before = {name: (vault / name).read_bytes() for name in indexer.OUTPUTS.values()}
     note.write_text("newtoken")
@@ -550,7 +671,9 @@ def test_publication_exception_rolls_back_but_invalidates_completion(
     assert not (vault / indexer.COMPLETION).exists()
     assert all((vault / name).read_bytes() == raw for name, raw in before.items())
     assert note.read_text() == "newtoken"
-    assert vault_search(vault, "newtoken", 8)["count"] == 1
+    result = vault_search(vault, "newtoken", 8)
+    assert result["count"] == 1 and result["incomplete"] is incomplete
+    assert result["failed_paths"] == (["30_Resources/broken.md"] if incomplete else [])
 
 
 def test_open_rejects_parent_swapped_after_path_check(tmp_path, monkeypatch):

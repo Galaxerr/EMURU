@@ -64,7 +64,7 @@ def vault_tools(home=None):
 
     home = profile_home() if home is None else home
     if home.is_dir() and load_policy(home)["enabled"]:
-        return [*TOOLS, "vault_propose"]
+        return [*TOOLS, "vault_proposal_status", "vault_propose"]
     return list(TOOLS)
 
 
@@ -128,6 +128,7 @@ def expected_settings(root: Path, *, model: dict | None = None):
         is not int
         or settings.get("platforms.telegram.extra.max_concurrent_updates") != 1
         or settings.get("gateway.standalone") is not True
+        or settings.get("kanban.dispatch_profiles") != []
     ):
         raise ProfileError("Fallback, tool exposure or secret-redaction policy changed")
     settings.update(route)

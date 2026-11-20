@@ -1,0 +1,30 @@
+name: Set up Python environment
+description: Install uv (with cache), Python 3.12 and locked project dependencies.
+
+inputs:
+  python-install-dir:
+    description: >
+      Optional UV_PYTHON_INSTALL_DIR, for jobs where an unprivileged user
+      must be able to read the interpreter.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Configure Python install directory
+      if: inputs.python-install-dir != ''
+      shell: bash
+      env:
+        INSTALL_DIR: ${{ inputs.python-install-dir }}
+      run: echo "UV_PYTHON_INSTALL_DIR=$INSTALL_DIR" >> "$GITHUB_ENV"
+
+    - uses: astral-sh/setup-uv@v10.2.0
+      with:
+        enable-cache: true
+
+    - name: Install Python and sync dependencies
+      shell: bash
+      run: |
+        uv python install 3.12
+        uv sync --locked

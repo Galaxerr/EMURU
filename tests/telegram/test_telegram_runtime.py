@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from contextlib import suppress
 from enum import Enum
 from types import SimpleNamespace as NS
 
@@ -44,12 +45,18 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
         username = "emuru"
         batch = ()
         fail_send = False
+        action_error = None
 
         async def get_updates(self, *args, **kwargs):
             return self.batch
 
         async def _post(self, endpoint, data=None, **kwargs):
             network.append((endpoint, data))
+            if (
+                endpoint in {"sendChatAction", "setMessageReaction"}
+                and self.action_error
+            ):
+                raise self.action_error
             if self.fail_send and endpoint in {"sendMessage", "sendDocument"}:
                 raise RuntimeError("SYNTHETIC_TOKEN must not be logged")
             return True
@@ -84,6 +91,11 @@ def boundary(tmp_path, policy, runtime, monkeypatch):
             return "owner"
 
         async def _handle_reset_command(self, event):
+            if getattr(self, "reset_typing", False):
+                with suppress(RuntimeError, asyncio.CancelledError):
+                    await bot._post(
+                        "sendChatAction", {"chat_id": 42, "action": "typing"}
+                    )
             if getattr(self, "reset_error_before", False):
                 raise RuntimeError("SYNTHETIC_SECRET")
             self.resets += 1
@@ -535,12 +547,19 @@ def test_native_commands_ignore_interrupted_proposal_request(
     async def check():
         for uid in (101, 102):
             b.queue.stage(7, [raw(uid, command)], "emuru")
-            assert await b.bridge.once()
-            assert b.network[-1][1]["text"].split("\n")[0] == (
-                "New session started. Previous conversation preserved."
-                if command.startswith("/new")
-                else "native command"
-            )
+            worked = await b.bridge.once()
+            if command == "/stop":
+                assert not worked
+                status = json.loads(b.network[-1][1]["text"].split(": ", 1)[1])
+                assert status["stop"] == "idle"
+                assert not status["gateway_restart_required"]
+            else:
+                assert worked
+                assert b.network[-1][1]["text"].split("\n")[0] == (
+                    "New session started. Previous conversation preserved."
+                    if command.startswith("/new")
+                    else "native command"
+                )
             assert b.queue.stage(7, [raw(uid, command)], "emuru") == ["completed"]
             assert not await b.bridge.once()
         assert runner.resets == (2 if command.startswith("/new") else 0)
@@ -621,6 +640,29 @@ def test_reset_reports_actual_session_transition(boundary, rotated, caplog):
     asyncio.run(check())
 
 
+@pytest.mark.parametrize(
+    "error", [RuntimeError("SYNTHETIC_SECRET"), asyncio.CancelledError()]
+)
+def test_reset_survives_failed_typing_indicator(boundary, error, caplog):
+    b = boundary
+    b.bot.action_error = error
+    b.adapter.runner.reset_typing = True
+
+    async def check():
+        b.queue.stage(7, [raw(1, "/new")], "emuru")
+        assert await b.bridge.once()
+        assert b.queue.status() == {"completed": 1}
+        assert b.adapter.runner.resets == 1
+        assert (
+            b.network[-1][1]["text"]
+            == "New session started. Previous conversation preserved."
+        )
+        assert not b.adapter.runner.model_histories
+        assert "SYNTHETIC_SECRET" not in caplog.text
+
+    asyncio.run(check())
+
+
 def test_registry_adapter_starts_consumer_and_drains_ingress(
     boundary, runtime, monkeypatch
 ):
@@ -693,6 +735,138 @@ def test_local_status_bypasses_active_turn_and_keeps_duplicate_receipt(boundary)
         assert len(b.network) == 1
         b.release.set()
         await b.bridge.stop()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("command", ["/stop", "/stop@emuru"])
+@pytest.mark.parametrize("suppress_cancel", [False, True])
+@pytest.mark.parametrize("distinct_stop", [False, True])
+def test_owner_stop_interrupts_blocked_turn_and_preserves_pending(
+    boundary, command, suppress_cancel, distinct_stop
+):
+    b = boundary
+    if suppress_cancel:
+        native = b.adapter.runner._handle_message_with_agent
+
+        async def ignores_cancel(event):
+            try:
+                return await native(event)
+            except asyncio.CancelledError:
+                return "must not escape"
+
+        b.adapter.runner._handle_message_with_agent = ignores_cancel
+
+    async def check():
+        b.queue.stage(7, [raw(1, "wait"), raw(2, "second")])
+        await b.adapter.connect()
+        await asyncio.wait_for(b.started.wait(), 1)
+        try:
+            b.bot.batch = [
+                b.Update(raw(3, command)),
+                b.Update(raw(4 if distinct_stop else 3, command)),
+            ]
+            await b.bot.get_updates()
+            await b.app.process_update(b.bot.batch[0])
+            await b.app.process_update(b.bot.batch[1])
+            done, _ = await asyncio.wait({b.bridge._task}, timeout=1)
+            assert done, "Stop must interrupt before release or the owner deadline"
+            assert not b.release.is_set()
+            assert b.queue.status() == {
+                "interrupted": 1,
+                "queued": 1,
+                "completed": 2 if distinct_stop else 1,
+            }
+            assert b.bridge.retired and b.effects == ["wait"]
+            assert len(b.network) == (2 if distinct_stop else 1)
+            for _, data in b.network:
+                status = json.loads(data["text"].split(": ", 1)[1])
+                assert status["gateway_restart_required"]
+            with pytest.raises(RuntimeError, match="restart"):
+                await b.bridge.once()
+            b.release.set()
+            await asyncio.sleep(0)
+            assert all(data.get("text") != "native reply" for _, data in b.network)
+        finally:
+            b.release.set()
+            await b.bridge.stop()
+
+        recovered = TelegramQueue(
+            b.queue.path, b.queue.settings, 42, clock=lambda: 100000
+        )
+        calls = []
+
+        async def execute(payload):
+            calls.append(payload["update_id"])
+            return TurnResult(True)
+
+        try:
+            recovered.recover()
+            assert recovered.stage(7, [raw(1, "wait"), raw(3, command)], "emuru") == [
+                "interrupted",
+                "completed",
+            ]
+            restarted = TelegramWorker(recovered, DeterministicTelegram(execute))
+            while await restarted.once():
+                pass
+            assert calls == [2]
+        finally:
+            recovered.close()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("command", ["/stop", "/stop@emuru"])
+def test_idle_stop_does_not_interrupt_later_input_in_same_batch(boundary, command):
+    b = boundary
+
+    async def check():
+        b.queue.stage(7, [raw(1, command), raw(2, "hello")], "emuru")
+        assert await b.bridge.once()
+        assert b.queue.status() == {"completed": 2}
+        assert b.effects == ["hello"] and not b.bridge.retired
+        status = json.loads(b.network[0][1]["text"].split(": ", 1)[1])
+        assert status["stop"] == "idle"
+        assert not status["gateway_restart_required"]
+        assert not await b.bridge.once()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("refusal", ["owner", "chat", "bot", "address", "dispatch"])
+def test_untrusted_or_readmitted_stop_cannot_interrupt_active_turn(boundary, refusal):
+    b = boundary
+
+    async def check():
+        b.queue.stage(7, [raw(1, "wait")])
+        await b.adapter.connect()
+        await asyncio.wait_for(b.started.wait(), 1)
+        update = raw(2, "/stop")
+        if refusal == "owner":
+            update["message"]["from"]["id"] = 43
+        elif refusal == "chat":
+            update["message"]["chat"]["type"] = "group"
+        elif refusal == "bot":
+            update["message"]["from"]["is_bot"] = True
+        elif refusal == "address":
+            update["message"]["text"] = "/stop@other"
+        try:
+            b.bot.batch = [b.Update(update)]
+            await b.bot.get_updates()
+            if refusal == "dispatch":
+                b.queue.owner_id = 43
+            await b.app.process_update(b.bot.batch[0])
+            assert not b.bridge.retired and not b.bridge._task.done()
+            assert b.effects == ["wait"] and not b.network
+            assert b.queue.status() == (
+                {"started": 1, "rejected": 1}
+                if refusal == "dispatch"
+                else {"started": 1}
+            )
+        finally:
+            b.queue.owner_id = 42
+            b.release.set()
+            await b.bridge.stop()
 
     asyncio.run(check())
 
@@ -1206,8 +1380,9 @@ def test_shutdown_closes_intake_drains_one_turn_and_preserves_pending(
     asyncio.run(check())
 
 
-def test_shutdown_during_tool_preserves_uncertainty_and_blocks_late_effects(
-    boundary, monkeypatch
+@pytest.mark.parametrize("control", ["shutdown", "stop"])
+def test_interruption_during_tool_preserves_uncertainty_and_blocks_late_effects(
+    boundary, monkeypatch, control
 ):
     import contextvars
     import threading
@@ -1274,18 +1449,29 @@ def test_shutdown_during_tool_preserves_uncertainty_and_blocks_late_effects(
         await b.adapter.connect()
         while not tool_started.is_set():
             await asyncio.sleep(0.001)
-        await b.execution.shutdown()
-        assert b.queue.status() == {"interrupted": 1, "queued": 1}
+        if control == "shutdown":
+            await b.execution.shutdown()
+        else:
+            b.bot.batch = [b.Update(raw(3, "/stop"))]
+            await b.bot.get_updates()
+            await b.app.process_update(b.bot.batch[0])
+            done, _ = await asyncio.wait({b.bridge._task}, timeout=1)
+            assert done
+        expected = {"interrupted": 1, "queued": 1}
+        if control == "stop":
+            expected["completed"] = 1
+        assert b.queue.status() == expected
         assert "Some actions may already have completed" in b.queue.terminal_notice(
             7, 1
         )
         tool_release.set()
         await asyncio.sleep(0.02)
         assert tool_done.is_set() and errors == []
-        assert effects == ["write"] and b.network == []
+        assert effects == ["write"]
+        assert len(b.network) == (1 if control == "stop" else 0)
         assert interrupts == [True]
         b.queue.recover()
-        assert b.queue.status() == {"interrupted": 1, "queued": 1}
+        assert b.queue.status() == expected
 
     try:
         asyncio.run(asyncio.wait_for(check(), 2))
@@ -1539,3 +1725,359 @@ def test_model_and_previews_share_one_turn_budget(boundary, monkeypatch):
     assert phases == ["model completed"]
     assert b.queue.status() == {"interrupted": 1}
     assert b.bridge.retired
+
+
+@pytest.mark.parametrize("addressed", [False, True])
+def test_project_command_uses_owner_turn_fences(
+    boundary, tmp_path, monkeypatch, addressed
+):
+    from emuru.projects import board
+    from emuru.vault import mutations
+
+    b = boundary
+    home, vault = tmp_path / "profile", tmp_path / "vault"
+    home.mkdir(mode=0o700)
+    vault.mkdir()
+    b.execution.mutation_target = (home, vault)
+    calls = []
+
+    def project(home_arg, vault_arg, root, text, owner, bot):
+        assert (home_arg, vault_arg, owner, bot) == (home, vault, 42, 7)
+        mutations.authenticated_request(home, vault)
+        assert (
+            b.queue.db.execute("SELECT tools_started FROM turn_effects").fetchone()[0]
+            == 1
+        )
+        calls.append(text)
+        return "Tracking only; execution not authorized."
+
+    monkeypatch.setattr(board, "project_command", project)
+    text = "/project" + ("@emuru" if addressed else "") + " track " + "a" * 32
+    b.queue.stage(7, [raw(1, text), raw(1, text), raw(2, text, owner_id=43)], "emuru")
+    asyncio.run(b.bridge.once())
+    assert calls == [text]
+    assert b.effects == []
+    assert b.queue.status() == {"completed": 1}
+    assert any(
+        data.get("text") == "Tracking only; execution not authorized."
+        for _, data in b.network
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper,lifecycle",
+    [
+        (False, "normal"),
+        (True, "normal"),
+        (False, "rejected"),
+        (False, "expired"),
+        (False, "stale"),
+        (False, "index_pending"),
+        (False, "crash_after"),
+        (False, "crash_before"),
+        (False, "uncertain"),
+    ],
+)
+def test_result_capture_owner_preview_apply_and_evidence_fence(
+    boundary, tmp_path, monkeypatch, tamper, lifecycle
+):
+    from vault_helpers import capture_binding, create_vault
+
+    from emuru.projects import results
+    from emuru.vault import mutations as m
+
+    b = boundary
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    vault = create_vault(tmp_path)
+    for name, value in {
+        "mutation-policy.json": {
+            "enabled": True,
+            "roots": ["10_Projects"],
+            "vault_path": str(vault),
+        },
+        "vault-target.json": {"mode": "real", "vault_path": str(vault)},
+    }.items():
+        path = home / name
+        path.write_text(json.dumps(value))
+        path.chmod(0o600)
+    b.execution.mutation_target = (home, vault)
+    target = vault / "10_Projects/capture.md"
+    original = "# Project\n- [x] Existing ^task-sample-first\n\nHuman text.\n"
+    target.write_text(original)
+    changed = False
+    binding = capture_binding(vault)
+
+    def verified(*args, **kwargs):
+        if changed:
+            raise ValueError("Evidence changed")
+        return (
+            binding,
+            "10_Projects/capture.md",
+            "^task-sample-first",
+            "Verified artifact-only result.",
+        )
+
+    # Synthetic verifier output tests transport/journal mechanics, not native qualification.
+    monkeypatch.setattr(results, "verify_completion", verified)
+
+    def operator_verified(*args):
+        return verified()[0]
+
+    monkeypatch.setattr(results, "operator_verification", operator_verified)
+
+    async def operator(operation, identity, writers_paused=False, approval_digest=None):
+        request = m.authenticated_request(home, vault)
+        if operation == "cancel":
+            return m.cancel_proposal(home, identity, approval_digest=approval_digest)
+        return m.apply_proposal(
+            home,
+            vault,
+            identity,
+            approval_digest,
+            writers_paused=writers_paused,
+            owner=42,
+            bot=7,
+            application_request=request,
+        )
+
+    monkeypatch.setattr(b.execution, "_operator", operator)
+
+    async def scenario():
+        nonlocal changed
+        command = "/project capture " + "a" * 32 + " t_123abc 2"
+        b.queue.stage(7, [raw(50, command.replace("capture ", "capture-new "))])
+        await b.bridge.once()
+        with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+            assert (
+                db.execute("SELECT count(*) FROM project_result_captures").fetchone()[0]
+                == 0
+            )
+        b.queue.stage(7, [raw(1, command)])
+        await b.bridge.once()
+        assert target.read_text() == original
+        with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+            rows = db.execute(
+                "SELECT proposal_id FROM project_result_captures"
+            ).fetchall()
+        assert len(rows) == 1
+        identity = rows[0][0]
+        assert any(
+            "EMURU approval:" in data.get("text", "")
+            for endpoint, data in b.network
+            if endpoint == "sendMessage"
+        )
+        if lifecycle == "expired":
+            assert m.expire_proposals(home, vault, now=10**12) == [identity]
+        b.queue.stage(7, [raw(2, command)])
+        await b.bridge.once()
+        with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+            assert (
+                db.execute("SELECT proposal_id FROM project_result_captures").fetchall()
+                == rows
+            )
+        if lifecycle in {"rejected", "expired", "stale"}:
+            old_identity = identity
+            if lifecycle == "rejected":
+                b.queue.stage(7, [raw(20, "/reject " + identity)])
+                await b.bridge.once()
+            elif lifecycle == "stale":
+                target.write_text(original + "Fresh human edit.\n")
+                b.queue.stage(7, [raw(20, "/apply " + identity + " writers-paused")])
+                await b.bridge.once()
+                assert target.read_text().endswith("Fresh human edit.\n")
+            b.queue.stage(7, [raw(21, command)])
+            await b.bridge.once()
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM project_result_captures"
+                    ).fetchone()[0]
+                    == 1
+                )
+            b.queue.stage(7, [raw(22, command.replace("capture ", "capture-new "))])
+            await b.bridge.once()
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                generations = db.execute(
+                    "SELECT proposal_id,generation,state FROM project_result_captures ORDER BY generation"
+                ).fetchall()
+            assert len(generations) == 2, b.network[-3:]
+            assert generations[0] == (old_identity, 1, "closed")
+            identity = generations[1][0]
+            assert generations[1][1:] == (2, "active")
+            for update_id in (22, 24):
+                b.queue.stage(
+                    7, [raw(update_id, command.replace("capture ", "capture-new "))]
+                )
+                await b.bridge.once()
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert (
+                    db.execute(
+                        "SELECT count(*) FROM project_result_captures"
+                    ).fetchone()[0]
+                    == 2
+                )
+            # Old approval cannot authorize the replacement generation.
+            b.queue.stage(7, [raw(23, "/apply " + old_identity + " writers-paused")])
+            await b.bridge.once()
+            assert "Verified artifact-only" not in target.read_text()
+        b.queue.stage(7, [raw(3, "/apply " + identity)])
+        await b.bridge.once()
+        assert target.read_text() == original + (
+            "Fresh human edit.\n" if lifecycle == "stale" else ""
+        )
+        changed = tamper
+        published = []
+        real_publish = m.publish_note
+
+        def publish(*args, **kwargs):
+            if lifecycle == "crash_before":
+                raise RuntimeError("Injected process stop before replacement")
+            if lifecycle == "uncertain":
+                target.write_text("Conflicting external bytes.\n")
+                raise RuntimeError("Injected process stop with conflicting bytes")
+            real_publish(*args, **kwargs)
+            published.append(identity)
+            if lifecycle == "crash_after":
+                raise RuntimeError("Injected process stop after replacement")
+
+        monkeypatch.setattr(m, "publish_note", publish)
+        if lifecycle == "index_pending":
+            from emuru.vault import indexer
+
+            def fail_index(*args, **kwargs):
+                raise OSError("Injected index failure")
+
+            monkeypatch.setattr(indexer, "index_vault", fail_index)
+        b.queue.stage(7, [raw(4, "/apply " + identity + " writers-paused")])
+        await b.bridge.once()
+        if lifecycle in {"index_pending", "crash_after", "crash_before", "uncertain"}:
+            import subprocess
+
+            expected_outcome = (
+                "index_pending" if lifecycle == "index_pending" else "prepared"
+            )
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert m._receipt(db, identity)["outcome"] == expected_outcome
+            before_recovery = target.read_bytes(), target.stat().st_mtime_ns
+            # A fresh process reopens persisted receipts; no synthetic verifier is installed there.
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    sys.executable,
+                    "-c",
+                    "import json,sys; from pathlib import Path; from emuru.vault.mutations import recover_proposals; print(json.dumps(recover_proposals(Path(sys.argv[1]),Path(sys.argv[2]))))",
+                    str(home),
+                    str(vault),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            recovered = json.loads(completed.stdout)
+            assert (target.read_bytes(), target.stat().st_mtime_ns) == before_recovery
+            assert recovered[0]["outcome"] == {
+                "crash_before": "not_applied",
+                "uncertain": "quarantined",
+            }.get(lifecycle, "applied")
+            assert published == (
+                [identity] if lifecycle in {"index_pending", "crash_after"} else []
+            )
+            # Re-running maintenance never republishes the note.
+            m.recover_proposals(home, vault)
+            assert (target.read_bytes(), target.stat().st_mtime_ns) == before_recovery
+            if lifecycle != "index_pending":
+                assert (
+                    target.read_text()
+                    == {
+                        "crash_before": original,
+                        "uncertain": "Conflicting external bytes.\n",
+                        "crash_after": "# Project\n- [x] Existing ^task-sample-first\n  - Verified artifact-only result.\n\nHuman text.\n",
+                    }[lifecycle]
+                )
+                return
+        if tamper:
+            assert target.read_text() == original
+        else:
+            expected = "# Project\n- [x] Existing ^task-sample-first\n  - Verified artifact-only result.\n\nHuman text.\n"
+            if lifecycle == "stale":
+                expected += "Fresh human edit.\n"
+            assert target.read_text() == expected
+            timestamp = target.stat().st_mtime_ns
+            changed = True
+            b.queue.stage(7, [raw(5, "/apply " + identity + " writers-paused")])
+            await b.bridge.once()
+            assert target.stat().st_mtime_ns == timestamp
+            assert target.read_text() == expected
+            assert published == [identity]
+            # Historical receipt survives edits and changed/unavailable evidence.
+            target.write_text(expected + "Later human edit.\n")
+            historical = target.read_bytes(), target.stat().st_mtime_ns
+
+            def no_status_maintenance(*args, **kwargs):
+                pytest.fail(
+                    "Capture status cannot expire drafts or record owner activity"
+                )
+
+            for update_id, text in [
+                (40, command),
+                (41, command.replace("capture ", "capture-new ")),
+                (42, command.replace("capture ", "capture-status ")),
+            ]:
+                if update_id == 42:
+                    monkeypatch.setattr(m, "expire_proposals", no_status_maintenance)
+                    monkeypatch.setattr(m, "note_owner_activity", no_status_maintenance)
+                    b.bot.batch = [b.Update(raw(update_id, text))]
+                    await b.bot.get_updates()
+                else:
+                    b.queue.stage(7, [raw(update_id, text)])
+                await b.bridge.once()
+                assert (target.read_bytes(), target.stat().st_mtime_ns) == historical
+            with m._read_database(home / "emuru-mutations/mutations.sqlite") as db:
+                assert db.execute(
+                    "SELECT count(*) FROM project_result_captures"
+                ).fetchone()[0] == (
+                    2 if lifecycle in {"rejected", "expired", "stale"} else 1
+                )
+
+    asyncio.run(scenario())
+
+
+def test_continuation_binding_inspect_transport_readonly_unicode(
+    boundary, tmp_path, monkeypatch
+):
+    from emuru.projects import board
+    from emuru.vault import mutations
+
+    b = boundary
+    home, vault = tmp_path / "profile", tmp_path / "vault"
+    home.mkdir(mode=0o700)
+    vault.mkdir()
+    b.execution.mutation_target = (home, vault)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Inspection cannot maintain proposal state or invoke a model")
+
+    def inspect(*args):
+        mutations.authenticated_request(home, vault, read_only=True)
+        calls.append(args[3])
+        return "😀" * 4000
+
+    monkeypatch.setattr(mutations, "expire_proposals", forbidden)
+    monkeypatch.setattr(mutations, "note_owner_activity", forbidden)
+    monkeypatch.setattr(board, "project_command", inspect)
+    command = "/project@emuru inspect " + "a" * 32
+    b.queue.stage(7, [raw(1, command)], "emuru")
+    asyncio.run(b.bridge.once())
+    assert calls == [command]
+    assert b.effects == []
+    parts = [
+        data["text"]
+        for endpoint, data in b.network
+        if endpoint == "sendMessage" and "😀" in data.get("text", "")
+    ]
+    assert len(parts) > 1
+    assert sum(part.count("😀") for part in parts) == 4000
+    assert all(len(part.encode("utf-16-le")) // 2 <= 4096 for part in parts)

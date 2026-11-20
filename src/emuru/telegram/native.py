@@ -155,6 +155,7 @@ class NativeTelegram:
         self.turn_timeout = turn_timeout
         self.queue, self.root = queue, root
         self._app, self._runner = None, None
+        self._active_task = self._active_turn = None
         self.mutation_target = None
         if queue.path.parent.name == "emuru-telegram":
             from emuru.vault.mutations import load_policy, require_authority
@@ -229,6 +230,11 @@ class NativeTelegram:
             deadline=time.monotonic() + self.turn_timeout,
         )
         token = self._current.set(turn)
+        if (
+            self._active_task is not None
+            and asyncio.current_task() is self._active_task
+        ):
+            self._active_turn = turn
         try:
             yield turn
         finally:
@@ -336,18 +342,80 @@ class NativeTelegram:
             mutations.record_preview(home, identity, digest, complete=True)
 
     async def execute(self, payload, session_key):
+        self._active_task = asyncio.current_task()
         try:
             async with asyncio.timeout(self.turn_timeout):
                 return await self._execute(payload, session_key)
         except TimeoutError:
             return TurnResult(False, "turn_timeout", interrupted=True)
+        finally:
+            self._active_task = self._active_turn = None
+
+    def interrupt(self):
+        """Close active authority before cancellation can yield to detached work."""
+        task = self._active_task
+        if task is None or task.done() or task.cancelling():
+            return False
+        if self._active_turn is not None:
+            self._active_turn.open = False
+        return task.cancel()
+
+    async def project_control(self, payload):
+        """Commit owner restrictions without borrowing the active conversation claim."""
+        from emuru.projects.supervisor_controls import owner_control
+        from emuru.vault import mutations
+
+        bot, username = self.identity()
+        committed = True
+        owner, uid = self.queue.owner_id, payload["update_id"]
+        if (
+            queue_module.admit_update(
+                payload, owner, self.queue.settings, self.queue.now(), username, bot
+            )
+            is None
+        ):
+            raise ValueError("Owner-private admission required.")
+        if self.mutation_target is None:
+            result = "Project controls require an enabled bound private vault."
+        else:
+            home, vault = self.mutation_target
+            text = payload["message"]["text"]
+            request, _ = mutations.begin_request(
+                home, vault, owner, bot, uid, text, fresh=True
+            )
+            try:
+                self.queue.mark_tools_started(bot, uid)
+                result = owner_control(
+                    home, vault, self.root, text, owner, bot, request, uid
+                )
+            except ValueError as error:
+                result = str(error)
+            except OSError:
+                committed = False
+                result = "Project control outcome is uncertain; inspect status. No rollback or safe retry is implied."
+            finally:
+                mutations.finish_request(home, request)
+        if len(result) > 3500:
+            raise ValueError("Control response limit exceeded.")
+        with self._turn_scope(uid, notice=True):
+            await self._app.bot.send_message(chat_id=owner, text=result)
+        return TurnResult(committed, None if committed else "queue_database_error")
 
     async def _execute(self, payload, session_key):
         from emuru.vault import mutations
 
         text = payload["message"]["text"]
+        if queue_module.project_control(text):
+            return await self.project_control(payload)
         command = text.split(maxsplit=1)[0].split("@")[0]
-        controls = {"/apply", "/cancel", "/reject", "/propose-new", "/revise"}
+        controls = {
+            "/apply",
+            "/cancel",
+            "/reject",
+            "/propose-new",
+            "/revise",
+            "/project",
+        }
         if self.mutation_target is None:
             if command in controls:
                 with self._turn_scope(payload["update_id"], session_key, notice=True):
@@ -372,8 +440,12 @@ class NativeTelegram:
             is None
         ):
             raise ValueError("Owner-private admission required.")
-        mutations.expire_proposals(home, vault)
-        mutations.note_owner_activity(home, vault, owner, bot, uid)
+        from emuru.projects.results import is_capture_status
+
+        inspecting = command == "/project" and text.split()[1:2] == ["inspect"]
+        if not is_capture_status(text) and not inspecting:
+            mutations.expire_proposals(home, vault)
+            mutations.note_owner_activity(home, vault, owner, bot, uid)
         if command == "/reject":
             command = "/cancel"
             text = "/cancel" + text[len(text.split()[0]) :]
@@ -447,6 +519,54 @@ class NativeTelegram:
         mutations.activate_request(home, identity, self.queue.path, bot, uid)
         try:
             mutations.authenticated_request(home, vault)
+            if command == "/project":
+                from emuru.projects.board import project_command
+
+                with self._turn_scope(uid, session_key, notice=True):
+                    try:
+                        self.queue.mark_tools_started(bot, uid)
+                        if text.split()[1:2] in (
+                            ["capture"],
+                            ["capture-status"],
+                            ["capture-new"],
+                        ):
+                            from emuru.projects.results import (
+                                command as capture_command,
+                            )
+
+                            result = capture_command(
+                                home, vault, self.root, text, owner, bot
+                            )
+                            if (
+                                text.split()[1] in {"capture", "capture-new"}
+                                and result.get("outcome") == "proposed"
+                            ):
+                                await self._present_previews([result])
+                                result = (
+                                    "Code verified; awaiting separate note approval."
+                                )
+                            else:
+                                result = json.dumps(result)
+                        else:
+                            result = project_command(
+                                home, vault, self.root, text, owner, bot
+                            )
+                    except ValueError as error:
+                        result = str(error)
+                    except OSError:
+                        result = "Project request refused. Check the applied spec receipt, current note, bound vault, and pinned board contract. Use /project track <applied-spec-proposal-id> or /project status <applied-spec-proposal-id>."
+                    parts = (
+                        mutations.message_parts(result, label="Project")
+                        if text.split()[1:2] in (["inspect"], ["bind"])
+                        else [
+                            result[offset : offset + 3500]
+                            for offset in range(0, len(result), 3500)
+                        ]
+                    )
+                    for part in parts:
+                        await self._app.bot.send_message(chat_id=owner, text=part)
+                mutations.finish_request(home, identity)
+                return TurnResult(True)
             if command in {"/apply", "/cancel"}:
                 with self._turn_scope(uid, session_key, notice=True):
                     fields = text.split()
@@ -632,13 +752,19 @@ class NativeTelegram:
             else self.queue.terminal_notice(self.identity()[0], uid)
         )
         if status is None and self.mutation_target is not None:
+            from emuru.projects.supervisor_controls import outcome
             from emuru.vault.mutations import application_outcomes
 
             home, vault = self.mutation_target
+            control_result = outcome(
+                home, vault, self.queue.owner_id, self.identity()[0], uid
+            )
+            if control_result is not None:
+                text = control_result
             outcomes = application_outcomes(
                 home, vault, self.queue.owner_id, self.identity()[0], uid
             )
-            if outcomes:
+            if outcomes and control_result is None:
                 text = (
                     "Mutation outcome: "
                     + json.dumps(outcomes)
@@ -774,11 +900,19 @@ class NativeTelegram:
                     "Telegram queue persistence failed; intake stopped"
                 ) from None
             if self.mutation_target is not None:
+                from emuru.projects.results import is_capture_status
                 from emuru.vault import mutations
 
                 home, vault = self.mutation_target
+                maintenance = not updates
                 for update in updates:
                     raw = json.loads(update.to_json())
+                    message = raw.get("message")
+                    if isinstance(message, dict) and is_capture_status(
+                        message.get("text")
+                    ):
+                        continue
+                    maintenance = True
                     if (
                         queue_module.admit_update(
                             raw,
@@ -802,7 +936,8 @@ class NativeTelegram:
                                 )
                             except Exception:  # noqa: BLE001 -- acknowledgement failure cannot replay an action
                                 logger.warning("Telegram button acknowledgement failed")
-                mutations.expire_proposals(home, vault)
+                if maintenance:
+                    mutations.expire_proposals(home, vault)
             return updates
 
         async def guarded_update(app, update):
@@ -1103,12 +1238,13 @@ class NativeTelegram:
                 try:
                     return await post(bot, endpoint, data, *args, **kwargs)
                 except asyncio.CancelledError:
-                    turn.failed = True
+                    # Typing refresh cancellation does not make reply delivery uncertain.
+                    turn.failed |= endpoint != "sendChatAction"
                     raise
                 except Exception:  # noqa: BLE001 -- suppress credential-bearing SDK errors
                     # Native formatting/thread/network fallbacks may try again. An
                     # unknown send outcome latches the whole turn against resends.
-                    turn.failed = True
+                    turn.failed |= endpoint != "sendChatAction"
                     raise RuntimeError(
                         "Telegram egress outcome is uncertain; no retry"
                     ) from None

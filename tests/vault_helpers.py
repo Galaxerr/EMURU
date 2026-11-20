@@ -12,6 +12,32 @@ INDEXABLE_DIRS = (
 )
 
 
+def capture_binding(vault):
+    """Complete synthetic identity; never native qualification evidence."""
+    return {
+        "schema": 1,
+        "owner": "42",
+        "bot": "7",
+        "vault": str(vault),
+        "spec": "a" * 32,
+        "task": "t_123abc",
+        "coder_run": 1,
+        "review_run": 2,
+        **{
+            key: "b" * 64
+            for key in (
+                "project",
+                "revision",
+                "grant_sha256",
+                "evidence_sha256",
+                "diff_sha256",
+                "packet_sha256",
+                "outcome_sha256",
+            )
+        },
+    }
+
+
 def create_vault(tmp_path: Path) -> Path:
     """Create a minimal fake EMURU vault."""
     vault = tmp_path / "EMURU-vault"

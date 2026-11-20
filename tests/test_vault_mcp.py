@@ -4,6 +4,7 @@ import pytest
 from mcp import Client
 from vault_helpers import create_vault, write_note
 
+from emuru.vault import indexer
 from emuru.vault.mcp import create_mcp
 
 pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("mcp_environment")]
@@ -71,6 +72,108 @@ Prompt injection and model security are important.
     data = result.structured_content
     assert data is not None and data["count"] == 1
     assert data["results"][0]["path"] == "30_Resources/security.md"
+
+
+@pytest.mark.parametrize("malformed_at_start", [False, True])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        pytest.param("---\ntitle: [PRIVATE_CANARY\n---\n", id="yaml"),
+        pytest.param(
+            "---\ntitle: " + "[" * 600 + "bad" + "]" * 599 + "\n---\n",
+            id="nested-yaml",
+        ),
+        pytest.param('---\ntitle: "\\uD800"\n---\n', id="surrogate"),
+    ],
+)
+async def test_malformed_note_preserves_healthy_mcp_retrieval(
+    tmp_path, monkeypatch, malformed_at_start, malformed
+):
+    vault = create_vault(tmp_path)
+    write_note(vault, "10_Projects/healthy.md", "healthyword")
+    failed_path = "30_Resources/broken.md"
+    if malformed_at_start:
+        write_note(vault, failed_path, malformed)
+    async with Client(create_mcp(vault), raise_exceptions=True) as client:
+        if not malformed_at_start:
+            before = await client.call_tool("vault_search", {"query": "healthyword"})
+            assert not before.is_error
+            write_note(vault, failed_path, malformed)
+        found = await client.call_tool("vault_search", {"query": "healthyword"})
+        assert not found.is_error
+        assert found.structured_content["count"] == 1
+
+        def forbidden(*args):
+            pytest.fail("unchanged partial generation rebuilt")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(indexer, "_index_vault", forbidden)
+            for tool, arguments in [
+                ("vault_search", {"query": "healthyword"}),
+                ("vault_search", {"query": "absentword"}),
+                ("vault_map", {}),
+                ("vault_neighbors", {"path": "10_Projects/healthy.md"}),
+            ]:
+                result = await client.call_tool(tool, arguments)
+                assert not result.is_error
+                assert result.structured_content["incomplete"] is True
+                assert result.structured_content["failed_paths"] == [failed_path]
+                assert "PRIVATE_CANARY" not in result.model_dump_json()
+                assert str(vault) not in result.model_dump_json()
+        write_note(vault, failed_path, "repairedword")
+        repaired = await client.call_tool("vault_search", {"query": "repairedword"})
+        assert not repaired.is_error
+        assert repaired.structured_content["count"] == 1
+        assert repaired.structured_content["incomplete"] is False
+        assert repaired.structured_content["failed_paths"] == []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"---\ntitle: [PRIVATE_CANARY\n---\n",
+        b"---\ntitle: PRIVATE_CANARY\n",
+        b"---\n[PRIVATE_CANARY]\n---\n",
+        b"---\n[]\n---\n",
+        b"---\nfalse\n---\n",
+        b"---\n0\n---\n",
+        b"---\nupdated: 2026-99-99\n---\nPRIVATE_CANARY",
+        b"\xffPRIVATE_CANARY",
+        pytest.param(
+            b"---\ntitle: " + b"[" * 600 + b"bad" + b"]" * 599 + b"\n---\n",
+            id="deep-invalid-yaml",
+        ),
+        pytest.param(b'---\ntitle: "\\uD800"\n---\n', id="escaped-surrogate"),
+    ],
+)
+async def test_all_malformed_notes_report_incomplete_empty_results(tmp_path, raw):
+    vault = create_vault(tmp_path)
+    failed_paths = ["00_Inbox/a.md", "30_Resources/z.md"]
+    for path in reversed(failed_paths):
+        (vault / path).write_bytes(raw)
+    async with Client(create_mcp(vault), raise_exceptions=True) as client:
+        for tool, arguments, count in [
+            ("vault_search", {"query": "absentword"}, "count"),
+            ("vault_map", {}, "total_notes"),
+        ]:
+            result = await client.call_tool(tool, arguments)
+            assert not result.is_error
+            assert result.structured_content[count] == 0
+            assert result.structured_content["incomplete"] is True
+            assert result.structured_content["failed_paths"] == failed_paths
+            assert "PRIVATE_CANARY" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize("frontmatter", ["", "null", "{}"])
+async def test_empty_mapping_frontmatter_stays_complete(tmp_path, frontmatter):
+    vault = create_vault(tmp_path)
+    write_note(vault, "10_Projects/note.md", f"---\n{frontmatter}\n---\nhealthyword")
+    async with Client(create_mcp(vault), raise_exceptions=True) as client:
+        result = await client.call_tool("vault_search", {"query": "healthyword"})
+        assert not result.is_error
+        assert result.structured_content["count"] == 1
+        assert result.structured_content["incomplete"] is False
+        assert result.structured_content["failed_paths"] == []
 
 
 async def test_vault_open(tmp_path):

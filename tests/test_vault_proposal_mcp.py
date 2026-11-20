@@ -132,6 +132,7 @@ async def test_real_stdio_propose_apply_readback(tmp_path):
                 "vault_neighbors",
                 "vault_write",
                 "vault_propose",
+                "vault_proposal_status",
             }
             assert not any("apply" in name for name in names)
             schema = next(

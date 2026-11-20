@@ -22,6 +22,28 @@ from emuru.vault.mutations import journal
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_deployment_continuation_grant_compatibility(tmp_path):
+    from emuru.projects.scout import encoded
+
+    home = tmp_path / "profile"
+    attempt = home / "emuru-projects/coder-attempts" / ("a" * 32)
+    attempt.mkdir(parents=True, mode=0o700)
+    attempt.parent.chmod(0o700)
+    write_private(attempt / "grant.json", '{"schema": 4, "rework": null}')
+    (attempt / "loop.json").write_bytes(encoded({"schema": 1}))
+    (attempt / "loop.json").chmod(0o600)
+    before = {path: path.read_bytes() for path in attempt.iterdir()}
+    deployment.check_review_state(home, ROOT)
+
+    older = tmp_path / "older"
+    projects = older / "src/emuru/projects"
+    projects.mkdir(parents=True)
+    (projects / "reviewer.py").write_text("STATE_SCHEMA = 1\n")
+    with pytest.raises(ValueError, match="Continuation grant state is incompatible"):
+        deployment.check_review_state(home, older)
+    assert {path: path.read_bytes() for path in attempt.iterdir()} == before
+
+
 @pytest.fixture
 def managed(tmp_path, monkeypatch):
     home = tmp_path / "profiles/emuru"
@@ -67,6 +89,29 @@ def test_current_profile_is_noop_and_state_is_untouched(managed):
     assert not result["profile_changed"] and not result["guidance_changed"]
     assert files(home) == before
     assert not (home / "mutation-policy.json").exists()
+
+
+def test_older_profile_gets_no_worker_dispatch_fence(managed):
+    home, config = managed
+    del config["kanban"]
+    write_private(home / "config.yaml", yaml.safe_dump(config))
+    before = files(home)
+    assert deployment.sync_profile(ROOT, home)["profile_changed"]
+    assert files(home) == before
+    deployment.sync_profile(ROOT, home, apply=True)
+    actual = yaml.safe_load((home / "config.yaml").read_text())
+    assert actual["kanban"]["dispatch_profiles"] == []
+    assert not deployment.sync_profile(ROOT, home, apply=True)["profile_changed"]
+
+
+def test_custom_dispatch_allowlist_blocks_profile_upgrade(managed):
+    home, config = managed
+    config["kanban"]["dispatch_profiles"] = ["default"]
+    write_private(home / "config.yaml", yaml.safe_dump(config))
+    before = files(home)
+    with pytest.raises(ValueError):
+        deployment.sync_profile(ROOT, home, apply=True)
+    assert files(home) == before
 
 
 def test_reviewed_guidance_and_policy_selected_tools_upgrade(managed, monkeypatch):
@@ -384,7 +429,11 @@ def test_uncertain_worker_state_blocks_update(tmp_path, monkeypatch, state):
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     scope = module["wake"].__globals__
     monkeypatch.setitem(scope, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
-    monkeypatch.setitem(scope, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        scope,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")},
+    )
     calls = []
 
     def run(command, **kwargs):
@@ -451,7 +500,11 @@ def test_systemd_starting_during_update_blocks_worker_cutover(tmp_path, monkeypa
     module = runpy.run_path(str(ROOT / "scripts/hermes/container.py"))
     scope = module["wake"].__globals__
     monkeypatch.setitem(scope, "DEPLOYMENT_ENV", tmp_path / "deployment.env")
-    monkeypatch.setitem(scope, "saved_deployment", lambda home: {})
+    monkeypatch.setitem(
+        scope,
+        "saved_deployment",
+        lambda home: {"EMURU_PROFILE": str(tmp_path / "profiles/emuru")},
+    )
     monkeypatch.setitem(scope, "prepare_update", lambda *args: {})
     calls, systemd_checks = [], 0
 
@@ -473,8 +526,14 @@ def test_systemd_starting_during_update_blocks_worker_cutover(tmp_path, monkeypa
     assert not any("--profile" in command for command in calls)
 
 
-def test_owner_approved_private_policy_survives_normal_wake_sync(managed):
-    home, _ = managed
+@pytest.mark.parametrize("legacy_proposals", [False, True])
+def test_owner_approved_private_policy_survives_normal_wake_sync(
+    managed, legacy_proposals
+):
+    home, config = managed
+    if legacy_proposals:
+        config["mcp_servers"]["vault"]["tools"]["include"].append("vault_propose")
+        write_private(home / "config.yaml", yaml.safe_dump(config))
     policy = {
         "enabled": True,
         "roots": ["10_Projects", "20_Areas", "30_Resources"],
@@ -497,7 +556,11 @@ def test_owner_approved_private_policy_survives_normal_wake_sync(managed):
     }
     for _ in range(2):
         deployment.sync_profile(ROOT, home, apply=True)
-        assert profile.vault_tools(home) == [*profile.TOOLS, "vault_propose"]
+        assert profile.vault_tools(home) == [
+            *profile.TOOLS,
+            "vault_proposal_status",
+            "vault_propose",
+        ]
         actual = yaml.safe_load((home / "config.yaml").read_text())
         assert actual["mcp_servers"]["vault"]["tools"][
             "include"

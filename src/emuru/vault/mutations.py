@@ -12,7 +12,7 @@ import stat
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 _DIRECTORIES = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -190,8 +190,99 @@ def load_policy(home: Path) -> dict:
     return policy
 
 
+def validate_capture_binding(raw, key):
+    """Require the complete versioned identity before admitting or reading linkage."""
+    from emuru.projects.scout import digest
+
+    patterns = {
+        "owner": r"[1-9][0-9]{0,18}",
+        "bot": r"[1-9][0-9]{0,18}",
+        "spec": r"[0-9a-f]{32}",
+        "task": r"t_[0-9a-f]+",
+        **{
+            name: r"[0-9a-f]{64}"
+            for name in (
+                "project",
+                "revision",
+                "grant_sha256",
+                "evidence_sha256",
+                "diff_sha256",
+                "packet_sha256",
+                "outcome_sha256",
+            )
+        },
+    }
+    try:
+        binding = json.loads(raw)
+        valid = (
+            isinstance(raw, str)
+            and len(raw.encode()) <= 4096
+            and isinstance(binding, dict)
+            and set(binding)
+            == set(patterns) | {"schema", "vault", "coder_run", "review_run"}
+            and type(binding["schema"]) is int
+            and binding["schema"] == 1
+            and all(
+                isinstance(binding[k], str) and re.fullmatch(p, binding[k])
+                for k, p in patterns.items()
+            )
+            and isinstance(binding["vault"], str)
+            and "\0" not in binding["vault"]
+            and os.path.isabs(binding["vault"])
+            and os.path.abspath(binding["vault"]) == binding["vault"]
+            and all(
+                type(binding[k]) is int and 1 <= binding[k] <= 10**19 - 1
+                for k in ("coder_run", "review_run")
+            )
+            and binding["coder_run"] != binding["review_run"]
+            and digest(binding) == key
+        )
+    except (ValueError, TypeError):
+        valid = False
+    if not valid:
+        raise ValueError("Unsupported capture metadata; preserve newest state.")
+    return binding
+
+
+def check_capture_metadata(db):
+    """Refuse newer capture formats without rewriting their retained state."""
+    if not db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='project_result_captures'"
+    ).fetchone():
+        return
+    for row in db.execute(
+        """SELECT c.formatter_version,c.generation,c.binding,c.completion_key,
+                  c.request_id,c.note_revision,c.anchor,
+                  r.owner,r.bot,r.vault,p.vault,p.before_hash,b.request_id,e.anchor,x.outcome
+           FROM project_result_captures c
+           LEFT JOIN owner_requests r ON r.id=c.request_id
+           LEFT JOIN proposals p ON p.id=c.proposal_id
+           LEFT JOIN proposal_bindings b ON b.proposal_id=c.proposal_id
+           LEFT JOIN proposal_edits e ON e.proposal_id=c.proposal_id
+           LEFT JOIN receipts x ON x.proposal_id=c.proposal_id"""
+    ):
+        version, generation, raw, key, request, revision, anchor, *linked, outcome = row
+        binding = validate_capture_binding(raw, key)
+        if (
+            version != 1
+            or type(generation) is not int
+            or generation < 1
+            or linked
+            != [
+                binding["owner"],
+                binding["bot"],
+                binding["vault"],
+                binding["vault"],
+                revision,
+                request,
+                None if outcome == "expired" else anchor,
+            ]
+        ):
+            raise ValueError("Unsupported capture metadata; preserve newest state.")
+
+
 @contextmanager
-def journal(home: Path):
+def journal(home: Path, *, capture_upgrade=False):
     """Private durable proposals and receipts, independent of Telegram pruning."""
     with directory(home) as profile:
         private_directory(profile)
@@ -230,6 +321,24 @@ def journal(home: Path):
             try:
                 connection.execute("PRAGMA synchronous=FULL")
                 connection.execute("PRAGMA foreign_keys=ON")
+                check_capture_metadata(connection)
+                fresh = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='proposals'"
+                    ).fetchone()
+                    is None
+                )
+                if fresh or capture_upgrade:
+                    connection.execute("""CREATE TABLE IF NOT EXISTS project_result_captures (
+                        completion_key TEXT NOT NULL, generation INTEGER NOT NULL,
+                        proposal_id TEXT NOT NULL UNIQUE REFERENCES proposals(id),
+                        request_id TEXT NOT NULL REFERENCES owner_requests(id),
+                        binding TEXT NOT NULL, note_revision TEXT NOT NULL,
+                        anchor TEXT NOT NULL, formatter_version INTEGER NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN ('active','closed')),
+                        PRIMARY KEY(completion_key,generation))""")
+                    connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS project_result_capture_active
+                        ON project_result_captures(completion_key) WHERE state='active'""")
                 connection.execute("""CREATE TABLE IF NOT EXISTS proposals (
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL, digest TEXT NOT NULL,
                     vault TEXT NOT NULL, target TEXT NOT NULL,
@@ -480,9 +589,52 @@ def activate_request(home, identity, queue_path, bot, update_id):
         db.commit()
 
 
-def authenticated_request(home, vault_root):
+@contextmanager
+def _read_database(path):
+    """Read a stable private snapshot without SQLite touching source sidecars."""
+    from emuru.telegram.queue import QueueDiagnosticsError, _diagnostic_snapshot
+
+    with directory(path.parent) as parent:
+        private_directory(parent)
+        pinned = Path(f"/proc/self/fd/{parent}") / path.name
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            try:
+                fd = os.open(
+                    path.name + suffix,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=parent,
+                )
+            except FileNotFoundError:
+                if not suffix:
+                    raise
+                continue
+            try:
+                regular(fd, private=True)
+                if suffix == "-journal" and os.fstat(fd).st_size:
+                    raise ValueError("Database recovery required before lookup.")
+            finally:
+                os.close(fd)
+        try:
+            with (
+                _diagnostic_snapshot(pinned) as snapshot,
+                closing(
+                    sqlite3.connect(snapshot.as_uri() + "?mode=ro", uri=True)
+                ) as db,
+            ):
+                db.execute("PRAGMA query_only=ON")
+                yield db
+        except QueueDiagnosticsError:
+            raise ValueError("Database changed during lookup; query again.") from None
+
+
+def authenticated_request(home, vault_root, *, read_only=False):
     """MCP reads private adapter state and verifies the still-live durable claim."""
-    with journal(home) as db:
+    reader = (
+        _read_database(home / "emuru-mutations/mutations.sqlite")
+        if read_only
+        else journal(home)
+    )
+    with reader as db:
         row = db.execute(
             "SELECT request_id,queue_path,bot,update_id FROM active_request WHERE slot=1"
         ).fetchone()
@@ -498,7 +650,12 @@ def authenticated_request(home, vault_root):
             regular(fd, private=True)
         finally:
             os.close(fd)
-    with sqlite3.connect(Path(queue_path).as_uri() + "?mode=ro", uri=True) as queue:
+    reader = (
+        _read_database(Path(queue_path))
+        if read_only
+        else sqlite3.connect(Path(queue_path).as_uri() + "?mode=ro", uri=True)
+    )
+    with reader as queue:
         claim = queue.execute(
             "SELECT user_id,chat_id FROM updates WHERE bot_id=? AND update_id=? AND state='started'",
             (bot, update_id),
@@ -511,6 +668,58 @@ def authenticated_request(home, vault_root):
     ):
         raise ValueError("Authenticated request claim is invalid.")
     return identity
+
+
+def proposal_status(home, vault_root, proposal_id=None, *, latest=False):
+    """Owner-scoped receipt-first lifecycle lookup; no expiry or recovery writes."""
+    require_authority(home, vault_root)
+    if proposal_id is not None and latest:
+        raise ValueError("Choose a proposal ID or latest, not both.")
+    request_id = authenticated_request(home, vault_root, read_only=True)
+    with _read_database(home / "emuru-mutations/mutations.sqlite") as db:
+        owner, bot, vault = db.execute(
+            "SELECT owner,bot,vault FROM owner_requests WHERE id=?", (request_id,)
+        ).fetchone()
+        if vault != os.path.abspath(vault_root):
+            raise ValueError("Authenticated request belongs to another vault.")
+        if proposal_id is not None:
+            _check_owner(db, proposal_id, vault_root, owner, bot)
+            identities = [(proposal_id,)]
+        else:
+            identities = db.execute(
+                """SELECT p.id FROM proposals p
+                JOIN proposal_bindings b ON b.proposal_id=p.id
+                JOIN owner_requests r ON r.id=b.request_id
+                WHERE r.owner=? AND r.bot=? AND r.vault=? AND p.vault=?
+                ORDER BY p.rowid DESC""",
+                (owner, bot, vault, vault),
+            ).fetchall()
+            if latest:
+                identities = identities[:1]
+        results = []
+        for (identity,) in identities:
+            if _proposal(db, identity)["vault"] != vault:
+                raise ValueError(
+                    "Proposal has no matching authenticated owner/vault binding."
+                )
+            preview = _preview(db, identity)
+            outcome = preview["outcome"]
+            confirmed = _receipt(db, identity) is not None
+            state = {"proposed": "pending", "quarantined": "uncertain"}.get(
+                outcome, outcome
+            )
+            if proposal_id is None and not latest and state != "pending":
+                continue
+            results.append(
+                {
+                    "proposal_id": identity,
+                    "path": preview["path"],
+                    "state": state,
+                    "outcome": outcome,
+                    "receipt_confirmed": confirmed,
+                }
+            )
+        return {"proposals": results}
 
 
 def request_previews(home, identity):
@@ -602,6 +811,33 @@ def owner_preview(home, vault_root, identity, owner, bot):
         return _preview(db, identity)
 
 
+def approved_project(home, vault_root, identity, owner, bot, *, readonly=False):
+    """Read an owner-bound applied snapshot; Markdown cannot assert approval."""
+    policy = require_authority(home, vault_root)
+    if not policy["enabled"]:
+        raise ValueError("Project tracking requires a bound vault and enabled policy.")
+    context = (
+        _read_database(Path(home) / "emuru-mutations/mutations.sqlite")
+        if readonly
+        else journal(home)
+    )
+    with context as db:
+        _check_owner(db, identity, vault_root, owner, bot)
+        preview = _preview(db, identity)
+    if preview["outcome"] not in {"applied", "index_pending"}:
+        raise ValueError("Project tracking requires an applied approved spec receipt.")
+    with mutation_parent(vault_root, preview["path"], roots=policy["roots"]) as (
+        parent,
+        name,
+    ):
+        current = read_note(parent, name)
+    preview["current"] = (
+        current is not None
+        and hashlib.sha256(current).hexdigest() == preview["after_revision"]
+    )
+    return preview
+
+
 def expire_proposals(home, vault_root, *, now=None):
     """Remove untouched draft content after one day; retain a replay-safe tombstone."""
     now = time.time() if now is None else now
@@ -673,6 +909,17 @@ def begin_revision(home, vault_root, request_id, preview, owner, bot):
         db.execute("BEGIN IMMEDIATE")
         identity = preview["proposal_id"]
         _check_owner(db, identity, vault_root, owner, bot)
+        if (
+            db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='project_result_captures'"
+            ).fetchone()
+            and db.execute(
+                "SELECT 1 FROM project_result_captures WHERE proposal_id=?", (identity,)
+            ).fetchone()
+        ):
+            raise ValueError(
+                "Verified capture cannot use generic revision; request fresh capture."
+            )
         current = _preview(db, identity)
         if (
             current["outcome"] != "proposed"
@@ -1033,7 +1280,13 @@ def _prepare_note(
                 or expected_revision is None
                 or expected_revision != _hash(before)
             ):
-                raise ValueError("Stale or missing full-file revision.")
+                raise ValueError(
+                    "Stale or missing full-file revision. "
+                    "Do not repeat this failed proposal. Reopen the same path at most once; "
+                    "copy the exact revision field from that vault_open response into "
+                    "expected_revision and reassess the unique anchor before a corrected proposal. "
+                    "If recovery fails, stop and report the path and error."
+                )
             text = before.decode("utf-8")
             _no_merge_markers(text)
             if not anchor or replacement is None:
@@ -1246,10 +1499,10 @@ def _refresh_receipt(db, proposal, vault_root):
     from emuru.vault.indexer import index_vault
 
     try:
-        index_vault(vault_root)
+        incomplete = index_vault(vault_root)["incomplete"]
     except (OSError, ValueError, sqlite3.Error):
-        return _record_receipt(db, proposal, "index_pending")
-    return _record_receipt(db, proposal, "applied")
+        incomplete = True
+    return _record_receipt(db, proposal, "index_pending" if incomplete else "applied")
 
 
 def apply_proposal(
@@ -1267,7 +1520,9 @@ def apply_proposal(
     expire_proposals(home, vault_root)
     if writers_paused is not True:
         raise ValueError("Confirm other writers are paused before application.")
-    with writer_lock(vault_root), journal(home) as db:
+    from emuru.projects.results import application_guard
+
+    with application_guard(home, vault_root, identity), journal(home) as db:
         db.execute("BEGIN IMMEDIATE")
         policy = load_policy(home)
         proposal = _proposal(db, identity)
@@ -1373,3 +1628,143 @@ def recover_proposals(home: Path, vault_root: Path) -> list[dict]:
                 receipt = _refresh_receipt(db, proposal, vault_root)
             results.append(receipt)
     return results
+
+
+def prepare_result_capture(
+    home, vault, request, key, binding, path, revision, anchor, after, *, renew=False
+):
+    """One transaction joins a validated anchored proposal to verified provenance."""
+    identity_binding = validate_capture_binding(binding, key)
+    policy = require_authority(home, vault)
+    if (
+        not policy["enabled"]
+        or authenticated_request(home, vault, read_only=True) != request
+    ):
+        raise ValueError("Authenticated capture policy required.")
+    with (
+        writer_lock(vault),
+        mutation_parent(vault, path, roots=policy["roots"]) as (parent, name),
+        journal(home) as db,
+    ):
+        db.execute("BEGIN IMMEDIATE")
+        identity = db.execute(
+            "SELECT owner,bot,vault FROM owner_requests WHERE id=?", (request,)
+        ).fetchone()
+        if identity != (
+            identity_binding["owner"],
+            identity_binding["bot"],
+            identity_binding["vault"],
+        ) or identity_binding["vault"] != os.path.abspath(vault):
+            raise ValueError(
+                "Inconsistent capture metadata; authenticated request mismatch."
+            )
+        previous = db.execute(
+            "SELECT proposal_id,binding,generation,request_id FROM project_result_captures WHERE completion_key=? ORDER BY generation",
+            (key,),
+        ).fetchall()
+        generation = 1
+        before = read_note(parent, name)
+        if previous:
+            if any(row[1] != binding for row in previous):
+                raise ValueError("Capture binding changed.")
+            replay = next((row for row in previous if row[3] == request), None)
+            latest = replay or previous[-1]
+            preview = _preview(db, latest[0])
+            if (
+                replay
+                or not renew
+                or preview["outcome"] in {"applied", "index_pending"}
+            ):
+                return preview
+            stale = (
+                preview["outcome"] == "proposed"
+                and _hash(before) != preview["before_revision"]
+            )
+            if (
+                preview["outcome"] not in {"cancelled", "expired", "not_applied"}
+                and not stale
+            ):
+                raise ValueError(
+                    "Capture generation is live or uncertain; renewal refused."
+                )
+            if stale:
+                db.execute(
+                    "UPDATE proposals SET outcome='cancelled' WHERE id=?", (latest[0],)
+                )
+                db.execute(
+                    "INSERT INTO receipts VALUES(?, 'cancelled', ?, ?)",
+                    (latest[0], preview["before_revision"], preview["after_revision"]),
+                )
+            db.execute(
+                "UPDATE project_result_captures SET state='closed' WHERE completion_key=?",
+                (key,),
+            )
+            generation = latest[2] + 1
+        if before is None or _hash(before) != revision:
+            raise ValueError("Stale full-file revision; request fresh capture.")
+        text = before.decode()
+        _no_merge_markers(text)
+        _no_merge_markers(after)
+        start = text.find(anchor)
+        if not anchor or start < 0 or text.find(anchor, start + 1) >= 0:
+            raise ValueError("Exact anchor must match once.")
+        end = len(after) - (len(text) - start - len(anchor))
+        replacement = after[start:end]
+        if (
+            after != text[:start] + replacement + text[start + len(anchor) :]
+            or after == text
+        ):
+            raise ValueError("Capture must preserve bytes outside its task anchor.")
+        cost = (
+            len(binding.encode())
+            + len(anchor.encode())
+            + len(key)
+            + len(revision)
+            + len(request)
+            + 128
+        )
+        total = db.execute(
+            "SELECT COALESCE(SUM(length(CAST(binding AS BLOB))+length(CAST(anchor AS BLOB))+length(completion_key)+length(note_revision)+length(request_id)+128),0) FROM project_result_captures"
+        ).fetchone()[0]
+        if (
+            len(binding.encode()) > 4096
+            or len(anchor.encode()) > 4096
+            or total + cost > 1048576
+        ):
+            raise ValueError("Capture metadata capacity exceeded.")
+        identity = uuid.uuid4().hex
+        after_hash = _hash(after.encode())
+        db.execute(
+            "INSERT INTO proposals VALUES(?,?,?,?,?,?,?,'proposed')",
+            (
+                identity,
+                after,
+                after_hash,
+                os.path.abspath(vault),
+                path,
+                revision,
+                after_hash,
+            ),
+        )
+        db.execute(
+            "INSERT INTO proposal_lifecycle(proposal_id,created_at) VALUES(?,?)",
+            (identity, time.time()),
+        )
+        db.execute(
+            "INSERT INTO proposal_edits VALUES(?,?,?)", (identity, anchor, replacement)
+        )
+        db.execute(
+            "INSERT INTO proposal_bindings VALUES(?,?,?)",
+            (identity, request, _policy_digest(policy)),
+        )
+        db.execute(
+            "INSERT INTO validated_proposals VALUES(?,?)",
+            (identity, _bound_approval(db, _proposal(db, identity))),
+        )
+        db.execute(
+            "INSERT INTO project_result_captures VALUES(?,?,?,?,?,?,?,1,'active')",
+            (key, generation, identity, request, binding, revision, anchor),
+        )
+        result = _preview(db, identity)
+        db.commit()
+        return result
