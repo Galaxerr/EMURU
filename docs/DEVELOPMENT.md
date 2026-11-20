@@ -3,16 +3,15 @@
 Deterministic tests can run without a working inference provider. They establish
 **DEV PASS**, never fresh provider qualification or release acceptance.
 
-**v0.5.8 / M8 qualification passed.** The
-[implementation record](releases/v0.5.8-implementation.md) lists the qualified
-source and image, hosted CI, and bounded genuine evidence. The disposable run
-used six Groq requests and 13,673 accounted tokens. It verified one synthetic
-coding task, independent review, and private owner capture and application.
+The [v0.6.0 release acceptance record](releases/v0.6.0-acceptance.md) lists
+the qualified source and image and the scope of the bounded live run. That
+run covered one synthetic coding task, independent review, and private owner
+capture and application.
 Model-driven native check generation and native/Monty equivalence remain
 unverified.
 
-README participates in the build fingerprint. Verify the source and matching
-image before deploying a checkout with a changed README.
+README and package metadata participate in the build fingerprint. Verify the
+source and matching image before deploying an updated checkout.
 
 ## Repeat on this Linux laptop
 

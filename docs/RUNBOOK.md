@@ -5,12 +5,11 @@ runtime; host scripts are operator tools. For capabilities and credentials, star
 with [README](../README.md). Permanent-host certification is tracked separately in
 [the deployment backlog](deployment-backlog.md).
 
-Current milestone is **v0.5.8 / M8**, qualified and owner-accepted. Execution
-remains opt-in and disabled by default. See the
-[implementation and acceptance record](releases/v0.5.8-implementation.md) for
-qualified identities, exact CI, genuine capture evidence and limits. Package
-metadata remains `0.5.3`. The later documentation revision changes README/image
-provenance: verify a new source/image pair before deploying that checkout.
+Current milestone is **v0.6.0 / M9**. Execution remains opt-in and disabled by
+default. See the [release acceptance record](releases/v0.6.0-acceptance.md) for
+qualified identities, hosted CI, genuine capture evidence and release gates.
+Package version `0.6.0` changes image provenance. Verify the matching
+source/image pair before deploying this checkout.
 
 ## Container deployment
 
@@ -354,7 +353,6 @@ uv run --frozen python scripts/hermes/scout-check.py
 
 ### Bounded operator-run coding
 
-The inherited M4 path remains available in v0.5.8.
 Use only under separate task execution authorization, as an unprivileged
 Docker-capable operator. The default Telegram profile cannot start coding.
 An approved note alone never grants repository access or execution authority.
@@ -433,7 +431,6 @@ General retry/retention controls remain outside this increment.
 
 ### Disposable integrated coding qualification
 
-The inherited M5 review/rework path remains available in v0.5.8.
 Review is explicitly enabled per private grant:
 schema `2` adds `review` equal to `emuru.projects.reviewer.authority()` (schema,
 enabled=true, current checklist digest). All original grant fields and limits
@@ -586,7 +583,24 @@ The bounded project allowance is one Scout, two coders/two reviewers and 1,920
 reserved seconds, with the original 1,800-second coder/reviewer loop inside it.
 Metadata is capped at 1 MiB with emergency restriction capacity. Status reports
 reservations, not measured consumption or a guaranteed provider spend ceiling.
-See the [complete resource limits](releases/v0.5.8-implementation.md#resource-qualification-and-limits).
+
+### Resource limits
+
+| Resource | Ceiling |
+| --- | --- |
+| Enrollment | 24 hours, monotonic and boot-bound |
+| Stable project | One Scout, two coders and two reviewers, 1,920 reserved seconds, with a 1,800-second coder and reviewer loop |
+| Stage time | Coder 600 seconds, reviewer 300 seconds, Scout 120 seconds |
+| Iterations and checks | Coder 12 and reviewer 4 per stage, 24 and 8 per loop. Four checks per coder and eight per loop, 60 seconds per check |
+| Captured output | 64 KiB per check or reviewer, 256 KiB per coder, 640 KiB per loop |
+| Artifacts | 8 MiB per coder, 17 MiB per loop, 64 KiB per Scout report |
+| Reviewer | 256 KiB complete input, 64 KiB output, 32 KiB strict verdict |
+| Selected files | 100 committed UTF-8 files, 256 KiB each, 2 MiB total |
+| Workers and checks | One CPU, 512 MiB, 64 PIDs, fresh scratch of 64 MiB and 1,024 inodes |
+| Supervisor metadata | 1 MiB with a 4 KiB emergency reserve, 4 KiB per receipt, and a 3,500-character status projection |
+
+Reservations are charged before claim and retained after crashes or cancellation.
+Batch reservations apply a cumulative limit. Execution remains serial.
 
 ## Troubleshooting and recovery
 
@@ -655,14 +669,13 @@ uv run --frozen python scripts/hermes/container-check.py
 It requires Docker, pinned infrastructure images and a built acceptance image
 (`emuru:latest` or `EMURU_TEST_IMAGE`); see [CI](../.github/workflows/ci.yml) for preparation.
 It owns the native suite and wake/update/rollback drill; do not also run `wake-check.py`
-in the same pass. Live provider checks are opt-in. Current accepted qualification and its exact identities are recorded in the [implementation report](releases/v0.5.8-implementation.md); routine tests do not renew it.
+in the same pass. Live provider checks are opt-in. See the
+[release acceptance record](releases/v0.6.0-acceptance.md) for qualification and
+candidate identities.
 MCP integration tests need local socket IPC; sandbox `EPERM` requires a permitted
 rerun, not increased timeouts or skipped tests.
 
-### Continuation inspection and binding (v0.5.8 Ticket 01)
-
-See the [v0.5.8 release and acceptance record](releases/v0.5.8-implementation.md)
-for qualification status and release gates.
+### Continuation inspection and binding
 
 Use `/project inspect <applied-spec-proposal-id>` or append an explicit comma-separated
 selection of approved task labels. Inspection reads snapshots, displays exact task
@@ -684,7 +697,7 @@ Cards stay blocked. Binding allocates no allowance and launches no worker. Conti
 execution requires the separately authorized batch and single-task grants described below.
 Native done/archived and a checked note line never establish verified completion.
 
-### Bounded continuation batches (v0.5.8 Ticket 02)
+### Bounded continuation batches
 
 After the stopped-profile upgrade and explicit bind, prepare a private, mode-0600
 batch manifest using the approved specification's exact schema-1 fields. Select
@@ -728,7 +741,7 @@ Pending note approval remains separate from verified execution. No automatic bat
 dispatch, note write or model call follows from preview, enrollment, controls or wake.
 
 
-### Verified successor execution (v0.5.8 Ticket 03)
+### Verified successor execution
 
 Use the existing `scripts/hermes/coder.py` operator launcher and supervised
 single-task enrollment for every selected task. Enrollment/binding never dispatches
@@ -761,7 +774,7 @@ historical verification path; historical M7 receipts remain readable. No automat
 project-complete claim follows from a verified successor.
 
 
-### Continued result capture and recovery (v0.5.8 Ticket 04)
+### Continued result capture and recovery
 
 After independent review, use `/project capture <spec-proposal-id> <task-id>
 <review-run-id>` in the authenticated owner's private chat. Keep the command on

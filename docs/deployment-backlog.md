@@ -1,8 +1,8 @@
 # Permanent-host deployment backlog
 
-Updated for v0.5.8 / M8. Technical qualification and owner acceptance
-are recorded in the [implementation record](releases/v0.5.8-implementation.md).
-Permanent-host certification remains separate from completed M8 qualification.
+Updated for v0.6.0 / M9. Technical qualification and owner acceptance
+are recorded in the [release acceptance record](releases/v0.6.0-acceptance.md).
+Permanent-host certification remains a separate milestone.
 The temporary laptop does not require production certification. These
 items are out of scope for development acceptance, not failed tests or waived
 security mechanisms. No infrastructure or additional rollback image is requested
@@ -50,7 +50,8 @@ as part of release closure.
   independently verified result artifacts together. Index-only recovery must not
   republish an applied note; old images must refuse unsupported capture state.
   Sleep refusal must leave its admission fence intact; incompatible old executors
-  cannot accept newest supervised state. README changes require fresh image provenance.
+  cannot accept newest supervised state. README and package metadata changes
+  require fresh image provenance.
   A comment-only alternate proves mechanical compatibility, not recovery from shared
   code defects. For shared defects, stop admission, preserve newest state and review
   a fix-forward procedure. Never overwrite newer state with an older backup.

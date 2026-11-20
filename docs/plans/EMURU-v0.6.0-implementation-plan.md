@@ -1,6 +1,6 @@
 # EMURU v0.6.0 — Native project execution and verified result capture
 
-**Status:** Updated 2026-11-19. M1–M8 implementation is complete. M8 release qualification is tracked in the [v0.5.8 implementation record](../releases/v0.5.8-implementation.md). M9 remains future work.
+**Status:** M1–M9 implementation and the original v0.6.0 candidate qualification are complete. See the [release acceptance record](../releases/v0.6.0-acceptance.md) for owner acceptance and the packaging release gates.
 **Prepared:** 2026-10-21.  
 **Repository:** `Galaxerr/EMURU`.  
 **Inspected baseline:** `main` at `129b8754e9e6ffa301cc25d44cd963f90316dda5` (2026-10-20).  
@@ -8,10 +8,8 @@
 **Release sequence:** M1/v0.5.1 → M2/v0.5.2 → M3/v0.5.3 → M4/v0.5.4 → M5/v0.5.5 → M6/v0.5.6 → M7/v0.5.7 → M8/v0.5.8 → M9/v0.6.0.
 
 > **Planning accuracy:** The sections below preserve the original design and milestone
-> criteria. Current implementation and accepted deviations are described in the
-> [v0.5.8 implementation record](../releases/v0.5.8-implementation.md); proposed
-> paths/APIs below are not proof that later milestones exist. Upstream behavior
-> must be verified against the pinned Hermes source and disposable runtime.
+> criteria. See the [runbook](../RUNBOOK.md) for current operation and the
+> [release acceptance record](../releases/v0.6.0-acceptance.md) for verified evidence.
 
 **Progress update, 2026-11-15:** M7 completes explicit private-owner capture of
 independently verified results into the original note through complete preview
@@ -22,7 +20,6 @@ opt-in and execution disabled by default. The consolidated record retains exact
 candidate/source/image/CI, genuine owner/model evidence, review closures and
 limits. Task Git execution and controlled remote operations are separately scoped
 future capabilities; this update assigns no new milestone or remote authority.
-See the [v0.5.8 implementation record](../releases/v0.5.8-implementation.md) for subsequent M8 delivery and acceptance status.
 
 ## 1. Objective and definition of success
 
@@ -278,7 +275,7 @@ Each milestone must be **useful in its own right**, testable on disposable data,
 **Status:** Implementation complete. Ticket 06 technical and bounded live
 qualification passed. Hosted CI passed for the owner-accepted candidate and its
 release-record follow-ups, including all 14 jobs on commit `871e366`.
-See the [release and acceptance record](../releases/v0.5.8-implementation.md).
+See the [archived M8 release and acceptance record](https://github.com/Galaxerr/EMURU/blob/a3342df77c918778689fbd02fe9f9d024b5bcc6e/docs/releases/v0.5.8-implementation.md).
 
 ## 14. M9 — v0.6.0: End-to-end qualification and release
 
