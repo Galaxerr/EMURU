@@ -1161,6 +1161,23 @@ def test_continuation_alias_execution_authorization(
     with board.project_board_readonly(c.home, ROOT) as (kb, db):
         assert [r.id for r in kb.list_runs(db, alias["task"])] == [run["run"]]
     if mode == "reuse":
+        supervision.check_approval_context(tuple(context))
+        context[2] = "rotated synthetic credential after claim"
+        gateway = tmp_path / "gateway"
+        before = snapshot(c.home), snapshot(c.vault)
+        monkeypatch.setattr(
+            supervision, "command", lambda *a, **kw: pytest.fail("Gateway started")
+        )
+        with (
+            pytest.raises(
+                ValueError, match="Execution context changed; fresh approval"
+            ),
+            coder_gateway.cloud_gateway(gateway, supervision=supervision),
+        ):
+            pytest.fail("Gateway accepted changed execution authority")
+        assert not gateway.exists()
+        assert (snapshot(c.home), snapshot(c.vault)) == before
+
         old = tmp_path / "old-schema4"
         project = old / "src/emuru/projects"
         project.mkdir(parents=True)
